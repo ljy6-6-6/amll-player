@@ -4,7 +4,6 @@ import type {
 } from "@applemusic-like-lyrics/core";
 import {
 	type LyricBase,
-	type SubLyricContent,
 	type Syllable,
 	TTMLParser,
 } from "@applemusic-like-lyrics/ttml";
@@ -32,43 +31,44 @@ const Elements = {
 };
 
 function getBestTranslation(
-	translations: SubLyricContent[] | undefined,
+	availableLangs: Set<string>,
 	targetLang?: string,
-): SubLyricContent | undefined {
-	if (!translations || translations.length === 0) return undefined;
-	if (!targetLang) return translations[0];
+): string | undefined {
+	if (availableLangs.size === 0) return undefined;
+	const langsArray = Array.from(availableLangs);
+	if (!targetLang) return langsArray[0];
 
 	try {
 		const target = new Intl.Locale(targetLang).maximize();
 		const targetBase = `${target.language}-${target.script}`;
 		const targetLanguageOnly = target.language;
 
-		const exactMatch = translations.find((t) => {
-			if (!t.language) return false;
+		for (const lang of langsArray) {
 			try {
-				const current = new Intl.Locale(t.language).maximize();
-				return `${current.language}-${current.script}` === targetBase;
-			} catch {
-				return false;
+				const current = new Intl.Locale(lang).maximize();
+				if (`${current.language}-${current.script}` === targetBase) {
+					return lang;
+				}
+			} catch (e) {
+				console.warn("解析翻译语言代码", lang, "错误", e);
 			}
-		});
+		}
 
-		if (exactMatch) return exactMatch;
-
-		const languageMatch = translations.find((t) => {
-			if (!t.language) return false;
+		for (const lang of langsArray) {
 			try {
-				const current = new Intl.Locale(t.language).maximize();
-				return current.language === targetLanguageOnly;
-			} catch {
-				return false;
+				const current = new Intl.Locale(lang).maximize();
+				if (current.language === targetLanguageOnly) {
+					return lang;
+				}
+			} catch (e) {
+				console.warn("解析翻译语言代码", lang, "错误", e);
 			}
-		});
+		}
 
-		return languageMatch || translations[0];
+		return langsArray[0];
 	} catch (e) {
 		console.warn("解析目标语言代码时出现错误", e);
-		return translations[0];
+		return langsArray[0];
 	}
 }
 
@@ -83,6 +83,21 @@ export function handleTTMLParsing(
 ): TTMLParserResult {
 	const parser = new TTMLParser();
 	const result = parser.parse(lyricStr);
+
+	const availableTransLangs = new Set<string>();
+	for (const line of result.lines) {
+		if (line.translations) {
+			for (const t of line.translations) {
+				if (t.language) availableTransLangs.add(t.language);
+			}
+		}
+		if (line.backgroundVocal?.translations) {
+			for (const t of line.backgroundVocal.translations) {
+				if (t.language) availableTransLangs.add(t.language);
+			}
+		}
+	}
+	const targetTransLang = getBestTranslation(availableTransLangs, displayLang);
 
 	const amllLines: CoreLyricLine[] = [];
 
@@ -125,8 +140,19 @@ export function handleTTMLParsing(
 			];
 		}
 
-		const targetTrans = getBestTranslation(source.translations, displayLang);
-		const transText = targetTrans?.text || "";
+		let transText = "";
+		if (
+			source.translations &&
+			source.translations.length > 0 &&
+			targetTransLang
+		) {
+			const targetTrans = source.translations.find(
+				(t) => t.language === targetTransLang,
+			);
+			if (targetTrans) {
+				transText = targetTrans.text;
+			}
+		}
 
 		let romanText = "";
 		let romanWords: Syllable[] | undefined;
