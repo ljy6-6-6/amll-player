@@ -5,11 +5,13 @@ import {
 	parseLrc,
 	parseLys,
 	parseQrc,
-	parseTTML,
 	parseYrc,
 } from "@applemusic-like-lyrics/lyric";
 import chalk from "chalk";
+import { useAtomValue } from "jotai";
 import { useMemo } from "react";
+import { languageAtom } from "../states/appAtoms";
+import { handleTTMLParsing } from "../utils/ttml-parser";
 
 const LYRIC_LOG_TAG = chalk.bgHex("#FF4444").hex("#FFFFFF")(" LYRIC ");
 
@@ -67,7 +69,7 @@ function pairLyric(line: LyricLine, lines: CoreLyricLine[], key: TransLine) {
 }
 
 interface LyricParserResult {
-	lyricLines: LyricLine[];
+	lyricLines: CoreLyricLine[];
 	hasLyrics: boolean;
 	metadata: [string, string[]][];
 }
@@ -78,6 +80,8 @@ export const useLyricParser = (
 	translatedLrc?: string,
 	romanLrc?: string,
 ): LyricParserResult => {
+	const displayLanguage = useAtomValue(languageAtom);
+
 	return useMemo(() => {
 		if (!lyricStr || !format) {
 			return { lyricLines: [], hasLyrics: false, metadata: [] };
@@ -118,15 +122,10 @@ export const useLyricParser = (
 					break;
 				}
 				case "ttml": {
-					const ttmlResult = parseTTML(lyricStr);
+					const ttmlResult = handleTTMLParsing(lyricStr, displayLanguage);
 					parsedLyricLines = ttmlResult.lines;
 					parsedMetadata = ttmlResult.metadata;
-					console.log(
-						LYRIC_LOG_TAG,
-						"解析出 TTML 歌词",
-						parsedLyricLines,
-						parsedMetadata,
-					);
+					console.log(LYRIC_LOG_TAG, "解析出 TTML 歌词", ttmlResult);
 					break;
 				}
 				default: {
@@ -197,5 +196,5 @@ export const useLyricParser = (
 			console.warn("解析歌词时出现错误", e);
 			return { lyricLines: [], hasLyrics: false, metadata: [] };
 		}
-	}, [lyricStr, format, translatedLrc, romanLrc]);
+	}, [lyricStr, format, translatedLrc, romanLrc, displayLanguage]);
 };

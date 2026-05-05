@@ -73,6 +73,7 @@ import { toast } from "react-toastify";
 import { router } from "../../router.tsx";
 import {
 	advanceLyricDynamicLyricTimeAtom,
+	availableLanguagesAtom,
 	BottomLyricDisplayMode,
 	bottomLyricDisplayModeAtom,
 	DarkMode,
@@ -80,6 +81,7 @@ import {
 	enableAlwaysOnTopAtom,
 	enableMediaControlsAtom,
 	enableTaskbarLyricAtom,
+	languageAtom,
 	showStatJSFrameAtom,
 	taskbarLyricAlignSettingAtom,
 	taskbarLyricModeSettingAtom,
@@ -303,64 +305,15 @@ function SliderSettings<T extends number | number[]>({
 }
 
 const GeneralSettings = () => {
-	const { t, i18n } = useTranslation();
+	const { t } = useTranslation();
 	const [mode, setMode] = useAtom(darkModeAtom);
+	const [language, setLanguage] = useAtom(languageAtom);
+	const supportedLanguages = useAtomValue(availableLanguagesAtom);
 	const [os, setOs] = useState<string | null>(null);
 
 	useEffect(() => {
 		setOs(platform());
 	}, []);
-
-	const supportedLanguagesMenu = useMemo(() => {
-		function collectLocaleKey(
-			root: Record<string, unknown>,
-			result = new Set<string>(),
-			currentKey = "",
-		): Set<string> {
-			for (const key in root) {
-				const value = root[key];
-				if (typeof value === "object" && value !== null) {
-					collectLocaleKey(
-						value as Record<string, unknown>,
-						result,
-						currentKey ? `${currentKey}.${key}` : key,
-					);
-				} else if (typeof value === "string" && value) {
-					result.add(currentKey ? `${currentKey}.${key}` : key);
-				}
-			}
-			return result;
-		}
-
-		const menu = Object.keys(i18n.options.resources ?? {})
-			.map((langId) => {
-				return {
-					langId,
-					keyNum: collectLocaleKey(i18n.options.resources?.[langId] ?? {}).size,
-				};
-			})
-			.filter(({ keyNum }) => keyNum)
-			.map(({ langId }) => {
-				const name =
-					new Intl.DisplayNames(i18n.language, {
-						type: "language",
-					}).of(langId) || langId;
-				const origName =
-					new Intl.DisplayNames(langId, {
-						type: "language",
-					}).of(langId) || langId;
-				return {
-					label: origName === name ? origName : `${origName} (${name})`,
-					value: langId,
-				};
-			});
-		menu.push({
-			label: t("page.settings.general.displayLanguage.cimode", "本地化 ID"),
-			value: "cimode",
-		});
-		return menu;
-	}, [t, i18n.language, i18n.options.resources]);
-
 	const themeMenu = useMemo(
 		() => [
 			{
@@ -387,10 +340,10 @@ const GeneralSettings = () => {
 			<SettingEntry
 				label={t("page.settings.general.displayLanguage.label", "显示语言")}
 			>
-				<Select.Root value={i18n.language} onValueChange={i18n.changeLanguage}>
+				<Select.Root value={language} onValueChange={setLanguage}>
 					<Select.Trigger />
 					<Select.Content>
-						{supportedLanguagesMenu.map((item) => (
+						{supportedLanguages.map((item) => (
 							<Select.Item key={item.value} value={item.value}>
 								{item.label}
 							</Select.Item>
@@ -571,7 +524,7 @@ const LyricAppearanceSettings = () => {
 	const getLyricPlayerString = (
 		value: LyricPlayerImplementationObject,
 	): string => {
-		if (!value || !value.lyricPlayer) return LyricPlayerImplementation.Dom;
+		if (!value?.lyricPlayer) return LyricPlayerImplementation.Dom;
 		if (value.lyricPlayer === DomLyricPlayer)
 			return LyricPlayerImplementation.Dom;
 		if (value.lyricPlayer === DomSlimLyricPlayer)

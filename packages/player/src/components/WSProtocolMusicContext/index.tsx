@@ -1,3 +1,4 @@
+import type { LyricLine } from "@applemusic-like-lyrics/core";
 import { FFTPlayer } from "@applemusic-like-lyrics/fft";
 import { parseTTML } from "@applemusic-like-lyrics/lyric";
 import {
@@ -319,7 +320,7 @@ export const WSProtocolMusicContext: FC<WSProtocolMusicContextProps> = ({
 					break;
 				}
 				case "setLyric": {
-					let lines: WSLyricLine[];
+					let lines: LyricLine[];
 					if (state.format === "structured") {
 						lines = state.lines;
 					} else {

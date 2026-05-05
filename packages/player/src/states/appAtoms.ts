@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Update } from "@tauri-apps/plugin-updater";
 import { atom } from "jotai";
 import { atomWithStorage } from "jotai/utils";
+import i18n from "../i18n";
 
 export enum DarkMode {
 	Auto = "auto",
@@ -14,11 +15,6 @@ export enum MusicContextMode {
 	Local = "local",
 	WSProtocol = "ws-protocol",
 }
-
-export const displayLanguageAtom = atomWithStorage(
-	"amll-player.displayLanguage",
-	"zh-CN",
-);
 
 export const darkModeAtom = atomWithStorage(
 	"amll-player.darkMode",
@@ -153,3 +149,44 @@ export const currentSongWritersAtom = atom<string[]>([]);
 export const currentPlaylistAtom = atom<SongData[]>([]);
 
 export const currentPlaylistMusicIndexAtom = atom(0);
+
+const _languageBaseAtom = atom(i18n.language);
+export const languageAtom = atom(
+	(get) => get(_languageBaseAtom),
+	(_get, set, newLang: string) => {
+		i18n.changeLanguage(newLang).then(() => {
+			set(_languageBaseAtom, newLang);
+		});
+	},
+);
+
+export const availableLanguagesAtom = atom((get) => {
+	const currentLang = get(languageAtom);
+	const resources = i18n.options.resources ?? {};
+
+	const languages = Object.keys(resources)
+		.map((langId) => {
+			try {
+				const name =
+					new Intl.DisplayNames(currentLang, { type: "language" }).of(langId) ||
+					langId;
+				const origName =
+					new Intl.DisplayNames(langId, { type: "language" }).of(langId) ||
+					langId;
+				return {
+					label: origName === name ? origName : `${origName} (${name})`,
+					value: langId,
+				};
+			} catch {
+				return { label: langId, value: langId };
+			}
+		})
+		.filter((item) => item.label);
+
+	languages.push({
+		label: i18n.t("page.settings.general.displayLanguage.cimode", "本地化 ID"),
+		value: "cimode",
+	});
+
+	return languages;
+});

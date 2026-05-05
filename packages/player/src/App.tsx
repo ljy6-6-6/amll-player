@@ -2,8 +2,7 @@ import { Box, Theme } from "@radix-ui/themes";
 import "@radix-ui/themes/styles.css";
 import classNames from "classnames";
 import { useAtomValue } from "jotai";
-import { lazy, StrictMode, Suspense, useLayoutEffect } from "react";
-import { useTranslation } from "react-i18next";
+import { lazy, StrictMode, Suspense } from "react";
 import { RouterProvider } from "react-router-dom";
 import { ToastContainer } from "react-toastify";
 import styles from "./App.module.css";
@@ -22,7 +21,6 @@ import { isLyricPageOpenedAtom } from "@applemusic-like-lyrics/react-full";
 import { StatsComponent } from "./components/StatsComponent/index.tsx";
 import { router } from "./router.tsx";
 import {
-	displayLanguageAtom,
 	hasBackgroundAtom,
 	isDarkThemeAtom,
 	MusicContextMode,
@@ -39,16 +37,10 @@ function App() {
 	const showStatJSFrame = useAtomValue(showStatJSFrameAtom);
 	const enableTaskbarLyric = useAtomValue(enableTaskbarLyricAtom);
 	const musicContextMode = useAtomValue(musicContextModeAtom);
-	const displayLanguage = useAtomValue(displayLanguageAtom);
 	const isDarkTheme = useAtomValue(isDarkThemeAtom);
 	const hasBackground = useAtomValue(hasBackgroundAtom);
-	const { i18n } = useTranslation();
 
 	useInitializeWindow();
-
-	useLayoutEffect(() => {
-		i18n.changeLanguage(displayLanguage);
-	}, [displayLanguage]);
 
 	return (
 		<>

@@ -232,7 +232,7 @@ const LyricContext: FC = () => {
 			for (const [key, values] of metadata) {
 				if (key === "ttmlAuthorGithubLogin") {
 					lyricAuthors = values;
-				} else if (key === "songWriters") {
+				} else if (key === "songwriters") {
 					songWriters = values;
 				}
 			}

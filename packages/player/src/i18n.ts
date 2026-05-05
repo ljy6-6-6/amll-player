@@ -26,6 +26,11 @@ i18n
 		interpolation: {
 			escapeValue: false,
 		},
+		detection: {
+			order: ["localStorage", "navigator"],
+			lookupLocalStorage: "amll-player.language",
+			caches: ["localStorage"],
+		},
 	});
 
 export default i18n;
