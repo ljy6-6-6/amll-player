@@ -1,7 +1,6 @@
 import { branch, commit } from "virtual:git-metadata-plugin";
 import {
 	DomLyricPlayer,
-	DomSlimLyricPlayer,
 	MeshGradientRenderer,
 	PixiRenderer,
 } from "@applemusic-like-lyrics/core";
@@ -510,13 +509,6 @@ const LyricAppearanceSettings = () => {
 				),
 				value: LyricPlayerImplementation.Dom,
 			},
-			{
-				label: t(
-					"page.settings.lyricAppearance.lyricPlayerImplementation.menu.dom-slim",
-					"DOM（阉割版）",
-				),
-				value: LyricPlayerImplementation.DomSlim,
-			},
 		],
 		[t],
 	);
@@ -525,23 +517,13 @@ const LyricAppearanceSettings = () => {
 		value: LyricPlayerImplementationObject,
 	): string => {
 		if (!value?.lyricPlayer) return LyricPlayerImplementation.Dom;
-		if (value.lyricPlayer === DomLyricPlayer)
-			return LyricPlayerImplementation.Dom;
-		if (value.lyricPlayer === DomSlimLyricPlayer)
-			return LyricPlayerImplementation.DomSlim;
 		return LyricPlayerImplementation.Dom;
 	};
 
 	const handleLyricPlayerChange = (selectedString: string) => {
-		let implementationObject: LyricPlayerImplementationObject;
-		switch (selectedString) {
-			case LyricPlayerImplementation.DomSlim:
-				implementationObject = { lyricPlayer: DomSlimLyricPlayer };
-				break;
-			default:
-				implementationObject = { lyricPlayer: DomLyricPlayer };
-				break;
-		}
+		const implementationObject: LyricPlayerImplementationObject = {
+			lyricPlayer: DomLyricPlayer,
+		};
 		setLyricPlayerImplValue(implementationObject);
 		localStorage.setItem(
 			"amll-react-full.lyricPlayerImplementation",
@@ -959,10 +941,14 @@ const LyricBackgroundSettings = () => {
 		let rendererObject: LyricBackgroundRenderer;
 		switch (selectedString) {
 			case "mesh":
-				rendererObject = { renderer: MeshGradientRenderer };
+				rendererObject = {
+					renderer: MeshGradientRenderer,
+				};
 				break;
 			case "pixi":
-				rendererObject = { renderer: PixiRenderer };
+				rendererObject = {
+					renderer: PixiRenderer,
+				};
 				break;
 			default:
 				rendererObject = { renderer: "css-bg" };
