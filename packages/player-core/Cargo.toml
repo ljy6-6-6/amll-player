@@ -34,10 +34,7 @@ tauri = "2.6.2"
 rodio = { version = "0.22", features = [] }
 parking_lot = "0.12"
 
-[dependencies.ffmpeg-next]
-version = "8"
-default-features = false
-features = ["codec", "format", "software-resampling", "static"]
+ffmpeg_audio = { git = "https://github.com/apoint123/ffmpeg-audio.git", rev = "dfd17b062303403b86a9bb0c509ee03aed3cbade" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 tempfile = "^3"

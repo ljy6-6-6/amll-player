@@ -46,6 +46,7 @@ tauri-plugin-os = { version = "2" }
 tauri-plugin-shell = { version = "2" }
 
 amll-player-core = { path = "../../player-core" }
+ffmpeg_audio = { git = "https://github.com/apoint123/ffmpeg-audio.git", rev = "dfd17b062303403b86a9bb0c509ee03aed3cbade" }
 ws-protocol = { path = "../../ws-protocol", features = ["tracing"] }
 tauri-plugin-http = "2"
 rodio = "0.22"
@@ -57,10 +58,6 @@ zip = "8.6"
 ttml_processor = "0.3"
 tempfile = "3.27"
 mimalloc = "0.1.50"
-
-[dependencies.ffmpeg-next]
-version = "8"
-default-features = false
 
 [target.'cfg(target_os = "android")'.dependencies]
 ndk-context = "0.1.1"

@@ -6,9 +6,6 @@ members = [
 	"./packages/player/src-tauri",
 ]
 
-[patch.crates-io]
-ffmpeg-sys-next = { git = "https://github.com/apoint123/rust-ffmpeg-sys" }
-
 [profile.release]
 opt-level = 3
 codegen-units = 1

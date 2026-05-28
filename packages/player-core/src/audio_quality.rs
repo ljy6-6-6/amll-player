@@ -1,4 +1,4 @@
-use ffmpeg_next as ffmpeg;
+use ffmpeg_audio::SourceAudioInfo;
 use serde::*;
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Default, Clone)]
@@ -13,35 +13,23 @@ pub struct AudioQuality {
 }
 
 impl AudioQuality {
-    pub fn from_ffmpeg_decoder(decoder: &ffmpeg::decoder::Audio) -> Self {
-        let sample_format_str = match decoder.format() {
-            ffmpeg::format::Sample::U8(_) => "u8",
-            ffmpeg::format::Sample::I16(_) => "i16",
-            ffmpeg::format::Sample::I32(_) => "i32",
-            ffmpeg::format::Sample::I64(_) => "i64",
-            ffmpeg::format::Sample::F32(_) => "f32",
-            ffmpeg::format::Sample::F64(_) => "f64",
-            _ => "unknown",
-        };
+    pub fn from_source_info(info: &SourceAudioInfo) -> Self {
+        let sample_format_str = info.sample_fmt.as_deref().unwrap_or("unknown");
 
-        let bits_per_sample = match decoder.format() {
-            ffmpeg::format::Sample::U8(_) => Some(8),
-            ffmpeg::format::Sample::I16(_) => Some(16),
-            ffmpeg::format::Sample::I32(_) => Some(32),
-            ffmpeg::format::Sample::I64(_) => Some(64),
-            ffmpeg::format::Sample::F32(_) => Some(32),
-            ffmpeg::format::Sample::F64(_) => Some(64),
-            _ => None,
+        let bits_per_sample = if info.bits_per_sample > 0 {
+            Some(info.bits_per_sample.cast_unsigned())
+        } else {
+            None
         };
 
         Self {
-            sample_rate: Some(decoder.rate()),
+            sample_rate: Some(info.sample_rate.cast_unsigned()),
             bits_per_coded_sample: None,
             bits_per_sample,
-            channels: Some(decoder.channels() as u32),
-            codec: decoder
-                .codec()
-                .map(|c| c.name().to_string())
+            channels: Some(info.channels.cast_unsigned()),
+            codec: info
+                .codec_name
+                .clone()
                 .unwrap_or_else(|| "unknown".to_string()),
             sample_format: sample_format_str.to_string(),
         }

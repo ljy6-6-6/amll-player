@@ -4,7 +4,7 @@
 	"license": "GPL-3.0",
 	"devDependencies": {
 		"@biomejs/biome": "catalog:",
-		"@typescript/native-preview": "7.0.0-dev.20260506.1"
+		"@typescript/native-preview": "7.0.0-dev.20260527.2"
 	},
 	"scripts": {
 		"format": "pnpm biome format . --write",

@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 
 use amll_player_core::AudioInfo;
 use anyhow::Context;
-use ffmpeg_next as ffmpeg;
+use ffmpeg_audio::AudioReader;
 use serde::*;
 #[cfg(not(mobile))]
 use serde_json::Value;
@@ -204,14 +204,11 @@ async fn read_local_music_metadata(
         .to_path_buf();
 
     let audio_info = tokio::task::spawn_blocking(move || -> anyhow::Result<AudioInfo> {
-        let mut input_ctx = ffmpeg::format::input(&path_clone)
+        let file = std::fs::File::open(&path_clone)
             .with_context(|| format!("无法打开文件: {}", path_clone.display()))?;
-        let mut info = amll_player_core::utils::read_audio_info(&mut input_ctx);
-        if let Some(stream) = input_ctx.streams().best(ffmpeg::media::Type::Audio) {
-            let time_base = stream.time_base();
-            let duration = stream.duration();
-            info.duration = duration as f64 * time_base.0 as f64 / time_base.1 as f64;
-        }
+        let reader = AudioReader::new(file)
+            .with_context(|| format!("无法初始化音频解码器: {}", path_clone.display()))?;
+        let info = amll_player_core::utils::build_audio_info(&reader);
         Ok(info)
     })
     .await
@@ -488,8 +485,6 @@ pub fn run() {
                 ..Default::default()
             })
     }
-
-    ffmpeg::init().expect("初始化 ffmpeg 失败");
 
     builder
         .plugin(tauri_plugin_dialog::init())

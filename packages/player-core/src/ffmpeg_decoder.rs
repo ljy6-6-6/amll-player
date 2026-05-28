@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::fs::File;
 use std::sync::atomic::AtomicU64;
 use std::sync::{
     Arc,
@@ -9,11 +10,10 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use crate::{
-    audio_quality::AudioQuality, fft_player::FFTPlayer, player::AudioInfo, utils::read_audio_info,
+    audio_quality::AudioQuality, fft_player::FFTPlayer, player::AudioInfo, utils::build_audio_info,
 };
 use anyhow::Context;
-use ffmpeg_next as ffmpeg;
-use ffmpeg_next::{ChannelLayout, format};
+use ffmpeg_audio::{AudioReader, ResampleOptions, Resampler};
 use parking_lot::{Condvar, Mutex, RwLock};
 use rodio::Source;
 use rodio::source::SeekError;
@@ -60,11 +60,9 @@ pub struct FFmpegDecoder {
 }
 
 struct DecoderInitData {
-    input_ctx: ffmpeg::format::context::Input,
-    decoder: ffmpeg::decoder::Audio,
-    audio_stream_index: usize,
-    resampler: Option<ffmpeg::software::resampling::context::Context>,
-    fft_resampler: Option<ffmpeg::software::resampling::context::Context>,
+    reader: AudioReader,
+    player_resampler: Resampler,
+    fft_resampler: Resampler,
     total_duration: Option<Duration>,
     audio_info: AudioInfo,
     audio_quality: AudioQuality,
@@ -182,61 +180,35 @@ fn setup_decoder_resources(
     target_channels: u16,
     target_sample_rate: u32,
 ) -> anyhow::Result<DecoderInitData> {
-    let mut input_ctx = format::input(&path).with_context(|| format!("打开 {path} 文件失败"))?;
-    let mut audio_info = read_audio_info(&mut input_ctx);
+    let file = File::open(path).with_context(|| format!("打开 {path} 文件失败"))?;
+    let reader = AudioReader::new(file).with_context(|| format!("初始化音频解码器失败: {path}"))?;
 
-    let stream = input_ctx
-        .streams()
-        .best(ffmpeg::media::Type::Audio)
-        .context("找不到音频流")?;
-    let audio_stream_index = stream.index();
+    let total_duration = reader.duration();
+    let source_info = reader.source_info().clone();
+    let audio_info = build_audio_info(&reader);
+    let audio_quality = AudioQuality::from_source_info(&source_info);
 
-    let time_base = stream.time_base();
-    let duration = stream.duration();
-    if duration > 0 {
-        audio_info.duration = duration as f64 * time_base.0 as f64 / time_base.1 as f64;
-    }
+    let player_opts = ResampleOptions::new()
+        .sample_rate(target_sample_rate.cast_signed())
+        .channels(target_channels as i32)
+        .format::<f32>();
 
-    let decoder_ctx = ffmpeg::codec::context::Context::from_parameters(stream.parameters())?;
-    let decoder = decoder_ctx.decoder().audio()?;
-    let audio_quality = AudioQuality::from_ffmpeg_decoder(&decoder);
+    let player_resampler = reader
+        .build_resampler(player_opts)
+        .context("创建播放用重采样器失败")?;
 
-    let source_format = decoder.format();
-    let source_channel_layout = decoder.channel_layout();
-    let source_rate = decoder.rate();
+    let fft_opts = ResampleOptions::new()
+        .sample_rate(FFT_TARGET_RATE.cast_signed())
+        .channels(1)
+        .format::<f32>();
 
-    let target_format = ffmpeg::format::Sample::F32(ffmpeg::format::sample::Type::Planar);
-    let target_channel_layout = ChannelLayout::default(target_channels as i32);
-
-    let resampler = create_resampler(
-        source_format,
-        source_channel_layout,
-        source_rate,
-        target_format,
-        target_channel_layout,
-        target_sample_rate,
-    )?;
-
-    let fft_resampler = create_resampler(
-        source_format,
-        source_channel_layout,
-        source_rate,
-        ffmpeg::format::Sample::F32(ffmpeg::format::sample::Type::Planar),
-        ChannelLayout::MONO,
-        FFT_TARGET_RATE,
-    )?;
-
-    let total_duration = if input_ctx.duration() > 0 {
-        Some(Duration::from_micros(input_ctx.duration() as u64))
-    } else {
-        None
-    };
+    let fft_resampler = reader
+        .build_resampler(fft_opts)
+        .context("创建 FFT 用重采样器失败")?;
 
     Ok(DecoderInitData {
-        input_ctx,
-        decoder,
-        audio_stream_index,
-        resampler,
+        reader,
+        player_resampler,
         fft_resampler,
         total_duration,
         audio_info,
@@ -249,8 +221,6 @@ fn run_decoding_loop(
     shared: Arc<Shared>,
     control_rx: &Receiver<ControlMessage>,
 ) {
-    let mut player_scratch_buf = Vec::new();
-    let mut fft_scratch_buf = Vec::new();
     let mut is_eof_reached = false;
 
     'main_loop: loop {
@@ -302,229 +272,64 @@ fn run_decoding_loop(
             }
         }
 
-        let mut decoded = ffmpeg::frame::Audio::empty();
-        match data.decoder.receive_frame(&mut decoded) {
-            Ok(_) => {}
-            Err(ffmpeg::Error::Eof) => {
+        match data.reader.receive_frame() {
+            Ok(Some(frame)) => {
+                let mut player_samples = Vec::new();
+                let mut fft_samples = Vec::new();
+
+                if data
+                    .player_resampler
+                    .process::<f32>(Some(&frame))
+                    .is_ok_and(|has_data| has_data)
+                {
+                    player_samples.extend_from_slice(data.player_resampler.output_as::<f32>());
+                }
+
+                if data
+                    .fft_resampler
+                    .process::<f32>(Some(&frame))
+                    .is_ok_and(|has_data| has_data)
+                {
+                    fft_samples.extend_from_slice(data.fft_resampler.output_as::<f32>());
+                }
+
+                let chunk = AudioChunk {
+                    player_samples,
+                    fft_samples,
+                };
+
+                let mut buffer = shared.buffer.lock();
+                buffer.push_back(chunk);
+                shared.condvar.notify_one();
+            }
+            Ok(None) => {
                 shared.is_eof.store(true, Ordering::Release);
                 shared.condvar.notify_all();
                 is_eof_reached = true;
-                continue 'main_loop;
-            }
-            Err(ffmpeg::Error::Other {
-                errno: ffmpeg::ffi::EAGAIN,
-            }) => {
-                match data.input_ctx.packets().next() {
-                    Some((stream, packet))
-                        if stream.index() == data.audio_stream_index
-                            && data.decoder.send_packet(&packet).is_err() =>
-                    {
-                        error!("向解码器发送数据包失败");
-                        break 'main_loop;
-                    }
-                    None if data.decoder.send_eof().is_err() => {
-                        error!("向解码器发送 EOF 失败");
-                    }
-                    _ => {}
-                }
-                continue 'main_loop;
             }
             Err(e) => {
-                error!("receive_frame 错误: {e}");
+                error!("解码错误: {e}");
                 break 'main_loop;
             }
         }
-        player_scratch_buf.clear();
-        fft_scratch_buf.clear();
-
-        resample_frame(
-            data,
-            &mut decoded,
-            &mut player_scratch_buf,
-            &mut fft_scratch_buf,
-        );
-
-        let chunk = AudioChunk {
-            player_samples: std::mem::take(&mut player_scratch_buf),
-            fft_samples: std::mem::take(&mut fft_scratch_buf),
-        };
-
-        let mut buffer = shared.buffer.lock();
-        buffer.push_back(chunk);
-        shared.condvar.notify_one();
     }
     shared.is_eof.store(true, Ordering::Release);
     shared.condvar.notify_all();
 }
 
 fn execute_seek(data: &mut DecoderInitData, shared: &Arc<Shared>, pos: Duration) -> bool {
-    let seek_ts = (pos.as_secs_f64() * ffmpeg::ffi::AV_TIME_BASE as f64) as i64;
-    if data.input_ctx.seek(seek_ts, ..).is_ok() {
-        data.decoder.flush();
-        let mut buffer = shared.buffer.lock();
-        buffer.clear();
-        shared.is_eof.store(false, Ordering::SeqCst);
-        shared.condvar.notify_all();
-        true
-    } else {
+    if data.reader.seek(pos).is_err() {
         error!("跳转失败");
-        false
+        return false;
     }
-}
+    let _ = data.player_resampler.flush();
+    let _ = data.fft_resampler.flush();
 
-fn try_resample_with_retry(
-    resampler_opt: &mut Option<ffmpeg::software::resampling::context::Context>,
-    decoded: &ffmpeg::frame::Audio,
-    target_format: ffmpeg::format::Sample,
-    target_layout: ChannelLayout,
-    target_rate: u32,
-) -> Option<ffmpeg::frame::Audio> {
-    if let Some(resampler_ctx) = resampler_opt {
-        let output_samples =
-            (decoded.samples() as f64 * target_rate as f64 / decoded.rate() as f64).ceil() as usize;
-
-        let mut output_frame =
-            ffmpeg::frame::Audio::new(target_format, output_samples, target_layout);
-
-        if resampler_ctx.run(decoded, &mut output_frame).is_ok() {
-            return Some(output_frame);
-        }
-
-        match ffmpeg::software::resampling::context::Context::get(
-            decoded.format(),
-            decoded.channel_layout(),
-            decoded.rate(),
-            target_format,
-            target_layout,
-            target_rate,
-        ) {
-            Ok(new_resampler) => {
-                *resampler_ctx = new_resampler;
-                if resampler_ctx.run(decoded, &mut output_frame).is_ok() {
-                    return Some(output_frame);
-                } else {
-                    error!(
-                        "Resampler重建后依然失败。\n期望: fmt={:?} rate={}\n实际: fmt={:?} rate={}",
-                        target_format,
-                        target_rate,
-                        decoded.format(),
-                        decoded.rate()
-                    );
-                }
-            }
-            Err(e) => {
-                error!("无法重建 Resampler: {e}");
-            }
-        }
-    }
-    None
-}
-
-fn resample_frame(
-    data: &mut DecoderInitData,
-    decoded: &mut ffmpeg::frame::Audio,
-    player_buf: &mut Vec<f32>,
-    fft_buf: &mut Vec<f32>,
-) {
-    if decoded.channel_layout().is_empty() {
-        let default_layout = ChannelLayout::default(decoded.channels() as i32);
-        decoded.set_channel_layout(default_layout);
-    }
-
-    if data.resampler.is_some() {
-        let (target_fmt, target_layout, target_rate) = {
-            let ctx = data.resampler.as_ref().unwrap();
-            (
-                ctx.output().format,
-                ctx.output().channel_layout,
-                ctx.output().rate,
-            )
-        };
-
-        if let Some(frame) = try_resample_with_retry(
-            &mut data.resampler,
-            decoded,
-            target_fmt,
-            target_layout,
-            target_rate,
-        ) {
-            interleave_planar_frame(player_buf, &frame, frame.samples());
-        }
-    } else {
-        interleave_planar_frame(player_buf, decoded, decoded.samples());
-    }
-
-    if data.fft_resampler.is_some() {
-        let target_fmt = ffmpeg::format::Sample::F32(ffmpeg::format::sample::Type::Planar);
-        let target_layout = ChannelLayout::MONO;
-        let target_rate = FFT_TARGET_RATE;
-
-        if let Some(frame) = try_resample_with_retry(
-            &mut data.fft_resampler,
-            decoded,
-            target_fmt,
-            target_layout,
-            target_rate,
-        ) {
-            let samples = frame.samples();
-            if samples > 0 {
-                fft_buf.extend_from_slice(&frame.plane::<f32>(0)[..samples]);
-            }
-        }
-    } else {
-        let samples = decoded.samples();
-        if samples > 0 {
-            fft_buf.extend_from_slice(&decoded.plane::<f32>(0)[..samples]);
-        }
-    }
-}
-
-fn create_resampler(
-    source_format: ffmpeg::format::Sample,
-    source_channel_layout: ChannelLayout,
-    source_rate: u32,
-    target_format: ffmpeg::format::Sample,
-    target_channel_layout: ChannelLayout,
-    target_rate: u32,
-) -> anyhow::Result<Option<ffmpeg::software::resampling::context::Context>> {
-    if source_format != target_format
-        || source_channel_layout != target_channel_layout
-        || source_rate != target_rate
-    {
-        let resampler = ffmpeg::software::resampling::context::Context::get(
-            source_format,
-            source_channel_layout,
-            source_rate,
-            target_format,
-            target_channel_layout,
-            target_rate,
-        )?;
-        Ok(Some(resampler))
-    } else {
-        Ok(None)
-    }
-}
-
-fn interleave_planar_frame(
-    sample_buffer: &mut Vec<f32>,
-    frame: &ffmpeg::frame::Audio,
-    samples_written: usize,
-) {
-    if samples_written == 0 {
-        return;
-    }
-    let left_plane = &frame.plane::<f32>(0)[..samples_written];
-
-    if frame.channels() >= 2 {
-        let right_plane = &frame.plane::<f32>(1)[..samples_written];
-        let interleaved_samples = left_plane
-            .iter()
-            .zip(right_plane.iter())
-            .flat_map(|(&l, &r)| [l, r]);
-        sample_buffer.extend(interleaved_samples);
-    } else {
-        sample_buffer.extend(left_plane.iter().cloned());
-    }
+    let mut buffer = shared.buffer.lock();
+    buffer.clear();
+    shared.is_eof.store(false, Ordering::SeqCst);
+    shared.condvar.notify_all();
+    true
 }
 
 impl Iterator for FFmpegDecoder {
