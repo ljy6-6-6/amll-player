@@ -45,10 +45,7 @@ import {
 	currentSongWritersAtom,
 	enableMediaControlsAtom,
 } from "../../states/appAtoms.ts";
-import {
-	SyncStatus,
-	syncLyrics,
-} from "../../utils/lyric-db-api.ts";
+import { SyncStatus, syncLyrics } from "../../utils/lyric-db-api.ts";
 import {
 	type AudioQuality,
 	type AudioThreadEvent,

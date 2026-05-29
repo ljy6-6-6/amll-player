@@ -7,21 +7,9 @@
 		"@typescript/native-preview": "7.0.0-dev.20260527.2"
 	},
 	"scripts": {
-		"format": "pnpm biome format . --write",
-		"typecheck": "pnpm tsgo -b",
+		"format": "biome format . --write",
+		"typecheck": "tsgo -b",
 		"dev": "pnpm -F player tauri dev"
 	},
-	"packageManager": "pnpm@10.33.3",
-	"pnpm": {
-		"onlyBuiltDependencies": [
-			"@applemusic-like-lyrics/fft",
-			"@applemusic-like-lyrics/lyric",
-			"@biomejs/biome",
-			"@parcel/watcher",
-			"@swc/core",
-			"esbuild",
-			"nx",
-			"sharp"
-		]
-	}
+	"packageManager": "pnpm@11.4.0"
 }

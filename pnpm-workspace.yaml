@@ -15,3 +15,8 @@ catalog:
   vite-plugin-babel: ^1.6.0
   vite-plugin-svgr: ^5.2.0
   vite-plugin-wasm: ^3.6.0
+allowBuilds:
+  "@biomejs/biome": true
+  "@parcel/watcher": true
+  "@swc/core": true
+  esbuild: true
