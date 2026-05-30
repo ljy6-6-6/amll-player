@@ -1539,7 +1539,7 @@ dependencies = [
 [[package]]
 name = "ffmpeg_audio"
 version = "0.1.0"
-source = "git+https://github.com/apoint123/ffmpeg-audio.git?rev=8838598a39f201cb2bc1384a41db90470a98b325#8838598a39f201cb2bc1384a41db90470a98b325"
+source = "git+https://github.com/apoint123/ffmpeg-audio.git?rev=c75b50940e07bc97bdf85f80fb7537624fda0313#c75b50940e07bc97bdf85f80fb7537624fda0313"
 dependencies = [
  "ffmpeg_audio_sys",
  "libc",
@@ -1550,7 +1550,7 @@ dependencies = [
 [[package]]
 name = "ffmpeg_audio_sys"
 version = "0.1.0"
-source = "git+https://github.com/apoint123/ffmpeg-audio.git?rev=8838598a39f201cb2bc1384a41db90470a98b325#8838598a39f201cb2bc1384a41db90470a98b325"
+source = "git+https://github.com/apoint123/ffmpeg-audio.git?rev=c75b50940e07bc97bdf85f80fb7537624fda0313#c75b50940e07bc97bdf85f80fb7537624fda0313"
 dependencies = [
  "bindgen",
  "cc",
