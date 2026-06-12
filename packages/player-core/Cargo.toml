@@ -29,9 +29,6 @@ tokio = { version = "^1", features = [
     "rt-multi-thread",
 ] }
 tracing = "0.1"
-easer = "0.3.0"
-dispatch = "0.2.0"
-tauri = "2.6.2"
 parking_lot = "0.12"
 
 ffmpeg_audio = { git = "https://github.com/apoint123/ffmpeg-audio.git", rev = "b77e5edea026712c42d58a9dce68e531b812c63f" }
@@ -40,5 +37,10 @@ tokio-util = "0.7.18"
 
 [dev-dependencies]
 tracing-subscriber = "0.3"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+] }
 
 [build-dependencies]

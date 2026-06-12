@@ -135,8 +135,6 @@ dependencies = [
  "cpal",
  "crossbeam-channel",
  "crossbeam-utils",
- "dispatch",
- "easer",
  "ffmpeg_audio",
  "futures",
  "md5",
@@ -148,11 +146,11 @@ dependencies = [
  "serde",
  "serde_json",
  "spectrum-analyzer",
- "tauri",
  "tokio",
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -1259,12 +1257,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dispatch"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd0c93bb4b0c6d9b77f4435b0ae98c24d17f1c45b2ff844c6151a07256ca923b"
-
-[[package]]
 name = "dispatch2"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1384,15 +1376,6 @@ name = "dyn-clone"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
-
-[[package]]
-name = "easer"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fba524f8b83c9c5bde02c2bb1627de9d1f81980489a6d54168cdfd08c258f917"
-dependencies = [
- "num-traits",
-]
 
 [[package]]
 name = "either"
@@ -3039,7 +3022,7 @@ dependencies = [
 [[package]]
 name = "now-playing-controls"
 version = "0.1.0"
-source = "git+https://github.com/apoint123/now-playing-controls.git#a92db46661dbe3155e382a734ae046fe34e183b9"
+source = "git+https://github.com/apoint123/now-playing-controls.git#8237429431ca57285ed52c71216fafef2ef3378f"
 dependencies = [
  "anyhow",
  "block2",

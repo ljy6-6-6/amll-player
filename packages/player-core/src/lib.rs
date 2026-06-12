@@ -11,6 +11,7 @@ mod fft_player;
 mod media_controls;
 mod player;
 pub mod utils;
+pub use now_playing_controls::model::NowPlayingOptions;
 pub use player::*;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

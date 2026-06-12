@@ -597,6 +597,11 @@ pub fn run() {
                 }
             }
 
+            #[cfg(not(mobile))]
+            {
+                tauri::async_runtime::block_on(recreate_window(app.handle(), "main", None));
+            }
+
             player::init_local_player(app.handle().clone());
 
             #[cfg(target_os = "windows")]
@@ -627,10 +632,6 @@ pub fn run() {
             app.manage::<AMLLWebSocketServerWrapper>(RwLock::new(AMLLWebSocketServer::new(
                 app.handle().clone(),
             )));
-            #[cfg(not(mobile))]
-            {
-                tauri::async_runtime::block_on(recreate_window(app.handle(), "main", None));
-            }
             Ok(())
         })
         .on_window_event(|_window, _event| {

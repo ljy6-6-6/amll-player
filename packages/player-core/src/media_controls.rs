@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::mpsc::UnboundedReceiver;
 use tracing::warn;
@@ -7,83 +8,104 @@ use crate::{
     AudioInfo, AudioPlayerEventSender, AudioPlayerHandle, AudioThreadEvent,
     AudioThreadEventMessage, AudioThreadMessage,
 };
+use now_playing_controls::NowPlayingSession;
 use now_playing_controls::model::{
-    MetadataPayload, PlayStatePayload, PlaybackStatus, SystemMediaEvent, SystemMediaEventType,
-    TimelinePayload,
+    MetadataPayload, NowPlayingOptions, PlayStatePayload, PlaybackStatus, SystemMediaEvent,
+    SystemMediaEventType, TimelinePayload,
 };
 
-pub struct SystemMediaManager {}
+pub struct SystemMediaManager {
+    session: Option<NowPlayingSession>,
+    _dummy_tx: Option<tokio::sync::mpsc::UnboundedSender<SystemMediaEvent>>,
+}
 
 impl SystemMediaManager {
-    pub fn new() -> (Self, Option<UnboundedReceiver<SystemMediaEvent>>) {
-        let npc_event_rx = match now_playing_controls::initialize() {
-            Ok(()) => {
-                let (npc_tx, npc_rx) = tokio::sync::mpsc::unbounded_channel();
-                if let Err(e) = now_playing_controls::register_event_handler(Arc::new(
-                    move |event: SystemMediaEvent| {
-                        let _ = npc_tx.send(event);
-                    },
-                )) {
-                    warn!("注册系统媒体控件事件处理器失败：{e:?}");
-                }
-                if let Err(e) = now_playing_controls::enable_system_media() {
-                    warn!("启用系统媒体控件失败：{e:?}");
-                }
-                Some(npc_rx)
-            }
-            Err(err) => {
-                warn!("初始化系统媒体控件时出错：{err:?}");
-                None
-            }
-        };
+    pub fn spawn(
+        options: Option<NowPlayingOptions>,
+    ) -> (Self, UnboundedReceiver<SystemMediaEvent>) {
+        if let Some(opt) = options {
+            let (npc_tx, npc_rx) = tokio::sync::mpsc::unbounded_channel();
+            let callback: now_playing_controls::EventCallback = Arc::new(move |event| {
+                let _ = npc_tx.send(event);
+            });
 
-        (Self {}, npc_event_rx)
+            match NowPlayingSession::new(opt, callback) {
+                Ok(session) => {
+                    session.enable_system_media();
+                    return (
+                        Self {
+                            session: Some(session),
+                            _dummy_tx: None,
+                        },
+                        npc_rx,
+                    );
+                }
+                Err(e) => {
+                    warn!("初始化系统媒体控件失败: {e:?}");
+                }
+            }
+        }
+
+        let (dummy_tx, dummy_rx) = tokio::sync::mpsc::unbounded_channel();
+        (
+            Self {
+                session: None,
+                _dummy_tx: Some(dummy_tx),
+            },
+            dummy_rx,
+        )
     }
 
     pub fn update_metadata(&self, audio_info: &AudioInfo) {
-        now_playing_controls::update_metadata(MetadataPayload {
-            song_name: audio_info.name.clone(),
-            author_name: audio_info.artist.clone(),
-            album_name: audio_info.album.clone(),
-            cover_data: audio_info.cover.clone(),
-            original_cover_url: None,
-            genre: Vec::new(),
-            track_id: None,
-            discord_button_url: None,
-            duration: Some(audio_info.duration * 1000.0),
-        });
+        if let Some(session) = &self.session {
+            session.update_metadata(MetadataPayload {
+                song_name: audio_info.name.clone(),
+                author_name: audio_info.artist.clone(),
+                album_name: audio_info.album.clone(),
+                cover_data: audio_info.cover.clone(),
+                original_cover_url: None,
+                genre: Vec::new(),
+                track_id: None,
+                discord_buttons: None,
+                duration: Some(Duration::from_secs_f64(audio_info.duration)),
+            });
+        }
     }
 
     pub fn update_play_state(&self, is_playing: bool) {
-        now_playing_controls::update_play_state(PlayStatePayload {
-            status: if is_playing {
-                PlaybackStatus::Playing
-            } else {
-                PlaybackStatus::Paused
-            },
-        });
+        if let Some(session) = &self.session {
+            session.update_play_state(PlayStatePayload {
+                status: if is_playing {
+                    PlaybackStatus::Playing
+                } else {
+                    PlaybackStatus::Paused
+                },
+            });
+        }
     }
 
     pub fn update_timeline(&self, current_time_sec: f64, total_time_sec: f64) {
-        now_playing_controls::update_timeline(TimelinePayload {
-            current_time: current_time_sec * 1000.0,
-            total_time: total_time_sec * 1000.0,
-            seeked: None,
-        });
+        if let Some(session) = &self.session {
+            session.update_timeline(TimelinePayload {
+                current_time: Duration::from_secs_f64(current_time_sec),
+                total_time: Duration::from_secs_f64(total_time_sec),
+                seeked: None,
+            });
+        }
     }
 
     pub fn update_playback_rate(&self, rate: f64) {
-        now_playing_controls::update_playback_rate(rate);
+        if let Some(session) = &self.session {
+            session.update_playback_rate(rate);
+        }
     }
 
     pub fn set_enabled(&self, enabled: bool) {
-        if enabled {
-            if let Err(e) = now_playing_controls::enable_system_media() {
-                warn!("启用系统媒体控件失败: {e:?}");
-            }
-        } else {
-            if let Err(e) = now_playing_controls::disable_system_media() {
-                warn!("禁用系统媒体控件失败: {e:?}");
+        if let Some(session) = &self.session {
+            if enabled {
+                session.enable_system_media();
+            } else {
+                session.disable_system_media();
             }
         }
     }
@@ -124,10 +146,10 @@ impl SystemMediaManager {
                 event_sender.send(evt).map_err(anyhow::Error::from)
             }
             SystemMediaEventType::Seek => {
-                if let Some(pos_ms) = event.position_ms {
+                if let Some(pos) = event.position {
                     player_handler
                         .send_anonymous(AudioThreadMessage::SeekAudio {
-                            position: pos_ms / 1000.0,
+                            position: pos.as_secs_f64(),
                         })
                         .await
                 } else {
@@ -172,11 +194,5 @@ impl SystemMediaManager {
         if let Err(e) = result {
             warn!("处理系统媒体控件事件失败: {e:?}");
         }
-    }
-}
-
-impl Drop for SystemMediaManager {
-    fn drop(&mut self) {
-        now_playing_controls::shutdown();
     }
 }

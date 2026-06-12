@@ -2,8 +2,57 @@
 
 use amll_player_core::{
     AudioPlayer, AudioPlayerConfig, AudioThreadEvent, AudioThreadEventMessage, AudioThreadMessage,
-    SongData,
+    NowPlayingOptions, SongData,
 };
+
+#[cfg(target_os = "windows")]
+fn create_message_hwnd() -> Option<isize> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DefWindowProcW, RegisterClassW, WINDOW_EX_STYLE, WINDOW_STYLE, WNDCLASSW,
+    };
+    use windows::core::w;
+
+    unsafe extern "system" fn wnd_proc(
+        hwnd: windows::Win32::Foundation::HWND,
+        msg: u32,
+        wparam: windows::Win32::Foundation::WPARAM,
+        lparam: windows::Win32::Foundation::LPARAM,
+    ) -> windows::Win32::Foundation::LRESULT {
+        unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+    }
+
+    unsafe {
+        let class_name = w!("AMLLPlayerMessageWindow");
+        let wc = WNDCLASSW {
+            lpfnWndProc: Some(wnd_proc),
+            lpszClassName: class_name,
+            ..Default::default()
+        };
+        RegisterClassW(&wc);
+
+        let result = CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            class_name,
+            w!(""),
+            WINDOW_STYLE::default(),
+            0,
+            0,
+            0,
+            0,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        result.ok().map(|h| h.0 as isize)
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn create_message_hwnd() -> Option<isize> {
+    None
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -17,10 +66,21 @@ async fn main() -> anyhow::Result<()> {
     };
     let file_path = file_path.to_str().unwrap().to_string();
 
+    let media_controls_options = NowPlayingOptions {
+        hwnd: create_message_hwnd(),
+        discord: None,
+        app_name: Some("AMLL Player".into()),
+    };
+
     let (evt_sender, mut evt_receiver) =
         tokio::sync::mpsc::unbounded_channel::<AudioThreadEventMessage<AudioThreadEvent>>();
 
-    let player = AudioPlayer::new(AudioPlayerConfig {}, evt_sender)?;
+    let player = AudioPlayer::new(
+        AudioPlayerConfig {
+            media_controls_options,
+        },
+        evt_sender,
+    )?;
     let handler = player.handler();
 
     handler

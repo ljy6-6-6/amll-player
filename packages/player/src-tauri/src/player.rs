@@ -2,8 +2,8 @@ use std::sync::LazyLock;
 
 use amll_player_core::AudioThreadEventMessage;
 use amll_player_core::AudioThreadMessage;
-use amll_player_core::{AudioPlayer, AudioPlayerConfig, AudioPlayerHandle};
-use tauri::{AppHandle, Emitter, Runtime};
+use amll_player_core::{AudioPlayer, AudioPlayerConfig, AudioPlayerHandle, NowPlayingOptions};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::sync::RwLock;
 use tracing::error;
 use tracing::warn;
@@ -67,7 +67,13 @@ pub fn init_local_player<R: Runtime>(app: AppHandle<R>) {
 async fn local_player_main<R: Runtime>(app: AppHandle<R>) {
     let (evt_tx, mut evt_rx) = tokio::sync::mpsc::unbounded_channel();
 
-    let player = match AudioPlayer::new(AudioPlayerConfig {}, evt_tx) {
+    let media_controls_options = get_media_controls_options(&app);
+
+    let config = AudioPlayerConfig {
+        media_controls_options,
+    };
+
+    let player = match AudioPlayer::new(config, evt_tx) {
         Ok(p) => p,
         Err(e) => {
             error!("初始化 Cpal 音频设备失败: {e:?}");
@@ -88,4 +94,21 @@ async fn local_player_main<R: Runtime>(app: AppHandle<R>) {
     });
 
     player.run().await;
+}
+
+fn get_media_controls_options<R: Runtime>(app: &AppHandle<R>) -> NowPlayingOptions {
+    #[cfg(target_os = "windows")]
+    let hwnd = app
+        .get_webview_window("main")
+        .and_then(|win| win.hwnd().ok())
+        .map(|h| h.0 as isize);
+
+    #[cfg(not(target_os = "windows"))]
+    let hwnd = None;
+
+    NowPlayingOptions {
+        hwnd,
+        discord: None,
+        app_name: Some("AMLL Player".into()),
+    }
 }

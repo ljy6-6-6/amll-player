@@ -17,7 +17,7 @@ use crate::{
 };
 use anyhow::Context;
 use cpal::traits::{DeviceTrait as _, HostTrait as _, StreamTrait as _};
-use now_playing_controls::model::SystemMediaEvent;
+use now_playing_controls::model::{NowPlayingOptions, SystemMediaEvent};
 use parking_lot::RwLock as ParkingLotRwLock;
 use ringbuf::traits::Consumer;
 use serde::{Deserialize, Serialize};
@@ -49,7 +49,7 @@ pub struct AudioPlayer {
     current_audio_info: Arc<TokioRwLock<AudioInfo>>,
     current_audio_quality: Arc<TokioRwLock<AudioQuality>>,
     playback_state: Arc<ParkingLotRwLock<PlaybackState>>,
-    npc_event_rx: Option<UnboundedReceiver<SystemMediaEvent>>,
+    npc_event_rx: UnboundedReceiver<SystemMediaEvent>,
     fft_player: Arc<ParkingLotRwLock<FFTPlayer>>,
     custom_song_loader: Option<Arc<CustomSongLoaderFn>>,
 }
@@ -111,11 +111,13 @@ pub type CustomSongLoaderReturn =
     Box<dyn futures::Future<Output = anyhow::Result<Box<dyn CustomMediaSource>>> + Send + Unpin>;
 pub type CustomSongLoaderFn = Box<dyn Fn(String) -> CustomSongLoaderReturn + Send + Sync>;
 
-pub struct AudioPlayerConfig {}
+pub struct AudioPlayerConfig {
+    pub media_controls_options: NowPlayingOptions,
+}
 
 impl AudioPlayer {
     pub fn new(
-        _config: AudioPlayerConfig,
+        config: AudioPlayerConfig,
         evt_sender: AudioPlayerEventSender,
     ) -> anyhow::Result<Self> {
         let (msg_sender, msg_receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -143,8 +145,9 @@ impl AudioPlayer {
         let playback_state = Arc::new(ParkingLotRwLock::new(PlaybackState::default()));
         let cpal_state = CpalCallbackState::default();
 
-        let (manager, npc_event_rx) = SystemMediaManager::new();
-        let media_manager = Arc::new(manager);
+        let (manager_instance, npc_event_rx) =
+            SystemMediaManager::spawn(Some(config.media_controls_options));
+        let media_manager = Arc::new(manager_instance);
 
         let (is_playing_tx, is_playing_rx) = watch::channel(false);
         let mut is_playing_rx_for_timeline = is_playing_rx.clone();
@@ -254,14 +257,6 @@ impl AudioPlayer {
         let mut check_end_interval = tokio::time::interval(Duration::from_millis(50));
 
         loop {
-            let npc_event_fut = async {
-                if let Some(rx) = self.npc_event_rx.as_mut() {
-                    rx.recv().await
-                } else {
-                    futures::future::pending().await
-                }
-            };
-
             tokio::select! {
                 biased;
                 msg = self.msg_receiver.recv() => {
@@ -272,11 +267,11 @@ impl AudioPlayer {
                         }
                     } else { break; }
                 },
-                msg = npc_event_fut => {
+                msg = self.npc_event_rx.recv() => {
                     if let Some(event) = msg {
-                        self.media_manager.handle_event(event, &self.handler(), &self.evt_sender).await;
-                    } else {
-                        self.npc_event_rx = None;
+                        self.media_manager
+                            .handle_event(event, &self.handler(), &self.evt_sender)
+                            .await;
                     }
                 },
                 _ = check_end_interval.tick() => {
