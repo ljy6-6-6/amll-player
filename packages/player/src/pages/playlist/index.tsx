@@ -208,7 +208,7 @@ export const Component: FC = () => {
 								"page.playlist.addLocalMusic.toast.parsingMusicMetadata",
 								"正在解析音乐元数据以添加歌曲 ({current, plural, other {#}} / {total, plural, other {#}})",
 								{
-									current: 0,
+									current,
 									total: results.length,
 								},
 							),
