@@ -506,6 +506,7 @@ jobs:
         env:
           AMLL_GITHUB_IS_ACTION: true
           SKIP_FRONTEND_BUILD: true
+          CI: true
 
       - name: 压包并生成无签名版 .ipa
         run: |
