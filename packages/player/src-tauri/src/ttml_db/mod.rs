@@ -1,3 +1,4 @@
+pub mod commands;
 pub mod model;
 pub mod reader;
 pub mod sync;
@@ -10,6 +11,8 @@ use tauri::AppHandle;
 use tauri::Manager;
 use tauri::path::BaseDirectory;
 use tokio::sync::RwLock;
+
+pub use commands::*;
 
 use self::reader::TtmlDbReader;
 

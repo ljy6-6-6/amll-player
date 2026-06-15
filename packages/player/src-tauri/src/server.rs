@@ -4,7 +4,7 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 use futures::prelude::*;
 use futures::stream::SplitSink;
 use tauri::ipc::Channel;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, State};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock as TokioRwLock;
 use tokio::task::JoinHandle;
@@ -14,6 +14,43 @@ use tracing::*;
 use ws_protocol::{v1, v2};
 
 type Connections = Arc<TokioRwLock<HashMap<SocketAddr, ConnectionInfo>>>;
+
+pub type AMLLWebSocketServerWrapper = TokioRwLock<AMLLWebSocketServer>;
+pub type AMLLWebSocketServerState<'r> = State<'r, AMLLWebSocketServerWrapper>;
+
+#[tauri::command]
+pub async fn ws_reopen_connection(
+    addr: &str,
+    ws: AMLLWebSocketServerState<'_>,
+    channel: Channel<ws_protocol::v2::Payload>,
+) -> Result<(), String> {
+    ws.write().await.reopen(addr.to_string(), channel);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn ws_close_connection(ws: AMLLWebSocketServerState<'_>) -> Result<(), String> {
+    ws.write().await.close().await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn ws_get_connections(
+    ws: AMLLWebSocketServerState<'_>,
+) -> Result<Vec<SocketAddr>, String> {
+    let server_guard = ws.read().await;
+    let connections = server_guard.get_connections().await;
+    Ok(connections)
+}
+
+#[tauri::command]
+pub async fn ws_broadcast_payload(
+    ws: AMLLWebSocketServerState<'_>,
+    payload: ws_protocol::v2::Payload,
+) -> Result<(), String> {
+    ws.write().await.broadcast_payload(payload).await;
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProtocolType {

@@ -6,32 +6,24 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 #[cfg(target_os = "android")]
 pub(crate) static ANDROID_NDK_READY: std::sync::OnceLock<()> = std::sync::OnceLock::new();
 
-use std::net::SocketAddr;
-
-use amll_player_core::AudioInfo;
-use anyhow::Context;
-use ffmpeg_audio::AudioReader;
-use serde::*;
-#[cfg(not(mobile))]
 use serde_json::Value;
-use tauri::{
-    AppHandle, Emitter, Manager, Runtime, State, WebviewWindowBuilder, ipc::Channel,
-    path::BaseDirectory,
-};
-#[cfg(desktop)]
-use tauri::{PhysicalSize, Size, utils::config::WindowEffectsConfig, window::Effect};
+use tauri::{AppHandle, Emitter, Manager, Runtime, path::BaseDirectory};
 use tokio::sync::RwLock;
 use tracing::*;
 
 use crate::server::AMLLWebSocketServer;
+use crate::server::AMLLWebSocketServerWrapper;
 
 mod db;
 mod db_events;
+mod logging;
+mod music_info;
 mod player;
 mod screen_capture;
 mod server;
 mod ttml_db;
 mod utils;
+mod window;
 
 #[cfg(desktop)]
 mod extension_window;
@@ -41,453 +33,157 @@ mod taskbar_lyric;
 #[cfg(target_os = "windows")]
 mod theme_watcher;
 
-pub type AMLLWebSocketServerWrapper = RwLock<AMLLWebSocketServer>;
-pub type AMLLWebSocketServerState<'r> = State<'r, AMLLWebSocketServerWrapper>;
-
-// Learn more about Tauri commands at https://tauri.app/v1/guides/features/command
-#[tauri::command]
-async fn ws_reopen_connection(
-    addr: &str,
-    ws: AMLLWebSocketServerState<'_>,
-    channel: Channel<ws_protocol::v2::Payload>,
-) -> Result<(), String> {
-    ws.write().await.reopen(addr.to_string(), channel);
-    Ok(())
-}
-
-#[tauri::command]
-async fn ws_close_connection(ws: AMLLWebSocketServerState<'_>) -> Result<(), String> {
-    ws.write().await.close().await;
-    Ok(())
-}
-
-#[tauri::command]
-async fn ws_get_connections(ws: AMLLWebSocketServerState<'_>) -> Result<Vec<SocketAddr>, String> {
-    let server_guard = ws.read().await;
-    let connections = server_guard.get_connections().await;
-    Ok(connections)
-}
-
-#[tauri::command]
-async fn ws_broadcast_payload(
-    ws: AMLLWebSocketServerState<'_>,
-    payload: ws_protocol::v2::Payload,
-) -> Result<(), String> {
-    ws.write().await.broadcast_payload(payload).await;
-    Ok(())
-}
-
 #[tauri::command]
 fn restart_app<R: Runtime>(app: AppHandle<R>) {
     tauri::process::restart(&app.env())
 }
 
-#[cfg(target_os = "windows")]
-#[tauri::command]
-fn set_window_always_on_top<R: Runtime>(enabled: bool, app: AppHandle<R>) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("main") {
-        window.set_always_on_top(enabled).map_err(|e| e.to_string())
-    } else {
-        Err("Main window not found.".to_string())
-    }
-}
-
-#[derive(Default, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MusicInfo {
-    pub name: String,
-    pub artist: String,
-    pub album: String,
-    pub lyric_format: String,
-    pub lyric: String,
-    pub cover_path: String,
-    pub duration: f64,
-}
-
-impl MusicInfo {
-    fn from_audio_info(v: AudioInfo, cover_path: String) -> Self {
-        Self {
-            name: v.name,
-            artist: v.artist,
-            album: v.album,
-            lyric_format: if v.lyric.is_empty() {
-                "".into()
-            } else {
-                "lrc".into()
-            },
-            lyric: v.lyric,
-            cover_path,
-            duration: v.duration,
-        }
-    }
-}
-
-#[tauri::command]
-async fn resolve_content_uri(
-    file_path: tauri_plugin_fs::FilePath,
-    fs: State<'_, tauri_plugin_fs::Fs<tauri::Wry>>,
-    app: AppHandle,
-) -> Result<String, String> {
-    // If it's already a real filesystem path, return it directly
-    if let Some(p) = file_path.as_path() {
-        return Ok(p.to_string_lossy().into_owned());
-    }
-
-    // For content:// URIs (Android), use the fs plugin to open via ContentResolver,
-    // then copy to app data dir so FFmpeg can access the real file path.
-    let uri_string = match &file_path {
-        tauri_plugin_fs::FilePath::Url(u) => u.to_string(),
-        tauri_plugin_fs::FilePath::Path(p) => p.to_string_lossy().into_owned(),
-    };
-
-    // Determine file extension from URI
-    let ext = uri_string
-        .rsplit('/')
-        .next()
-        .and_then(|segment| {
-            let decoded = urlencoding::decode(segment).unwrap_or(segment.into());
-            let name = decoded.rsplit('/').next().unwrap_or(&decoded);
-            name.rsplit('.').next().map(|e| e.to_lowercase())
-        })
-        .filter(|e| {
-            ["mp3", "flac", "wav", "m4a", "aac", "ogg", "wma", "opus"].contains(&e.as_str())
-        })
-        .unwrap_or_else(|| "audio".to_string());
-
-    // Create a hash-based filename to avoid duplicates
-    let uri_hash = format!("{:x}", md5::compute(uri_string.as_bytes()));
-    let filename = format!("{uri_hash}.{ext}");
-
-    // Build target directory: app_data_dir/music_cache/
-    let data_dir = app
+fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let log_dir = app
+        .handle()
         .path()
-        .resolve("music_cache", BaseDirectory::AppData)
-        .map_err(|e| format!("Failed to resolve app data dir: {e}"))?;
-    std::fs::create_dir_all(&data_dir)
-        .map_err(|e| format!("Failed to create music_cache dir: {e}"))?;
+        .resolve("logs", BaseDirectory::AppData)
+        .expect("failed to resolve app data dir");
+    let log_guard = logging::init_logging(&log_dir);
+    app.manage(log_guard);
+    info!("AMLL Player is starting!");
 
-    let target_path = data_dir.join(&filename);
-
-    // If already cached, return directly
-    if target_path.exists() {
-        return Ok(target_path.to_string_lossy().into_owned());
-    }
-
-    // Open the content:// URI via tauri-plugin-fs (uses ContentResolver on Android)
-    let mut open_opts = tauri_plugin_fs::OpenOptions::new();
-    open_opts.read(true);
-    let mut src_file = fs
-        .open(file_path, open_opts)
-        .map_err(|e| format!("Failed to open content URI: {e}"))?;
-
-    let mut dst_file = std::fs::File::create(&target_path)
-        .map_err(|e| format!("Failed to create cache file: {e}"))?;
-
-    std::io::copy(&mut src_file, &mut dst_file).map_err(|e| {
-        // Clean up partial file on failure
-        let _ = std::fs::remove_file(&target_path);
-        format!("Failed to copy file: {e}")
-    })?;
-
-    info!("Resolved content URI to: {}", target_path.display());
-    Ok(target_path.to_string_lossy().into_owned())
-}
-
-#[tauri::command]
-async fn read_local_music_metadata(
-    file_path: tauri_plugin_fs::FilePath,
-    fs: State<'_, tauri_plugin_fs::Fs<tauri::Wry>>,
-    app: AppHandle,
-) -> Result<MusicInfo, String> {
-    let path_clone = file_path
-        .as_path()
-        .context("Invalid file path")
-        .map_err(|e| e.to_string())?
-        .to_path_buf();
-
-    let audio_info = tokio::task::spawn_blocking(move || -> anyhow::Result<AudioInfo> {
-        let file = std::fs::File::open(&path_clone)
-            .with_context(|| format!("无法打开文件: {}", path_clone.display()))?;
-        let reader = AudioReader::new(file)
-            .with_context(|| format!("无法初始化音频解码器: {}", path_clone.display()))?;
-        let info = amll_player_core::utils::build_audio_info(&reader);
-        Ok(info)
-    })
-    .await
-    .map_err(|e| e.to_string())?
-    .map_err(|e| e.to_string())?;
-
-    let cover_bytes = audio_info.cover.clone().unwrap_or_default();
-    let song_id = format!(
-        "{:x}",
-        md5::compute(
-            file_path
-                .as_path()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default()
-                .as_bytes(),
-        )
-    );
-
-    let cover_path = if !cover_bytes.is_empty() {
-        let covers_dir = crate::db::utils::get_covers_dir(&app)?;
-        std::fs::create_dir_all(&covers_dir)
-            .map_err(|e| format!("Failed to create covers dir: {e}"))?;
-        let cover_file = covers_dir.join(format!("{song_id}.jpg"));
-        std::fs::write(&cover_file, &cover_bytes)
-            .map_err(|e| format!("Failed to save cover: {e}"))?;
-        cover_file.to_string_lossy().to_string()
-    } else {
-        String::new()
-    };
-
-    let mut music_info = MusicInfo::from_audio_info(audio_info, cover_path);
-
-    if let Some(file_path_ref) = file_path.as_path()
-        && music_info.lyric.is_empty()
+    #[cfg(target_os = "ios")]
     {
-        const LYRIC_FILE_EXTENSIONS: &[&str] = &["ttml", "lys", "yrc", "qrc", "eslrc", "lrc"];
-        for ext in LYRIC_FILE_EXTENSIONS {
-            let lyric_file_path = file_path_ref.with_extension(ext);
-            if lyric_file_path.exists() {
-                if let Ok(lyric) = fs.read_to_string(&lyric_file_path) {
-                    music_info.lyric_format = ext.to_string();
-                    music_info.lyric = lyric;
-                    break;
-                } else {
-                    warn!("歌词文件存在但读取失败: {}", lyric_file_path.display());
-                }
-            }
+        use objc2::msg_send;
+        use objc2_avf_audio::AVAudioSession;
+        use objc2_foundation::ns_string;
+
+        info!("Initializing iOS AVAudioSession Category to Playback...");
+        unsafe {
+            let session = AVAudioSession::sharedInstance();
+            let category = ns_string!("AVAudioSessionCategoryPlayback");
+
+            let _: () = msg_send![&session, setCategory: category, error: std::ptr::null_mut::<*mut *mut objc2_foundation::NSError>()];
+
+            let _: bool = msg_send![&session, setActive: true, error: std::ptr::null_mut::<*mut *mut objc2_foundation::NSError>()];
+        }
+        info!("iOS AVAudioSession Category set to Playback successfully!");
+    }
+    #[cfg(target_os = "android")]
+    {
+        if let Some(webview) = app.get_webview_window("main") {
+            let _ = webview.with_webview(|webview| {
+                // with_webview is dispatched to the Android UI thread (async).
+                // After initialize_android_context we set ANDROID_NDK_READY so
+                // the audio thread (which spins on it) can proceed safely.
+                webview.jni_handle().exec(|env, context, _webview| {
+                    let vm = env.get_java_vm().expect("Failed to get JavaVM");
+                    unsafe {
+                        ndk_context::initialize_android_context(
+                            vm.get_java_vm_pointer() as *mut _,
+                            context.as_raw() as *mut _,
+                        );
+                    }
+
+                    ANDROID_NDK_READY.get_or_init(|| ());
+                    info!("Android NDK context initialized.");
+                });
+            });
+        } else {
+            // Webview not available yet at setup time; signal anyway so the
+            // audio thread doesn't block forever (best-effort fallback).
+            warn!("Main webview not found at setup time; signalling NDK ready without init.");
+            ANDROID_NDK_READY.get_or_init(|| ());
         }
     }
 
-    Ok(music_info)
-}
+    #[cfg(not(mobile))]
+    {
+        tauri::async_runtime::block_on(window::recreate_window(app.handle(), "main", None));
+    }
 
-#[tauri::command]
-async fn save_cover_from_path(
-    song_id: String,
-    source_path: String,
-    app: AppHandle,
-) -> Result<String, String> {
-    let covers_dir = crate::db::utils::get_covers_dir(&app)?;
-    std::fs::create_dir_all(&covers_dir)
-        .map_err(|e| format!("Failed to create covers dir: {e}"))?;
+    player::init_local_player(app.handle().clone());
 
-    let source = std::path::Path::new(&source_path);
-    let ext = crate::utils::cover_ext_for_path(source);
-    let cover_file = covers_dir.join(format!("{song_id}.{ext}"));
+    let db_conn = tauri::async_runtime::block_on(db::init_database(app.handle()))
+        .expect("Failed to initialize database");
+    app.manage(db_conn);
 
-    std::fs::copy(source, &cover_file).map_err(|e| format!("Failed to copy cover: {e}"))?;
-
-    Ok(cover_file.to_string_lossy().to_string())
-}
-
-async fn create_common_win<'a>(
-    app: &'a AppHandle,
-    url: tauri::WebviewUrl,
-    label: &str,
-) -> tauri::WebviewWindowBuilder<'a, tauri::Wry, AppHandle> {
-    let win = WebviewWindowBuilder::new(app, label, url);
-    #[cfg(target_os = "windows")]
-    let win = win.transparent(true);
-    #[cfg(not(desktop))]
-    let win = win;
-
-    #[cfg(desktop)]
-    let win = win
-        .center()
-        .inner_size(800.0, 600.0)
-        .effects(WindowEffectsConfig {
-            effects: vec![Effect::Tabbed, Effect::Mica],
-            ..Default::default()
-        })
-        .theme(None)
-        .title({
-            #[cfg(target_os = "macos")]
-            {
-                ""
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                "AMLL Player"
-            }
-        })
-        .visible({
-            #[cfg(target_os = "macos")]
-            {
-                true
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                false
-            }
-        })
-        .decorations({
-            #[cfg(target_os = "macos")]
-            {
-                true
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                false
+    {
+        let db_ref = app.state::<db::DbConnection>().inner().clone();
+        let gc_app = app.handle().clone();
+        tauri::async_runtime::spawn(async move {
+            match db::cleanup::run_cover_gc(&db_ref, &gc_app).await {
+                Ok(result) if result.deleted > 0 => {
+                    info!(
+                        "[Startup] Cover GC: scanned {}, deleted {} orphaned covers",
+                        result.total_scanned, result.deleted
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => warn!("[Startup] Cover GC failed: {e}"),
             }
         });
-
-    #[cfg(target_os = "macos")]
-    let win = win.title_bar_style(tauri::TitleBarStyle::Overlay);
-
-    win
-}
-
-async fn recreate_window(app: &AppHandle, label: &str, path: Option<&str>) {
-    info!("Recreating window: {}", label);
-    if let Some(win) = app.get_webview_window(label) {
-        #[cfg(desktop)]
-        {
-            let _ = win.show();
-            let _ = win.set_focus();
-        }
-        #[cfg(not(desktop))]
-        let _ = win;
-        return;
     }
-    #[cfg(debug_assertions)]
-    let url = {
-        tauri::WebviewUrl::External(
-            app.config()
-                .build
-                .dev_url
-                .clone()
-                .unwrap()
-                .join(path.unwrap_or(""))
-                .expect("Failed to create external URL"),
-        )
-    };
-    #[cfg(not(debug_assertions))]
-    let url = tauri::WebviewUrl::App(path.unwrap_or("index.html").into());
-    let win = create_common_win(app, url, label).await;
 
-    let win = win.build().expect("can't show original window");
+    let app_handle = app.handle().clone();
+    let mut rx = db_events::DB_EVENT_SENDER.subscribe();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    let _ = app_handle.emit("db-row-changed", &event);
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    warn!("DB event broadcast lagged, {skipped} events dropped");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+
+    #[cfg(target_os = "windows")]
+    app.manage(taskbar_lyric::TaskbarLyricState::default());
+
+    #[cfg(target_os = "windows")]
+    {
+        match theme_watcher::ThemeWatcher::new(app.handle().clone()) {
+            Ok(watcher) => {
+                app.manage(watcher);
+            }
+            Err(e) => {
+                warn!("启动系统主题监听失败: {e}");
+            }
+        }
+    }
 
     #[cfg(desktop)]
-    {
-        let _ = win.set_focus();
-        if let Ok(orig_size) = win.inner_size() {
-            let _ = win.set_size(Size::Physical(PhysicalSize::new(0, 0)));
-            let _ = win.set_size(orig_size);
-        }
-    }
-    #[cfg(not(desktop))]
-    let _ = win;
+    let _ = app
+        .handle()
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build());
 
-    info!("Created window: {}", label);
+    app.manage(ttml_db::create_shared_reader());
+
+    #[cfg(desktop)]
+    app.manage(extension_window::ExtensionWindowState::default());
+
+    app.manage::<AMLLWebSocketServerWrapper>(RwLock::new(AMLLWebSocketServer::new(
+        app.handle().clone(),
+    )));
+    Ok(())
 }
 
-#[tauri::command]
-async fn open_screenshot_window(app: AppHandle) {
-    recreate_window(&app, "screenshot", Some("screenshot.html")).await;
-}
-
-#[tauri::command]
-async fn sync_lyrics(
-    app: AppHandle,
-    reader_state: State<'_, ttml_db::LyricDbReader>,
-) -> Result<ttml_db::model::SyncResult, String> {
-    let data_dir = ttml_db::get_lyric_db_dir(&app)?;
-    std::fs::create_dir_all(&data_dir)
-        .map_err(|e| format!("Failed to create lyric-db dir: {e}"))?;
-
-    let mut syncer = ttml_db::sync::LyricSyncer::new(data_dir);
-    let result = syncer.sync().await.map_err(|e| format!("{:#}", e))?;
-
-    if result.status == ttml_db::model::SyncStatus::Updated {
-        let index_file = ttml_db::get_index_file_path(&app)?;
-        if index_file.exists() {
-            let _ = ttml_db::refresh_shared_reader(&reader_state, &index_file).await;
+fn handle_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
+    #[cfg(desktop)]
+    if let tauri::WindowEvent::Destroyed = event {
+        extension_window::cleanup_destroyed_window(window.app_handle(), window.label());
+        if window.label() == "main" {
+            extension_window::destroy_all_extension_windows(window.app_handle());
         }
     }
 
-    Ok(result)
-}
-
-#[tauri::command]
-async fn search_lyrics(
-    app: AppHandle,
-    reader_state: State<'_, ttml_db::LyricDbReader>,
-    filters: Vec<ttml_db::model::SearchFilter>,
-) -> Result<Vec<ttml_db::model::LyricSearchResult>, String> {
-    let index_file = ttml_db::get_index_file_path(&app)?;
-
-    if !index_file.exists() {
-        return Ok(Vec::new());
-    }
-
-    ttml_db::get_or_create_reader(&reader_state, &index_file).await?;
-
-    let reader_guard = reader_state.read().await;
-    let reader = reader_guard
-        .as_ref()
-        .ok_or_else(|| "Reader not initialized".to_string())?;
-
-    Ok(reader.search(&filters))
-}
-
-#[tauri::command]
-async fn get_lyric_detail(
-    app: AppHandle,
-    reader_state: State<'_, ttml_db::LyricDbReader>,
-    file_path: String,
-) -> Result<Option<String>, String> {
-    let index_file = ttml_db::get_index_file_path(&app)?;
-
-    if !index_file.exists() {
-        return Ok(None);
-    }
-
-    ttml_db::get_or_create_reader(&reader_state, &index_file).await?;
-
-    let reader_guard = reader_state.read().await;
-    let reader = reader_guard
-        .as_ref()
-        .ok_or_else(|| "Reader not initialized".to_string())?;
-
-    Ok(reader.get_lyric_detail(&file_path))
-}
-
-fn init_logging() {
-    #[cfg(not(debug_assertions))]
+    #[cfg(target_os = "windows")]
+    if let tauri::WindowEvent::Destroyed = event
+        && window.label() == "main"
+        && let Some(taskbar_win) = window.app_handle().get_webview_window("taskbar-lyric")
     {
-        let log_file = std::fs::File::create("amll-player.log");
-        if let Ok(log_file) = log_file {
-            tracing_subscriber::fmt()
-                .map_writer(move |_| log_file)
-                .with_thread_names(true)
-                .with_ansi(false)
-                .with_timer(tracing_subscriber::fmt::time::uptime())
-                .init();
-        } else {
-            tracing_subscriber::fmt()
-                .with_thread_names(true)
-                .with_timer(tracing_subscriber::fmt::time::uptime())
-                .init();
-        }
+        let _ = taskbar_win.destroy();
     }
-    #[cfg(debug_assertions)]
-    {
-        tracing_subscriber::fmt()
-            .with_env_filter(
-                "amll_player=trace,wry=info,taskbar_lyric=warn,now_playing_controls=warn,ffmpeg=warn",
-            )
-            .with_thread_names(true)
-            .with_timer(tracing_subscriber::fmt::time::uptime())
-            .init();
-    }
-    std::panic::set_hook(Box::new(move |info| {
-        error!("Fatal error occurred! AMLL Player will exit now.");
-        error!("Error: {info}");
-        error!("{info:#?}");
-    }));
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -497,8 +193,6 @@ pub fn run() {
     #[cfg(target_os = "android")]
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    init_logging();
-    info!("AMLL Player is starting!");
     #[allow(unused_mut)]
     let mut context = tauri::generate_context!();
 
@@ -540,21 +234,21 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_http::init())
         .invoke_handler(tauri::generate_handler![
-            ws_reopen_connection,
-            ws_get_connections,
-            ws_broadcast_payload,
-            ws_close_connection,
-            open_screenshot_window,
+            server::ws_reopen_connection,
+            server::ws_get_connections,
+            server::ws_broadcast_payload,
+            server::ws_close_connection,
+            window::open_screenshot_window,
             screen_capture::take_screenshot,
             player::local_player_send_msg,
             player::set_media_controls_enabled,
-            resolve_content_uri,
-            read_local_music_metadata,
-            save_cover_from_path,
+            music_info::resolve_content_uri,
+            music_info::read_local_music_metadata,
+            music_info::save_cover_from_path,
             restart_app,
-            sync_lyrics,
-            search_lyrics,
-            get_lyric_detail,
+            ttml_db::sync_lyrics,
+            ttml_db::search_lyrics,
+            ttml_db::get_lyric_detail,
             db::commands::get_all_playlists,
             db::commands::get_playlist,
             db::commands::create_playlist,
@@ -606,7 +300,7 @@ pub fn run() {
             #[cfg(desktop)]
             extension_window::extension_window_get_current_extension_files,
             #[cfg(target_os = "windows")]
-            set_window_always_on_top,
+            window::set_window_always_on_top,
             #[cfg(target_os = "windows")]
             taskbar_lyric::mouse_forward::set_click_interception,
             #[cfg(target_os = "windows")]
@@ -622,143 +316,8 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             theme_watcher::get_system_theme
         ])
-        .setup(|app| {
-            #[cfg(target_os = "ios")]
-            {
-                use objc2::msg_send;
-                use objc2_avf_audio::AVAudioSession;
-                use objc2_foundation::ns_string;
-
-                info!("Initializing iOS AVAudioSession Category to Playback...");
-                unsafe {
-                    let session = AVAudioSession::sharedInstance();
-                    let category = ns_string!("AVAudioSessionCategoryPlayback");
-
-                    let _: () = msg_send![&session, setCategory: category, error: std::ptr::null_mut::<*mut *mut objc2_foundation::NSError>()];
-
-                    let _: bool = msg_send![&session, setActive: true, error: std::ptr::null_mut::<*mut *mut objc2_foundation::NSError>()];
-                }
-                info!("iOS AVAudioSession Category set to Playback successfully!");
-            }
-            #[cfg(target_os = "android")]
-            {
-                if let Some(webview) = app.get_webview_window("main") {
-                    let _ = webview.with_webview(|webview| {
-                        // with_webview is dispatched to the Android UI thread (async).
-                        // After initialize_android_context we set ANDROID_NDK_READY so
-                        // the audio thread (which spins on it) can proceed safely.
-                        webview.jni_handle().exec(|env, context, _webview| {
-                            let vm = env.get_java_vm().expect("Failed to get JavaVM");
-                            unsafe {
-                                ndk_context::initialize_android_context(
-                                    vm.get_java_vm_pointer() as *mut _,
-                                    context.as_raw() as *mut _,
-                                );
-                            }
-
-                            ANDROID_NDK_READY.get_or_init(|| ());
-                            info!("Android NDK context initialized.");
-                        });
-                    });
-                } else {
-                    // Webview not available yet at setup time; signal anyway so the
-                    // audio thread doesn't block forever (best-effort fallback).
-                    warn!("Main webview not found at setup time; signalling NDK ready without init.");
-                    ANDROID_NDK_READY.get_or_init(|| ());
-                }
-            }
-
-            #[cfg(not(mobile))]
-            {
-                tauri::async_runtime::block_on(recreate_window(app.handle(), "main", None));
-            }
-
-            player::init_local_player(app.handle().clone());
-
-            let db_conn = tauri::async_runtime::block_on(db::init_database(app.handle()))
-                .expect("Failed to initialize database");
-            app.manage(db_conn);
-
-            {
-                let db_ref = app.state::<db::DbConnection>().inner().clone();
-                let gc_app = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    match db::cleanup::run_cover_gc(&db_ref, &gc_app).await {
-                        Ok(result) if result.deleted > 0 => {
-                            info!(
-                                "[Startup] Cover GC: scanned {}, deleted {} orphaned covers",
-                                result.total_scanned, result.deleted
-                            );
-                        }
-                        Ok(_) => {}
-                        Err(e) => warn!("[Startup] Cover GC failed: {e}"),
-                    }
-                });
-            }
-
-            let app_handle = app.handle().clone();
-            let mut rx = db_events::DB_EVENT_SENDER.subscribe();
-            tauri::async_runtime::spawn(async move {
-                loop {
-                    match rx.recv().await {
-                        Ok(event) => {
-                            let _ = app_handle.emit("db-row-changed", &event);
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                            warn!("DB event broadcast lagged, {skipped} events dropped");
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                    }
-                }
-            });
-
-            #[cfg(target_os = "windows")]
-            app.manage(taskbar_lyric::TaskbarLyricState::default());
-
-            #[cfg(target_os = "windows")]
-            {
-                match theme_watcher::ThemeWatcher::new(app.handle().clone()) {
-                    Ok(watcher) => {
-                        app.manage(watcher);
-                    }
-                    Err(e) => {
-                        warn!("启动系统主题监听失败: {e}");
-                    }
-                }
-            }
-
-            #[cfg(desktop)]
-            let _ = app
-                .handle()
-                .plugin(tauri_plugin_global_shortcut::Builder::new().build());
-
-            app.manage(ttml_db::create_shared_reader());
-
-            #[cfg(desktop)]
-            app.manage(extension_window::ExtensionWindowState::default());
-
-            app.manage::<AMLLWebSocketServerWrapper>(RwLock::new(AMLLWebSocketServer::new(
-                app.handle().clone(),
-            )));
-            Ok(())
-        })
-        .on_window_event(|_window, _event| {
-            #[cfg(desktop)]
-            if let tauri::WindowEvent::Destroyed = _event {
-                extension_window::cleanup_destroyed_window(_window.app_handle(), _window.label());
-                if _window.label() == "main" {
-                    extension_window::destroy_all_extension_windows(_window.app_handle());
-                }
-            }
-
-            #[cfg(target_os = "windows")]
-            if let tauri::WindowEvent::Destroyed = _event
-                && _window.label() == "main"
-                && let Some(taskbar_win) = _window.app_handle().get_webview_window("taskbar-lyric")
-            {
-                let _ = taskbar_win.destroy();
-            }
-        })
+        .setup(setup_app)
+        .on_window_event(handle_window_event)
         .run(context)
         .expect("error while running tauri application");
 }
