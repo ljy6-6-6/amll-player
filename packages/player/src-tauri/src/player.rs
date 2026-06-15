@@ -3,7 +3,9 @@ use std::sync::LazyLock;
 use amll_player_core::AudioThreadEventMessage;
 use amll_player_core::AudioThreadMessage;
 use amll_player_core::{AudioPlayer, AudioPlayerConfig, AudioPlayerHandle, NowPlayingOptions};
-use tauri::{AppHandle, Emitter, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Runtime};
+#[cfg(target_os = "windows")]
+use tauri::Manager;
 use tokio::sync::RwLock;
 use tracing::error;
 use tracing::warn;
@@ -96,9 +98,9 @@ async fn local_player_main<R: Runtime>(app: AppHandle<R>) {
     player.run().await;
 }
 
-fn get_media_controls_options<R: Runtime>(app: &AppHandle<R>) -> NowPlayingOptions {
+fn get_media_controls_options<R: Runtime>(_app: &AppHandle<R>) -> NowPlayingOptions {
     #[cfg(target_os = "windows")]
-    let hwnd = app
+    let hwnd = _app
         .get_webview_window("main")
         .and_then(|win| win.hwnd().ok())
         .map(|h| h.0 as isize);

@@ -168,19 +168,19 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn handle_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
+fn handle_window_event(_window: &tauri::Window, _event: &tauri::WindowEvent) {
     #[cfg(desktop)]
-    if let tauri::WindowEvent::Destroyed = event {
-        extension_window::cleanup_destroyed_window(window.app_handle(), window.label());
-        if window.label() == "main" {
-            extension_window::destroy_all_extension_windows(window.app_handle());
+    if let tauri::WindowEvent::Destroyed = _event {
+        extension_window::cleanup_destroyed_window(_window.app_handle(), _window.label());
+        if _window.label() == "main" {
+            extension_window::destroy_all_extension_windows(_window.app_handle());
         }
     }
 
     #[cfg(target_os = "windows")]
-    if let tauri::WindowEvent::Destroyed = event
-        && window.label() == "main"
-        && let Some(taskbar_win) = window.app_handle().get_webview_window("taskbar-lyric")
+    if let tauri::WindowEvent::Destroyed = _event
+        && _window.label() == "main"
+        && let Some(taskbar_win) = _window.app_handle().get_webview_window("taskbar-lyric")
     {
         let _ = taskbar_win.destroy();
     }
