@@ -1,5 +1,6 @@
 import {
 	isLyricPageOpenedAtom,
+	onPlayOrResumeAtom,
 	PrebuiltLyricPlayer,
 } from "@applemusic-like-lyrics/react-full";
 import { ContextMenu } from "@radix-ui/themes";
@@ -17,6 +18,7 @@ import "@applemusic-like-lyrics/react-full/style.css";
 
 export const AMLLWrapper: FC = () => {
 	const isLyricPageOpened = useAtomValue(isLyricPageOpenedAtom);
+	const onPlayOrResume = useAtomValue(onPlayOrResumeAtom).onEmit;
 	const setLyricPageOpened = useSetAtom(isLyricPageOpenedAtom);
 
 	useTitlebarAutoHide(isLyricPageOpened);
@@ -33,7 +35,10 @@ export const AMLLWrapper: FC = () => {
 		if (!isLyricPageOpened) return;
 
 		const handleKeyDown = (e: KeyboardEvent) => {
-			if (e.key === "Escape") {
+			if (e.key === " ") {
+				e.preventDefault();
+				onPlayOrResume?.();
+			} else if (e.key === "Escape") {
 				setLyricPageOpened(false);
 			}
 		};
@@ -42,7 +47,7 @@ export const AMLLWrapper: FC = () => {
 		return () => {
 			window.removeEventListener("keydown", handleKeyDown);
 		};
-	}, [isLyricPageOpened, setLyricPageOpened]);
+	}, [isLyricPageOpened, onPlayOrResume, setLyricPageOpened]);
 
 	return (
 		<>
