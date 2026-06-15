@@ -4,8 +4,8 @@ import {
 } from "@applemusic-like-lyrics/react-full";
 import { ContextMenu } from "@radix-ui/themes";
 import classnames from "classnames";
-import { useAtomValue } from "jotai";
-import { type FC, useLayoutEffect } from "react";
+import { useAtomValue, useSetAtom } from "jotai";
+import { type FC, useEffect, useLayoutEffect } from "react";
 import { useTitlebarAutoHide } from "../../utils/useTitlebarAutoHide.ts";
 import { AMLLContextMenuContent } from "../AMLLContextMenu/index.tsx";
 import { AudioQualityDialog } from "../AudioQualityDialog/index.tsx";
@@ -17,6 +17,7 @@ import "@applemusic-like-lyrics/react-full/style.css";
 
 export const AMLLWrapper: FC = () => {
 	const isLyricPageOpened = useAtomValue(isLyricPageOpenedAtom);
+	const setLyricPageOpened = useSetAtom(isLyricPageOpenedAtom);
 
 	useTitlebarAutoHide(isLyricPageOpened);
 
@@ -27,6 +28,21 @@ export const AMLLWrapper: FC = () => {
 			delete document.body.dataset.amllLyricsOpen;
 		}
 	}, [isLyricPageOpened]);
+
+	useEffect(() => {
+		if (!isLyricPageOpened) return;
+
+		const handleKeyDown = (e: KeyboardEvent) => {
+			if (e.key === "Escape") {
+				setLyricPageOpened(false);
+			}
+		};
+
+		window.addEventListener("keydown", handleKeyDown);
+		return () => {
+			window.removeEventListener("keydown", handleKeyDown);
+		};
+	}, [isLyricPageOpened, setLyricPageOpened]);
 
 	return (
 		<>
