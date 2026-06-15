@@ -196,8 +196,6 @@ jobs:
       - name: 安装 pnpm 依赖
         run: |
           pnpm i --frozen-lockfile --ignore-scripts
-        env:
-          AMLL_GITHUB_IS_ACTION: true
 
       - name: 生成开发构建版本号
         shell: bash
@@ -329,8 +327,6 @@ jobs:
       - name: 安装 pnpm 依赖
         run: |
           pnpm i --frozen-lockfile --ignore-scripts
-        env:
-          AMLL_GITHUB_IS_ACTION: true
 
       - name: 生成开发构建版本号
         run: |
@@ -418,8 +414,6 @@ jobs:
       - name: 安装 pnpm 依赖
         run: |
           pnpm i --frozen-lockfile --ignore-scripts
-        env:
-          AMLL_GITHUB_IS_ACTION: true
 
       - name: 生成开发构建版本号
         run: |
@@ -432,8 +426,6 @@ jobs:
           pnpm -F player tauri ios init
           # 从高分辨率主图生成符合 iOS 规范的无切边专属图标集
           pnpm -F player tauri icon src-tauri/icons/512x512@2x.png
-        env:
-          AMLL_GITHUB_IS_ACTION: true
 
       - name: 禁用 Xcode 工程自动签名 (免证书构建)
         shell: bash
@@ -458,17 +450,12 @@ jobs:
                 .filter(line => line.trim() !== "")
                 .join("\n");
               
-              return `buildSettings = {\n${newBody}\n\t\t\t\tCODE_SIGNING_ALLOWED = NO;\n\t\t\t\tCODE_SIGNING_REQUIRED = NO;\n\t\t\t\tCODE_SIGN_IDENTITY = "";\n\t\t\t\tCODE_SIGN_STYLE = Manual;\n\t\t\t\tDEVELOPMENT_TEAM = "";\n\t\t\t};`;
+              return `buildSettings = {\n${newBody}\n\t\t\t\tCODE_SIGNING_ALLOWED = NO;\n\t\t\t\tCODE_SIGNING_REQUIRED = NO;\n\t\t\t\tCODE_SIGN_IDENTITY = "";\n\t\t\t\tCODE_SIGN_STYLE = Manual;\n\t\t\t\tDEVELOPMENT_TEAM = "";\n\t\t\t\tCI = true;\n\t\t\t};`;
             });
 
             fs.writeFileSync(path, content, "utf8");
             console.log("Successfully rewrote all buildSettings in project.pbxproj to disable signing.");
           ' "$PBXPROJ"
-
-      - name: 构建前端资源
-        run: pnpm -F player build
-        env:
-          AMLL_GITHUB_IS_ACTION: true
 
       - name: 注入 iOS 后台音频播放权限 (Info.plist)
         shell: bash
@@ -503,10 +490,6 @@ jobs:
               exit 1
             fi
           }
-        env:
-          AMLL_GITHUB_IS_ACTION: true
-          SKIP_FRONTEND_BUILD: true
-          CI: true
 
       - name: 压包并生成无签名版 .ipa
         run: |
