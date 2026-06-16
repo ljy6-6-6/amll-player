@@ -36,7 +36,7 @@ mod theme_watcher;
 
 #[tauri::command]
 fn restart_app<R: Runtime>(app: AppHandle<R>) {
-    tauri::process::restart(&app.env())
+    app.request_restart();
 }
 
 fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
