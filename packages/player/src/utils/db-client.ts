@@ -25,6 +25,41 @@ export interface Song {
 	modifiedAt?: number | null;
 }
 
+export interface RhythmBeatPoint {
+	timeMs: number;
+	strength: number;
+	confidence: number;
+}
+
+export interface RhythmOnsetPoint {
+	timeMs: number;
+	strength: number;
+	bands: [number, number, number, number, number];
+}
+
+export interface RhythmTempoSegment {
+	startMs: number;
+	endMs: number;
+	bpm: number;
+	confidence: number;
+}
+
+export interface RhythmTimedValue {
+	timeMs: number;
+	value: number;
+}
+
+export interface RhythmAnalysis {
+	analyzerVersion: number;
+	durationMs: number;
+	globalBpm: number | null;
+	confidence: number;
+	beats: RhythmBeatPoint[];
+	onsets: RhythmOnsetPoint[];
+	tempoSegments: RhythmTempoSegment[];
+	energyEnvelope: RhythmTimedValue[];
+}
+
 interface UpdatePlaylistPayload {
 	name?: string;
 	playTime?: number;
@@ -148,6 +183,13 @@ class SongsClient {
 
 	async update(id: string, changes: UpdateSongPayload): Promise<void> {
 		return invoke("update_song", { id, changes });
+	}
+
+	async getOrAnalyzeRhythm(
+		songId: string,
+		force = false,
+	): Promise<RhythmAnalysis> {
+		return invoke("get_or_analyze_song_rhythm", { songId, force });
 	}
 }
 

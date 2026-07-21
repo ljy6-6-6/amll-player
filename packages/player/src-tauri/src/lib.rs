@@ -104,6 +104,7 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let db_conn = tauri::async_runtime::block_on(db::init_database(app.handle()))
         .expect("Failed to initialize database");
     app.manage(db_conn);
+    app.manage(db::rhythm::RhythmAnalysisState::default());
 
     {
         let db_ref = app.state::<db::DbConnection>().inner().clone();
@@ -274,6 +275,9 @@ pub fn run() {
             db::commands::link_playlist_folder,
             db::commands::unlink_playlist_folder,
             db::commands::refresh_playlist,
+            db::rhythm::get_or_analyze_song_rhythm,
+            db::rhythm::get_cached_song_rhythm,
+            db::rhythm::delete_song_rhythm,
             db::migrate::migrate_songs_batch,
             db::migrate::migrate_playlists_batch,
             db::cleanup::cleanup_orphaned_covers,

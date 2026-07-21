@@ -4,6 +4,7 @@ pub mod entity;
 pub mod migrate;
 pub mod migration;
 pub mod refresh;
+pub mod rhythm;
 pub mod scanner;
 pub mod utils;
 

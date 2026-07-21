@@ -4,7 +4,9 @@ use sea_orm::{
 };
 use tauri::{AppHandle, Manager as _, path::BaseDirectory};
 
-use crate::db::entity::{playlist, playlist_song_sources, playlist_songs, song};
+use crate::db::entity::{
+    playlist, playlist_song_sources, playlist_songs, song, song_rhythm_analysis,
+};
 
 pub fn save_cover(
     covers_dir: &std::path::Path,
@@ -50,6 +52,11 @@ pub async fn cleanup_orphaned_songs(
             .await
             .map_err(|e| format!("Failed to find song: {e}"))?
         {
+            song_rhythm_analysis::Entity::delete_by_id(song_id.clone())
+                .exec(db)
+                .await
+                .map_err(|e| format!("Failed to delete orphaned song rhythm analysis: {e}"))?;
+
             if let Some(ref cover_path) = s.cover_path
                 && !cover_path.is_empty()
             {

@@ -454,6 +454,12 @@ impl AudioPlayer {
 
         let song_data = self.current_song.clone().context("没有当前歌曲可播放")?;
 
+        self.emitter()
+            .emit(AudioThreadEvent::LoadingAudio {
+                music_id: song_data.get_id(),
+            })
+            .await?;
+
         let source_stream: Box<dyn CustomMediaSource> =
             if song_data.file_path.starts_with("http://") || song_data.file_path.starts_with("https://") {
                 let bytes = reqwest::get(&song_data.file_path)

@@ -8,9 +8,11 @@ mod ffmpeg_decoder;
 mod fft_player;
 mod media_controls;
 mod player;
+mod rhythm;
 pub mod utils;
 pub use now_playing_controls::model::NowPlayingOptions;
 pub use player::*;
+pub use rhythm::*;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]

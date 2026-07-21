@@ -34,20 +34,31 @@ import {
 import { convertFileSrc } from "@tauri-apps/api/core";
 import chalk from "chalk";
 import { useAtom, useAtomValue, useSetAtom, useStore } from "jotai";
-import { type FC, useEffect, useLayoutEffect, useRef } from "react";
+import {
+	type FC,
+	useCallback,
+	useEffect,
+	useLayoutEffect,
+	useRef,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "react-toastify";
 import { useLyricParser } from "../../hooks/useLyricParser.ts";
 import {
 	audioQualityDialogOpenedAtom,
 	currentLyricAuthorsAtom,
+	currentRhythmAnalysisAtom,
 	currentSongWritersAtom,
 	enableMediaControlsAtom,
 	queueManagerAtom,
+	rhythmVisualResetAtom,
 } from "../../states/appAtoms.ts";
 import { db } from "../../utils/db-client.ts";
 import { SyncStatus, syncLyrics } from "../../utils/lyric-db-api.ts";
-import { PlayQueueManager } from "../../utils/play-queue-manager.ts";
+import {
+	PlayQueueManager,
+	queueCurrentSongAtom,
+} from "../../utils/play-queue-manager.ts";
 import {
 	type AudioQuality,
 	type AudioThreadEvent,
@@ -56,6 +67,10 @@ import {
 	listenAudioThreadEvent,
 } from "../../utils/player.ts";
 import { useDbQuery } from "../../utils/use-db-query.ts";
+import {
+	LocalRhythmVisualContext,
+	SILENT_RHYTHM_VOLUME,
+} from "./rhythm-visual.tsx";
 
 export const FFTToLowPassContext: FC = () => {
 	const store = useStore();
@@ -263,6 +278,51 @@ export const LocalMusicContext: FC = () => {
 		position: 0,
 		timestamp: performance.now(),
 	});
+	const rhythmGenerationRef = useRef(0);
+
+	const beginRhythmGeneration = useCallback(
+		(musicId: string | null): number => {
+			const generation = ++rhythmGenerationRef.current;
+			store.set(
+				currentRhythmAnalysisAtom,
+				musicId ? { musicId, generation, analysis: null } : null,
+			);
+			store.set(lowFreqVolumeAtom, SILENT_RHYTHM_VOLUME);
+			return generation;
+		},
+		[store],
+	);
+
+	const requestRhythmAnalysis = useCallback(
+		async (musicId: string, generation: number) => {
+			try {
+				const analysis = await db.songs.getOrAnalyzeRhythm(musicId, false);
+				const current = store.get(currentRhythmAnalysisAtom);
+				if (
+					generation !== rhythmGenerationRef.current ||
+					current?.generation !== generation ||
+					current.musicId !== musicId ||
+					store.get(musicIdAtom) !== musicId
+				) {
+					return;
+				}
+				store.set(currentRhythmAnalysisAtom, {
+					musicId,
+					generation,
+					analysis,
+				});
+			} catch (error) {
+				if (generation === rhythmGenerationRef.current) {
+					console.warn(
+						"[RhythmAnalysis] Failed to analyze song",
+						musicId,
+						error,
+					);
+				}
+			}
+		},
+		[store],
+	);
 
 	const syncMusicInfo = async (
 		data: Extract<AudioThreadEvent, { type: "loadAudio" }>["data"],
@@ -292,15 +352,15 @@ export const LocalMusicContext: FC = () => {
 
 				if (songFromDb.coverPath) {
 					const coverPath = songFromDb.coverPath;
-					if (coverPath.startsWith("http://") || coverPath.startsWith("https://")) {
+					if (
+						coverPath.startsWith("http://") ||
+						coverPath.startsWith("https://")
+					) {
 						store.set(musicCoverAtom, coverPath);
 					} else {
 						store.set(musicCoverAtom, convertFileSrc(coverPath));
 					}
-					store.set(
-						musicCoverIsVideoAtom,
-						coverPath.endsWith(".mp4"),
-					);
+					store.set(musicCoverIsVideoAtom, coverPath.endsWith(".mp4"));
 				} else {
 					store.set(
 						musicCoverAtom,
@@ -347,6 +407,20 @@ export const LocalMusicContext: FC = () => {
 			}
 		}
 	}, [musicPlaying, store]);
+
+	useEffect(() => {
+		let queuedMusicId = store.get(queueCurrentSongAtom)?.id ?? null;
+		const unsubscribe = store.sub(queueCurrentSongAtom, () => {
+			const nextMusicId = store.get(queueCurrentSongAtom)?.id ?? null;
+			if (nextMusicId === queuedMusicId) return;
+			queuedMusicId = nextMusicId;
+			beginRhythmGeneration(nextMusicId);
+		});
+		return () => {
+			unsubscribe();
+			beginRhythmGeneration(null);
+		};
+	}, [beginRhythmGeneration, store]);
 
 	useEffect(() => {
 		let rafId: number;
@@ -461,6 +535,7 @@ export const LocalMusicContext: FC = () => {
 		store.set(
 			onSeekPositionAtom,
 			toEmit((time: number) => {
+				store.set(rhythmVisualResetAtom, (value) => value + 1);
 				const targetPos = time / 1000;
 				lastSyncRef.current = {
 					position: targetPos,
@@ -476,6 +551,7 @@ export const LocalMusicContext: FC = () => {
 		store.set(
 			onLyricLineClickAtom,
 			toEmit((evt) => {
+				store.set(rhythmVisualResetAtom, (value) => value + 1);
 				const targetTimeMs = evt.line.getLine().startTime;
 				const targetPos = targetTimeMs / 1000;
 
@@ -510,6 +586,11 @@ export const LocalMusicContext: FC = () => {
 		const unlistenPromise = listenAudioThreadEvent(async (evt) => {
 			const evtData = evt.payload.data;
 			switch (evtData?.type) {
+				case "loadingAudio": {
+					beginRhythmGeneration(evtData.data.musicId || null);
+					break;
+				}
+
 				case "playPosition": {
 					const now = performance.now();
 					const dt = (now - lastSyncRef.current.timestamp) / 1000;
@@ -530,6 +611,8 @@ export const LocalMusicContext: FC = () => {
 
 				case "loadAudio": {
 					const data = evtData.data;
+					const newMusicId = data.musicId || "";
+					const rhythmGeneration = beginRhythmGeneration(newMusicId || null);
 
 					if (data.quality) {
 						store.set(musicQualityAtom, processAudioQuality(data.quality));
@@ -545,10 +628,12 @@ export const LocalMusicContext: FC = () => {
 					store.set(musicPlayingPositionAtom, 0);
 
 					const currentMusicId = store.get(musicIdAtom);
-					const newMusicId = data.musicId || "";
 
 					if (newMusicId && newMusicId !== currentMusicId) {
 						await syncMusicInfo(data);
+					}
+					if (newMusicId && rhythmGeneration === rhythmGenerationRef.current) {
+						void requestRhythmAnalysis(newMusicId, rhythmGeneration);
 					}
 					break;
 				}
@@ -617,12 +702,12 @@ export const LocalMusicContext: FC = () => {
 			store.set(onChangeVolumeAtom, doNothing);
 			store.set(onRequestOpenMenuAtom, doNothing);
 		};
-	}, [store, t]);
+	}, [beginRhythmGeneration, requestRhythmAnalysis, store, t]);
 
 	return (
 		<>
 			<LyricContext />
-			<FFTToLowPassContext />
+			<LocalRhythmVisualContext />
 			<MusicQualityTagText />
 		</>
 	);
