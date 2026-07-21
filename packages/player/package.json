@@ -9,6 +9,7 @@
 		"build:dev": "vite build --mode dev",
 		"fmt": "biome format --write ./src",
 		"preview": "vite preview",
+		"test:rhythm-visual": "node --test tests/rhythm-visual-signal.test.mjs",
 		"tauri": "tauri",
 		"locale:gen": "i18next-cli extract"
 	},

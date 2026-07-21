@@ -67,10 +67,7 @@ import {
 	listenAudioThreadEvent,
 } from "../../utils/player.ts";
 import { useDbQuery } from "../../utils/use-db-query.ts";
-import {
-	LocalRhythmVisualContext,
-	SILENT_RHYTHM_VOLUME,
-} from "./rhythm-visual.tsx";
+import { LocalRhythmVisualContext } from "./rhythm-visual.tsx";
 
 export const FFTToLowPassContext: FC = () => {
 	const store = useStore();
@@ -287,7 +284,6 @@ export const LocalMusicContext: FC = () => {
 				currentRhythmAnalysisAtom,
 				musicId ? { musicId, generation, analysis: null } : null,
 			);
-			store.set(lowFreqVolumeAtom, SILENT_RHYTHM_VOLUME);
 			return generation;
 		},
 		[store],

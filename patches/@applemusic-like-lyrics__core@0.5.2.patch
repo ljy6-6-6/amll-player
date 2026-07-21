@@ -1,0 +1,18 @@
+diff --git a/dist/amll-core.cjs b/dist/amll-core.cjs
+--- a/dist/amll-core.cjs
++++ b/dist/amll-core.cjs
+@@ -1278 +1278 @@ var MeshGradientRenderer = class extends BaseRenderer {
+-			this.mainProgram.setUniform1f("u_volume", this.volume);
++			this.mainProgram.setUniform1f("u_volume", this.smoothedVolume);
+@@ -1280 +1280 @@ var MeshGradientRenderer = class extends BaseRenderer {
+-			const angle = (uTime + this.volume) * 2;
++			const angle = (uTime + this.smoothedVolume) * 2;
+diff --git a/dist/amll-core.mjs b/dist/amll-core.mjs
+--- a/dist/amll-core.mjs
++++ b/dist/amll-core.mjs
+@@ -1253 +1253 @@ var MeshGradientRenderer = class extends BaseRenderer {
+-			this.mainProgram.setUniform1f("u_volume", this.volume);
++			this.mainProgram.setUniform1f("u_volume", this.smoothedVolume);
+@@ -1255 +1255 @@ var MeshGradientRenderer = class extends BaseRenderer {
+-			const angle = (uTime + this.volume) * 2;
++			const angle = (uTime + this.smoothedVolume) * 2;
