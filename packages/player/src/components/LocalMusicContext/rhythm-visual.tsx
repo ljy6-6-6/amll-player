@@ -26,7 +26,7 @@ import {
 export const SILENT_RHYTHM_VOLUME = 0.0001;
 
 const ANALYSIS_FADE_IN_MS = 500;
-const ANALYSIS_FALLBACK_WEIGHT = 0.1;
+const SIGNAL_PUBLISH_INTERVAL_MS = 1000 / 60;
 
 interface SpectralFluxState {
 	lastFrame: number[] | null;
@@ -139,6 +139,7 @@ export const LocalRhythmVisualContext: FC = () => {
 
 		let animationFrame = 0;
 		let lastFrameTime = performance.now();
+		let lastPublishedFrameTime = lastFrameTime;
 		let lastPosition: number | null = null;
 		let lastMusicId = "";
 		let lastGeneration = -1;
@@ -159,7 +160,8 @@ export const LocalRhythmVisualContext: FC = () => {
 		};
 
 		const update = (frameTime: number) => {
-			const deltaMs = Math.min(100, Math.max(0, frameTime - lastFrameTime));
+			const rawDeltaMs = frameTime - lastFrameTime;
+			const deltaMs = Number.isFinite(rawDeltaMs) ? Math.max(0, rawDeltaMs) : 0;
 			lastFrameTime = frameTime;
 
 			const musicId = store.get(musicIdAtom);
@@ -170,11 +172,17 @@ export const LocalRhythmVisualContext: FC = () => {
 			const generation = rhythmState?.generation ?? -1;
 			const resetSignal = store.get(rhythmVisualResetAtom);
 
-			if (musicId !== lastMusicId || generation !== lastGeneration) {
+			const musicChanged = musicId !== lastMusicId;
+			if (musicChanged || generation !== lastGeneration) {
 				lastMusicId = musicId;
 				lastGeneration = generation;
 				analysisBlend = 0;
 				resetSampling(spectrum);
+				if (musicChanged) {
+					smoothedValue = SILENT_RHYTHM_VOLUME;
+					store.set(lowFreqVolumeAtom, SILENT_RHYTHM_VOLUME);
+					lastPublishedFrameTime = frameTime;
+				}
 			}
 			if (resetSignal !== lastResetSignal) {
 				lastResetSignal = resetSignal;
@@ -184,7 +192,8 @@ export const LocalRhythmVisualContext: FC = () => {
 			if (
 				lastPosition !== null &&
 				(position < lastPosition - 20 ||
-					Math.abs(position - lastPosition) > Math.max(250, deltaMs * 3))
+					Math.abs(position - lastPosition) >
+						Math.max(250, Math.min(deltaMs, 100) * 3))
 			) {
 				resetSampling(spectrum);
 			}
@@ -200,13 +209,8 @@ export const LocalRhythmVisualContext: FC = () => {
 					analysisBlend + deltaMs / ANALYSIS_FADE_IN_MS,
 				);
 				const analyzed = sampleAnalysisTarget(analysis, position);
-				const analyzedWithTexture = clamp01(
-					analyzed * (1 - ANALYSIS_FALLBACK_WEIGHT) +
-						fallback * ANALYSIS_FALLBACK_WEIGHT,
-				);
 				normalizedTarget =
-					fallback +
-					(analyzedWithTexture - fallback) * smootherStep01(analysisBlend);
+					fallback + (analyzed - fallback) * smootherStep01(analysisBlend);
 			}
 
 			const targetVolume = mapRhythmTargetToVolume(normalizedTarget);
@@ -215,10 +219,18 @@ export const LocalRhythmVisualContext: FC = () => {
 				targetVolume,
 				deltaMs,
 			);
-			store.set(
-				lowFreqVolumeAtom,
-				Math.max(SILENT_RHYTHM_VOLUME, smoothedValue),
-			);
+
+			// 连续信号固定以 60Hz 送入 React；Mesh 在自己的高帧率 rAF 内做
+			// 指数插值。避免 240Hz Jotai 更新经过被动 effect 后形成不均匀台阶。
+			const publishElapsed = frameTime - lastPublishedFrameTime;
+			if (publishElapsed >= SIGNAL_PUBLISH_INTERVAL_MS) {
+				lastPublishedFrameTime =
+					frameTime - (publishElapsed % SIGNAL_PUBLISH_INTERVAL_MS);
+				store.set(
+					lowFreqVolumeAtom,
+					Math.max(SILENT_RHYTHM_VOLUME, smoothedValue),
+				);
+			}
 
 			animationFrame = requestAnimationFrame(update);
 		};

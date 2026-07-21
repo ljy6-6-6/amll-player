@@ -5,21 +5,34 @@ import type {
 	RhythmTimedValue,
 } from "../../utils/db-client.ts";
 
-const BEAT_PRE_ROLL_MS = 120;
+const BEAT_PRE_ROLL_MS = 100;
 const ONSET_PRE_ROLL_MS = 55;
-const ONSET_RELEASE_MS = 200;
+const ONSET_RELEASE_MS = 240;
 const ONSET_BEAT_MERGE_MS = 180;
-const MIN_BEAT_RELEASE_MS = 260;
-const MAX_BEAT_RELEASE_MS = 500;
+const MIN_BEAT_RELEASE_MS = 300;
+const MAX_BEAT_RELEASE_MS = 520;
 
-const VISUAL_ATTACK_MS = 90;
-const VISUAL_RELEASE_MS = 380;
-const MAX_RISE_PER_MS = 0.0025;
-const MAX_FALL_PER_MS = 0.00075;
+const VISUAL_ATTACK_MS = 45;
+const VISUAL_RELEASE_MS = 180;
+
+const ENERGY_SMOOTH_PAST_RADIUS_MS = 720;
+const ENERGY_SMOOTH_FUTURE_RADIUS_MS = 160;
+const ENERGY_SMOOTH_PAST_SIGMA_MS = 240;
+const ENERGY_SMOOTH_FUTURE_SIGMA_MS = 90;
+const ENERGY_SMOOTH_PAST_EDGE_MS = 240;
+const ENERGY_SMOOTH_FUTURE_EDGE_MS = 80;
+
+interface BeatStrengthProfile {
+	lower: number;
+	upper: number;
+}
+
+const beatStrengthProfiles = new WeakMap<RhythmAnalysis, BeatStrengthProfile>();
+const usableBeatGridCache = new WeakMap<RhythmAnalysis, boolean>();
 
 /**
- * Mesh 背景会把该值同时用于纹理缩放和旋转相位。限制满幅可以保留
- * 节拍感，同时避免相位发生肉眼可见的前跳。
+ * 保持现有 0..0.4 接口范围；Mesh 内部会在拆分慢呼吸与重拍相位前将其
+ * 重新归一化到 0..1，避免放大其他背景实现的输入。
  */
 export const MAX_RHYTHM_VISUAL_VOLUME = 0.4;
 
@@ -115,6 +128,103 @@ function sampleEnergy(
 }
 
 /**
+ * energyEnvelope 约每 46ms 产生一个折点。非对称高斯平滑保留少量前视以
+ * 平顺起势，但主要向过去取样，避免在响度变化前数百毫秒出现呼吸 pre-echo。
+ * 窗口边缘平滑归零，采样点进出窗口时也不会突跳。
+ */
+function sampleSmoothedEnergy(
+	values: readonly RhythmTimedValue[],
+	timeMs: number,
+): number {
+	if (values.length === 0 || !Number.isFinite(timeMs)) return 0;
+	let weightedValue = 0;
+	let totalWeight = 0;
+	let index = lowerBound(values, timeMs - ENERGY_SMOOTH_PAST_RADIUS_MS);
+	while (index < values.length) {
+		const point = values[index];
+		if (!point || point.timeMs > timeMs + ENERGY_SMOOTH_FUTURE_RADIUS_MS) break;
+		const offsetMs = point.timeMs - timeMs;
+		const isFuture = offsetMs >= 0;
+		const radiusMs = isFuture
+			? ENERGY_SMOOTH_FUTURE_RADIUS_MS
+			: ENERGY_SMOOTH_PAST_RADIUS_MS;
+		const sigmaMs = isFuture
+			? ENERGY_SMOOTH_FUTURE_SIGMA_MS
+			: ENERGY_SMOOTH_PAST_SIGMA_MS;
+		const edgeMs = isFuture
+			? ENERGY_SMOOTH_FUTURE_EDGE_MS
+			: ENERGY_SMOOTH_PAST_EDGE_MS;
+		const edgeWeight = smootherStep01((radiusMs - Math.abs(offsetMs)) / edgeMs);
+		const weight =
+			edgeWeight * Math.exp(-(offsetMs * offsetMs) / (2 * sigmaMs * sigmaMs));
+		weightedValue += clamp01(point.value) * weight;
+		totalWeight += weight;
+		index++;
+	}
+	return totalWeight > Number.EPSILON
+		? clamp01(weightedValue / totalWeight)
+		: sampleEnergy(values, timeMs);
+}
+
+function quantile(sortedValues: readonly number[], amount: number): number {
+	if (sortedValues.length === 0) return 0;
+	const position = clamp01(amount) * (sortedValues.length - 1);
+	const lowerIndex = Math.floor(position);
+	const upperIndex = Math.ceil(position);
+	const lower = sortedValues[lowerIndex] ?? 0;
+	const upper = sortedValues[upperIndex] ?? lower;
+	return lower + (upper - lower) * (position - lowerIndex);
+}
+
+function beatStrengthProfile(analysis: RhythmAnalysis): BeatStrengthProfile {
+	const cached = beatStrengthProfiles.get(analysis);
+	if (cached) return cached;
+
+	const strengths = analysis.beats
+		.map((point) => clamp01(point.strength))
+		.filter((strength) => strength > 0)
+		.sort((left, right) => left - right);
+	const lower = quantile(strengths, 0.25);
+	const profile = { lower, upper: quantile(strengths, 0.9) };
+	beatStrengthProfiles.set(analysis, profile);
+	return profile;
+}
+
+function hasUsableBeatGrid(analysis: RhythmAnalysis): boolean {
+	const cached = usableBeatGridCache.get(analysis);
+	if (cached !== undefined) return cached;
+	const result = analysis.beats.some(
+		(point) => clamp01(point.strength) >= 0.06,
+	);
+	usableBeatGridCache.set(analysis, result);
+	return result;
+}
+
+/** 将全曲中等以下拍点映射为轻触，把 P90 重拍明确拉到满幅。 */
+export function normalizeBeatStrength(
+	analysis: RhythmAnalysis,
+	strength: number,
+): number {
+	const safeStrength = clamp01(strength);
+	if (safeStrength <= 0) return 0;
+	const profile = beatStrengthProfile(analysis);
+	const spread = Math.max(0, profile.upper - profile.lower);
+	const relativeContrast = smootherStep01(
+		(safeStrength - profile.lower) / Math.max(0.001, spread),
+	);
+	const uniformContrast = smootherStep01(
+		safeStrength / Math.max(0.001, profile.upper),
+	);
+	const rangeBlend = smootherStep01(spread / 0.08);
+	const contrast =
+		uniformContrast + (relativeContrast - uniformContrast) * rangeBlend;
+	// 后端以 0.06 作为可定位真实拍点的门槛；在同一范围内连续淡入，
+	// 避免极弱拍的一点浮点变化让视觉信号从静止直接跳到满幅。
+	const visibility = smootherStep01(safeStrength / 0.06);
+	return visibility * (0.12 + contrast * 0.88);
+}
+
+/**
  * 完整本地文件允许预知下一拍，因此在事件前平滑预起，在事件后平滑回落。
  * 该包络在事件点两侧都连续且导数为零，不会像指数脉冲一样突然换相位。
  */
@@ -124,6 +234,7 @@ export function sampleSmoothPulse(
 	preRollMs: number,
 	releaseMs: number,
 ): number {
+	if (!(Number.isFinite(timeMs) && Number.isFinite(pointTimeMs))) return 0;
 	const offset = timeMs - pointTimeMs;
 	if (offset < -preRollMs || offset > releaseMs) return 0;
 	if (offset <= 0) {
@@ -169,54 +280,67 @@ function beatReleaseMs(analysis: RhythmAnalysis): number {
 	const periodMs = analysis.globalBpm
 		? 60_000 / Math.max(1, analysis.globalBpm)
 		: 500;
-	return clamp(periodMs * 0.68, MIN_BEAT_RELEASE_MS, MAX_BEAT_RELEASE_MS);
+	return clamp(periodMs * 0.55, MIN_BEAT_RELEASE_MS, MAX_BEAT_RELEASE_MS);
 }
 
 /**
  * 将分析结果变成连续的 0..1 视觉目标。
  *
- * beat 是主驱动；高密度 onset 只在 beat 较弱或缺失时作为辅助纹理，且两者
- * 使用 max 合并，避免同一个打击先触发 onset、随后又触发 beat 的双闪。
+ * beat 是主驱动；高密度 onset 只为空拍占位补强，或在完全没有 beat grid
+ * 时降级使用，避免每秒约八次起音继续制造视觉碎动。
  */
 export function sampleAnalysisTarget(
 	analysis: RhythmAnalysis,
 	timeMs: number,
 ): number {
-	const energy = sampleEnergy(analysis.energyEnvelope, timeMs);
-	const reliability = smootherStep01(
-		(clamp01(analysis.confidence) - 0.12) / 0.55,
-	);
-	const beat = sampleTimedPulses(
-		analysis.beats,
-		timeMs,
-		BEAT_PRE_ROLL_MS,
-		beatReleaseMs(analysis),
-		(point) => {
-			const beatValue = Math.sqrt(
-				clamp01(point.strength) * (0.5 + clamp01(point.confidence) * 0.5),
+	if (!Number.isFinite(timeMs)) return 0;
+	const energy = sampleSmoothedEnergy(analysis.energyEnvelope, timeMs);
+	const hasBeatGrid = hasUsableBeatGrid(analysis);
+	const beat = hasBeatGrid
+		? sampleTimedPulses(
+				analysis.beats,
+				timeMs,
+				BEAT_PRE_ROLL_MS,
+				beatReleaseMs(analysis),
+				(point) => {
+					const normalizedStrength = normalizeBeatStrength(
+						analysis,
+						point.strength,
+					);
+					const beatValue =
+						normalizedStrength * (0.82 + clamp01(point.confidence) * 0.18);
+					const placeholderBlend =
+						1 - smootherStep01(clamp01(point.strength) / 0.06);
+					const onsetValue =
+						Math.sqrt(
+							strongestOnsetAssignedToBeat(
+								analysis.onsets,
+								analysis.beats,
+								point,
+							),
+						) *
+						0.64 *
+						placeholderBlend;
+					// 仅为后端标记的弱占位连续补回邻近真实打击，不让高密度 onset
+					// 覆盖正常 beat 的强弱关系。
+					return Math.max(beatValue, onsetValue);
+				},
+			)
+		: 0;
+	const onset = hasBeatGrid
+		? 0
+		: sampleTimedPulses(
+				analysis.onsets,
+				timeMs,
+				ONSET_PRE_ROLL_MS,
+				ONSET_RELEASE_MS,
+				(point) => Math.sqrt(clamp01(point.strength)),
 			);
-			const mergedOnsetValue =
-				Math.sqrt(
-					strongestOnsetAssignedToBeat(analysis.onsets, analysis.beats, point),
-				) *
-				(0.68 - reliability * 0.06);
-			return Math.max(beatValue, mergedOnsetValue);
-		},
-	);
-	const onset = sampleTimedPulses(
-		analysis.onsets,
-		timeMs,
-		ONSET_PRE_ROLL_MS,
-		ONSET_RELEASE_MS,
-		(point) =>
-			nearestPoint(analysis.beats, point.timeMs, ONSET_BEAT_MERGE_MS)
-				? 0
-				: Math.sqrt(clamp01(point.strength)),
-	);
 
-	const beatAccent = beat * (0.36 + reliability * 0.16);
-	const onsetAccent = onset * (0.13 - reliability * 0.07);
-	return clamp01(energy * 0.38 + Math.max(beatAccent, onsetAccent));
+	const breath = Math.sqrt(energy) * 0.28;
+	const beatAccent = hasBeatGrid ? beat * 0.72 : 0;
+	const onsetFallback = hasBeatGrid ? 0 : onset * 0.28;
+	return clamp01(breath + Math.max(beatAccent, onsetFallback));
 }
 
 export function mapRhythmTargetToVolume(target: number): number {
@@ -224,8 +348,8 @@ export function mapRhythmTargetToVolume(target: number): number {
 }
 
 /**
- * 帧率无关的一阶滤波，再增加绝对斜率限制。下降最多 0.75/s，低于 Mesh
- * 背景相位发生反向运动的 1.0/s 临界值。
+ * 帧率无关的一阶滤波。Mesh 已将呼吸和旋转拆开，释放阶段可以恢复明确
+ * 的收缩；不再为了旧的“音量直接叠加相位”公式牺牲重拍幅度。
  */
 export function advanceRhythmVisualVolume(
 	current: number,
@@ -234,17 +358,15 @@ export function advanceRhythmVisualVolume(
 ): number {
 	const safeCurrent = clamp(current, 0, MAX_RHYTHM_VISUAL_VOLUME);
 	const safeTarget = clamp(target, 0, MAX_RHYTHM_VISUAL_VOLUME);
-	const safeDeltaMs = clamp(deltaMs, 0, 100);
+	const safeDeltaMs = Number.isFinite(deltaMs) ? Math.max(0, deltaMs) : 0;
 	if (safeDeltaMs === 0) return safeCurrent;
 
 	const smoothingMs =
 		safeTarget > safeCurrent ? VISUAL_ATTACK_MS : VISUAL_RELEASE_MS;
 	const smoothing = 1 - Math.exp(-safeDeltaMs / smoothingMs);
-	const candidate = safeCurrent + (safeTarget - safeCurrent) * smoothing;
-	const limitedDelta = clamp(
-		candidate - safeCurrent,
-		-MAX_FALL_PER_MS * safeDeltaMs,
-		MAX_RISE_PER_MS * safeDeltaMs,
+	return clamp(
+		safeCurrent + (safeTarget - safeCurrent) * smoothing,
+		0,
+		MAX_RHYTHM_VISUAL_VOLUME,
 	);
-	return clamp(safeCurrent + limitedDelta, 0, MAX_RHYTHM_VISUAL_VOLUME);
 }
