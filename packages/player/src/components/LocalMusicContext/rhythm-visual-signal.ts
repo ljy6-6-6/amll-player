@@ -5,15 +5,17 @@ import type {
 	RhythmTimedValue,
 } from "../../utils/db-client.ts";
 
-const BEAT_PRE_ROLL_MS = 100;
+const BEAT_PRE_ROLL_MS = 140;
 const ONSET_PRE_ROLL_MS = 55;
 const ONSET_RELEASE_MS = 240;
 const ONSET_BEAT_MERGE_MS = 180;
 const MIN_BEAT_RELEASE_MS = 300;
 const MAX_BEAT_RELEASE_MS = 520;
 
-const VISUAL_ATTACK_MS = 45;
-const VISUAL_RELEASE_MS = 180;
+const VISUAL_ATTACK_MS = 70;
+const VISUAL_RELEASE_MS = 250;
+const BEAT_DYNAMIC_RANGE_SCALE = 0.2;
+export const MAX_RHYTHM_VISUAL_STEP_MS = 50;
 
 const ENERGY_SMOOTH_PAST_RADIUS_MS = 720;
 const ENERGY_SMOOTH_FUTURE_RADIUS_MS = 160;
@@ -21,6 +23,9 @@ const ENERGY_SMOOTH_PAST_SIGMA_MS = 240;
 const ENERGY_SMOOTH_FUTURE_SIGMA_MS = 90;
 const ENERGY_SMOOTH_PAST_EDGE_MS = 240;
 const ENERGY_SMOOTH_FUTURE_EDGE_MS = 80;
+const BEAT_ENERGY_PEAK_RADIUS_MS = 90;
+const BEAT_ENERGY_BASELINE_INNER_MS = 120;
+const BEAT_ENERGY_BASELINE_RADIUS_MS = 320;
 
 interface BeatStrengthProfile {
 	lower: number;
@@ -28,6 +33,10 @@ interface BeatStrengthProfile {
 }
 
 const beatStrengthProfiles = new WeakMap<RhythmAnalysis, BeatStrengthProfile>();
+const beatEnergyImpacts = new WeakMap<
+	RhythmAnalysis,
+	Map<RhythmBeatPoint, number>
+>();
 const usableBeatGridCache = new WeakMap<RhythmAnalysis, boolean>();
 
 /**
@@ -190,6 +199,54 @@ function beatStrengthProfile(analysis: RhythmAnalysis): BeatStrengthProfile {
 	return profile;
 }
 
+/**
+ * novelty 衡量的是频谱变化，不等同于听感冲击；持续且等强的重低音可能
+ * 因频谱形态相似而得到忽高忽低的 strength。用拍点附近 RMS 峰值相对
+ * 局部底噪的抬升作为正交证据，持续响亮的铺底不会把每一拍都推成重拍。
+ */
+function beatEnergyImpact(
+	analysis: RhythmAnalysis,
+	beat: RhythmBeatPoint,
+): number {
+	let cached = beatEnergyImpacts.get(analysis);
+	if (!cached) {
+		cached = new Map<RhythmBeatPoint, number>();
+		const energy = analysis.energyEnvelope;
+		for (const point of analysis.beats) {
+			let energyIndex = lowerBound(
+				energy,
+				point.timeMs - BEAT_ENERGY_BASELINE_RADIUS_MS,
+			);
+			let peak = 0;
+			const localBaselineValues: number[] = [];
+			while (energyIndex < energy.length) {
+				const energyPoint = energy[energyIndex];
+				if (
+					!energyPoint ||
+					energyPoint.timeMs > point.timeMs + BEAT_ENERGY_BASELINE_RADIUS_MS
+				) {
+					break;
+				}
+				const offsetMs = Math.abs(energyPoint.timeMs - point.timeMs);
+				const value = clamp01(energyPoint.value);
+				if (offsetMs <= BEAT_ENERGY_PEAK_RADIUS_MS) {
+					peak = Math.max(peak, value);
+				} else if (offsetMs >= BEAT_ENERGY_BASELINE_INNER_MS) {
+					localBaselineValues.push(value);
+				}
+				energyIndex++;
+			}
+			localBaselineValues.sort((left, right) => left - right);
+			const baseline = quantile(localBaselineValues, 0.2);
+			const absoluteImpact = smootherStep01((peak - 0.35) / 0.55);
+			const transientImpact = smootherStep01((peak - baseline - 0.1) / 0.45);
+			cached.set(point, absoluteImpact * (0.2 + transientImpact * 0.8));
+		}
+		beatEnergyImpacts.set(analysis, cached);
+	}
+	return cached.get(beat) ?? 0;
+}
+
 function hasUsableBeatGrid(analysis: RhythmAnalysis): boolean {
 	const cached = usableBeatGridCache.get(analysis);
 	if (cached !== undefined) return cached;
@@ -215,7 +272,10 @@ export function normalizeBeatStrength(
 	const uniformContrast = smootherStep01(
 		safeStrength / Math.max(0.001, profile.upper),
 	);
-	const rangeBlend = smootherStep01(spread / 0.08);
+	// 对窄动态曲目少用分位对比，避免听感一致的重拍仅因很小的
+	// novelty 差异就在 0.12 与 1.0 之间交替。动态真正足够宽时，
+	// 仍保留原有的强弱分层。
+	const rangeBlend = smootherStep01(spread / BEAT_DYNAMIC_RANGE_SCALE);
 	const contrast =
 		uniformContrast + (relativeContrast - uniformContrast) * rangeBlend;
 	// 后端以 0.06 作为可定位真实拍点的门槛；在同一范围内连续淡入，
@@ -286,8 +346,9 @@ function beatReleaseMs(analysis: RhythmAnalysis): number {
 /**
  * 将分析结果变成连续的 0..1 视觉目标。
  *
- * beat 是主驱动；高密度 onset 只为空拍占位补强，或在完全没有 beat grid
- * 时降级使用，避免每秒约八次起音继续制造视觉碎动。
+ * beat 是主驱动；邻近 onset 只校正对应 beat 的强度，或在完全没有 beat
+ * grid 时降级使用。这样既不会漏掉 novelty 低估的真实重拍，也不会让
+ * 每秒数次的高密度 onset 独立制造视觉碎动。
  */
 export function sampleAnalysisTarget(
 	analysis: RhythmAnalysis,
@@ -307,8 +368,11 @@ export function sampleAnalysisTarget(
 						analysis,
 						point.strength,
 					);
-					const beatValue =
-						normalizedStrength * (0.82 + clamp01(point.confidence) * 0.18);
+					const impact = Math.max(
+						normalizedStrength,
+						beatEnergyImpact(analysis, point),
+					);
+					const beatValue = impact * (0.82 + clamp01(point.confidence) * 0.18);
 					const placeholderBlend =
 						1 - smootherStep01(clamp01(point.strength) / 0.06);
 					const onsetValue =
@@ -319,10 +383,9 @@ export function sampleAnalysisTarget(
 								point,
 							),
 						) *
-						0.64 *
-						placeholderBlend;
-					// 仅为后端标记的弱占位连续补回邻近真实打击，不让高密度 onset
-					// 覆盖正常 beat 的强弱关系。
+						(0.76 + placeholderBlend * 0.12);
+					// onset 只合并到最近的 beat，不独立制造高密度峰。正常拍也需要
+					// 它校正 novelty 强度，否则窄动态的重低音会被误判成弱拍。
 					return Math.max(beatValue, onsetValue);
 				},
 			)
@@ -337,14 +400,23 @@ export function sampleAnalysisTarget(
 				(point) => Math.sqrt(clamp01(point.strength)),
 			);
 
-	const breath = Math.sqrt(energy) * 0.28;
-	const beatAccent = hasBeatGrid ? beat * 0.72 : 0;
-	const onsetFallback = hasBeatGrid ? 0 : onset * 0.28;
+	const breath = Math.sqrt(energy) * 0.2;
+	const beatAccent = hasBeatGrid ? beat * 0.8 : 0;
+	const onsetFallback = hasBeatGrid ? 0 : onset * 0.3;
 	return clamp01(breath + Math.max(beatAccent, onsetFallback));
 }
 
 export function mapRhythmTargetToVolume(target: number): number {
 	return clamp01(target) * MAX_RHYTHM_VISUAL_VOLUME;
+}
+
+/**
+ * 丢帧后不追赶没有真正显示过的动画。音乐时间仍按真实进度采样，只有
+ * 当前可见帧的视觉状态推进量受限，避免恢复渲染时一步跳到新姿态。
+ */
+export function limitRhythmVisualDelta(deltaMs: number): number {
+	if (!Number.isFinite(deltaMs)) return 0;
+	return Math.min(MAX_RHYTHM_VISUAL_STEP_MS, Math.max(0, deltaMs));
 }
 
 /**

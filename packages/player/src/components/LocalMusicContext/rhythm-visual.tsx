@@ -17,6 +17,7 @@ import { emitAudioThread } from "../../utils/player.ts";
 import {
 	advanceRhythmVisualVolume,
 	clamp01,
+	limitRhythmVisualDelta,
 	MAX_RHYTHM_VISUAL_VOLUME,
 	mapRhythmTargetToVolume,
 	sampleAnalysisTarget,
@@ -141,10 +142,16 @@ export const LocalRhythmVisualContext: FC = () => {
 		let lastFrameTime = performance.now();
 		let lastPublishedFrameTime = lastFrameTime;
 		let lastPosition: number | null = null;
-		let lastMusicId = "";
-		let lastGeneration = -1;
+		const initialMusicId = store.get(musicIdAtom);
+		const initialRhythmState = store.get(currentRhythmAnalysisAtom);
+		let lastMusicId = initialMusicId;
+		let lastGeneration = initialRhythmState?.generation ?? -1;
 		let lastResetSignal = store.get(rhythmVisualResetAtom);
-		let analysisBlend = 0;
+		let analysisBlend =
+			initialRhythmState?.musicId === initialMusicId &&
+			initialRhythmState.analysis
+				? 1
+				: 0;
 		let smoothedValue = store.get(lowFreqVolumeAtom);
 		const spectralState: SpectralFluxState = {
 			lastFrame: null,
@@ -162,6 +169,7 @@ export const LocalRhythmVisualContext: FC = () => {
 		const update = (frameTime: number) => {
 			const rawDeltaMs = frameTime - lastFrameTime;
 			const deltaMs = Number.isFinite(rawDeltaMs) ? Math.max(0, rawDeltaMs) : 0;
+			const visualDeltaMs = limitRhythmVisualDelta(deltaMs);
 			lastFrameTime = frameTime;
 
 			const musicId = store.get(musicIdAtom);
@@ -217,7 +225,7 @@ export const LocalRhythmVisualContext: FC = () => {
 			smoothedValue = advanceRhythmVisualVolume(
 				smoothedValue,
 				targetVolume,
-				deltaMs,
+				visualDeltaMs,
 			);
 
 			// 连续信号固定以 60Hz 送入 React；Mesh 在自己的高帧率 rAF 内做

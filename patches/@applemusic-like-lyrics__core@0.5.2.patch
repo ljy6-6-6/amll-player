@@ -5,13 +5,22 @@ diff --git a/dist/amll-core.cjs b/dist/amll-core.cjs
 +mesh_frag_default = mesh_frag_default.replace("vec2 centeredUV = v_uv - vec2(0.2);", "vec2 centeredUV = v_uv - vec2(0.5);");
 @@ -1144,0 +1145,4 @@ var MeshGradientRenderer = class extends BaseRenderer {
 +	rhythmBaseline = 0;
-+	rhythmPhase = 0;
++	rhythmSwing = 0;
 +	rhythmBreath = 0;
 +	rhythmInitialized = false;
-@@ -1266,2 +1270,19 @@ var MeshGradientRenderer = class extends BaseRenderer {
+@@ -1195,2 +1199,3 @@ var MeshGradientRenderer = class extends BaseRenderer {
+-		this.frameTime += frameDelta * this.flowSpeed;
+-		if (!(this.onRedraw(this.frameTime, frameDelta) && this.staticMode)) this.requestTick();
++		const safeFrameDelta = Number.isFinite(frameDelta) ? Math.min(50, Math.max(0, frameDelta)) : 0;
++		this.frameTime += safeFrameDelta * this.flowSpeed;
++		if (!(this.onRedraw(this.frameTime, safeFrameDelta) && this.staticMode)) this.requestTick();
+@@ -1231 +1236,2 @@ var MeshGradientRenderer = class extends BaseRenderer {
+-		const deltaFactor = delta / 500;
++		const safeDelta = Number.isFinite(delta) ? Math.min(50, Math.max(0, delta)) : 0;
++		const deltaFactor = safeDelta / 500;
+@@ -1266,2 +1272,21 @@ var MeshGradientRenderer = class extends BaseRenderer {
 -		const lerpFactor = Math.min(1, delta / 100);
 -		this.smoothedVolume += (this.volume - this.smoothedVolume) * lerpFactor;
-+		const safeDelta = Number.isFinite(delta) ? Math.max(0, delta) : 0;
 +		const lerpFactor = 1 - Math.exp(-safeDelta / 55);
 +		this.smoothedVolume += (this.volume - this.smoothedVolume) * lerpFactor;
 +		const signal = Math.min(1, Math.max(0, this.smoothedVolume * 25));
@@ -19,31 +28,34 @@ diff --git a/dist/amll-core.cjs b/dist/amll-core.cjs
 +			this.rhythmBaseline = signal;
 +			this.rhythmInitialized = true;
 +		}
-+		const accent = Math.max(0, signal - this.rhythmBaseline);
-+		const baselineFactor = 1 - Math.exp(-safeDelta / 900);
++		const swingDelta = signal - this.rhythmBaseline;
++		const swingGain = 1 + Math.max(signal, this.rhythmBaseline) * 2.4;
++		const targetSwing = Math.min(.65, Math.max(-.65, swingDelta * swingGain));
++		const baselineFactor = 1 - Math.exp(-safeDelta / 1200);
 +		this.rhythmBaseline += (signal - this.rhythmBaseline) * baselineFactor;
-+		const rotationSpeed = Math.min(2.6, accent * 3.2);
-+		this.rhythmPhase = (this.rhythmPhase + rotationSpeed * safeDelta / 1e3) % (Math.PI * 2);
-+		const targetBreath = Math.min(.075, Math.max(0, this.rhythmBaseline * .09 + accent * .09));
-+		const breathMs = targetBreath > this.rhythmBreath ? 90 : 360;
++		const swingMs = targetSwing > this.rhythmSwing ? 60 : 260;
++		const swingFactor = 1 - Math.exp(-safeDelta / swingMs);
++		this.rhythmSwing += (targetSwing - this.rhythmSwing) * swingFactor;
++		const targetBreath = Math.min(.12, signal * .16);
++		const breathMs = targetBreath > this.rhythmBreath ? 110 : 380;
 +		const breathFactor = 1 - Math.exp(-safeDelta / breathMs);
 +		this.rhythmBreath += (targetBreath - this.rhythmBreath) * breathFactor;
 +		const breathVolume = this.rhythmBreath;
 +		const compensatedAlpha = 1 / Math.max(.5, 1 - breathVolume * .5);
-@@ -1278,3 +1300,3 @@ var MeshGradientRenderer = class extends BaseRenderer {
+@@ -1278,3 +1304,3 @@ var MeshGradientRenderer = class extends BaseRenderer {
 -			this.mainProgram.setUniform1f("u_volume", this.volume);
 -			this.mainProgram.setUniform1f("u_alpha", 1);
 -			const angle = (uTime + this.volume) * 2;
 +			this.mainProgram.setUniform1f("u_volume", breathVolume);
 +			this.mainProgram.setUniform1f("u_alpha", compensatedAlpha);
-+			const angle = uTime * 2 + this.rhythmPhase;
-@@ -1369,0 +1391,5 @@ var MeshGradientRenderer = class extends BaseRenderer {
++			const angle = uTime * 2 + this.rhythmSwing;
+@@ -1366,0 +1392,3 @@ var MeshGradientRenderer = class extends BaseRenderer {
++		const now = performance.now();
++		this.lastFrameTime = now;
++		this.lastTickTime = now;
+@@ -1369,0 +1398 @@ var MeshGradientRenderer = class extends BaseRenderer {
 +		this.volume = 0;
-+		this.smoothedVolume = 0;
-+		this.rhythmBaseline = 0;
-+		this.rhythmBreath = 0;
-+		this.rhythmInitialized = false;
-@@ -1474 +1501,2 @@ var MeshGradientRenderer = class extends BaseRenderer {
+@@ -1474 +1504,2 @@ var MeshGradientRenderer = class extends BaseRenderer {
 -		this.volume = volume / 10;
 +		const safeVolume = Number.isFinite(volume) ? Math.min(1, Math.max(0, volume)) : 0;
 +		this.volume = safeVolume / 10;
@@ -54,13 +66,22 @@ diff --git a/dist/amll-core.mjs b/dist/amll-core.mjs
 +mesh_frag_default = mesh_frag_default.replace("vec2 centeredUV = v_uv - vec2(0.2);", "vec2 centeredUV = v_uv - vec2(0.5);");
 @@ -1119,0 +1120,4 @@ var MeshGradientRenderer = class extends BaseRenderer {
 +	rhythmBaseline = 0;
-+	rhythmPhase = 0;
++	rhythmSwing = 0;
 +	rhythmBreath = 0;
 +	rhythmInitialized = false;
-@@ -1241,2 +1245,19 @@ var MeshGradientRenderer = class extends BaseRenderer {
+@@ -1170,2 +1174,3 @@ var MeshGradientRenderer = class extends BaseRenderer {
+-		this.frameTime += frameDelta * this.flowSpeed;
+-		if (!(this.onRedraw(this.frameTime, frameDelta) && this.staticMode)) this.requestTick();
++		const safeFrameDelta = Number.isFinite(frameDelta) ? Math.min(50, Math.max(0, frameDelta)) : 0;
++		this.frameTime += safeFrameDelta * this.flowSpeed;
++		if (!(this.onRedraw(this.frameTime, safeFrameDelta) && this.staticMode)) this.requestTick();
+@@ -1206 +1211,2 @@ var MeshGradientRenderer = class extends BaseRenderer {
+-		const deltaFactor = delta / 500;
++		const safeDelta = Number.isFinite(delta) ? Math.min(50, Math.max(0, delta)) : 0;
++		const deltaFactor = safeDelta / 500;
+@@ -1241,2 +1247,21 @@ var MeshGradientRenderer = class extends BaseRenderer {
 -		const lerpFactor = Math.min(1, delta / 100);
 -		this.smoothedVolume += (this.volume - this.smoothedVolume) * lerpFactor;
-+		const safeDelta = Number.isFinite(delta) ? Math.max(0, delta) : 0;
 +		const lerpFactor = 1 - Math.exp(-safeDelta / 55);
 +		this.smoothedVolume += (this.volume - this.smoothedVolume) * lerpFactor;
 +		const signal = Math.min(1, Math.max(0, this.smoothedVolume * 25));
@@ -68,31 +89,34 @@ diff --git a/dist/amll-core.mjs b/dist/amll-core.mjs
 +			this.rhythmBaseline = signal;
 +			this.rhythmInitialized = true;
 +		}
-+		const accent = Math.max(0, signal - this.rhythmBaseline);
-+		const baselineFactor = 1 - Math.exp(-safeDelta / 900);
++		const swingDelta = signal - this.rhythmBaseline;
++		const swingGain = 1 + Math.max(signal, this.rhythmBaseline) * 2.4;
++		const targetSwing = Math.min(.65, Math.max(-.65, swingDelta * swingGain));
++		const baselineFactor = 1 - Math.exp(-safeDelta / 1200);
 +		this.rhythmBaseline += (signal - this.rhythmBaseline) * baselineFactor;
-+		const rotationSpeed = Math.min(2.6, accent * 3.2);
-+		this.rhythmPhase = (this.rhythmPhase + rotationSpeed * safeDelta / 1e3) % (Math.PI * 2);
-+		const targetBreath = Math.min(.075, Math.max(0, this.rhythmBaseline * .09 + accent * .09));
-+		const breathMs = targetBreath > this.rhythmBreath ? 90 : 360;
++		const swingMs = targetSwing > this.rhythmSwing ? 60 : 260;
++		const swingFactor = 1 - Math.exp(-safeDelta / swingMs);
++		this.rhythmSwing += (targetSwing - this.rhythmSwing) * swingFactor;
++		const targetBreath = Math.min(.12, signal * .16);
++		const breathMs = targetBreath > this.rhythmBreath ? 110 : 380;
 +		const breathFactor = 1 - Math.exp(-safeDelta / breathMs);
 +		this.rhythmBreath += (targetBreath - this.rhythmBreath) * breathFactor;
 +		const breathVolume = this.rhythmBreath;
 +		const compensatedAlpha = 1 / Math.max(.5, 1 - breathVolume * .5);
-@@ -1253,3 +1275,3 @@ var MeshGradientRenderer = class extends BaseRenderer {
+@@ -1253,3 +1279,3 @@ var MeshGradientRenderer = class extends BaseRenderer {
 -			this.mainProgram.setUniform1f("u_volume", this.volume);
 -			this.mainProgram.setUniform1f("u_alpha", 1);
 -			const angle = (uTime + this.volume) * 2;
 +			this.mainProgram.setUniform1f("u_volume", breathVolume);
 +			this.mainProgram.setUniform1f("u_alpha", compensatedAlpha);
-+			const angle = uTime * 2 + this.rhythmPhase;
-@@ -1344,0 +1366,5 @@ var MeshGradientRenderer = class extends BaseRenderer {
++			const angle = uTime * 2 + this.rhythmSwing;
+@@ -1341,0 +1367,3 @@ var MeshGradientRenderer = class extends BaseRenderer {
++		const now = performance.now();
++		this.lastFrameTime = now;
++		this.lastTickTime = now;
+@@ -1344,0 +1373 @@ var MeshGradientRenderer = class extends BaseRenderer {
 +		this.volume = 0;
-+		this.smoothedVolume = 0;
-+		this.rhythmBaseline = 0;
-+		this.rhythmBreath = 0;
-+		this.rhythmInitialized = false;
-@@ -1449 +1476,2 @@ var MeshGradientRenderer = class extends BaseRenderer {
+@@ -1449 +1479,2 @@ var MeshGradientRenderer = class extends BaseRenderer {
 -		this.volume = volume / 10;
 +		const safeVolume = Number.isFinite(volume) ? Math.min(1, Math.max(0, volume)) : 0;
 +		this.volume = safeVolume / 10;

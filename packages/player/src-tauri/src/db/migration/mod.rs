@@ -6,13 +6,15 @@ use sea_orm_migration::prelude::*;
 use sea_orm::{ConnectionTrait, DatabaseConnection, TransactionTrait};
 
 const RHYTHM_MIGRATION_NAME: &str = "m20260721_000003_add_song_rhythm_analyses";
-const RHYTHM_MIGRATION_TABLE: &str = "seaql_rhythm_migrations";
 
 pub struct Migrator;
 
 #[async_trait::async_trait]
 impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
+        // Keep this default ledger frozen at the last schema understood by
+        // +1127. Rebuildable/new state must not add versions here, otherwise
+        // opening this database with that build becomes a fatal downgrade.
         vec![
             Box::new(m20260614_000001_init::Migration),
             Box::new(m20260614_000002_add_modified_at_and_playlist_song_sources::Migration),
@@ -20,38 +22,37 @@ impl MigratorTrait for Migrator {
     }
 }
 
-pub struct RhythmMigrator;
-
-#[async_trait::async_trait]
-impl MigratorTrait for RhythmMigrator {
-    fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-        vec![Box::new(
-            m20260721_000003_add_song_rhythm_analyses::Migration,
-        )]
-    }
-
-    fn migration_table_name() -> DynIden {
-        Alias::new(RHYTHM_MIGRATION_TABLE).into_iden()
-    }
-}
-
-/// Apply the legacy and rhythm schemas atomically while keeping the default
-/// migration ledger readable by player builds that predate rhythm analysis.
+/// Apply the persistent library migrations while keeping their ledger readable
+/// by player builds that predate the rebuildable rhythm-analysis cache.
 pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), DbErr> {
     let transaction = db.begin().await?;
+    let migration_result = async {
+        Migrator::install(&transaction).await?;
+        let remove_legacy_rhythm_marker = format!(
+            "DELETE FROM \"seaql_migrations\" WHERE \"version\" = '{RHYTHM_MIGRATION_NAME}'"
+        );
+        transaction
+            .execute_unprepared(&remove_legacy_rhythm_marker)
+            .await?;
+        Migrator::up(&transaction, None).await?;
 
-    // `install` also covers fresh databases, so the compatibility delete below
-    // remains an exact, harmless no-op when the legacy ledger has no rhythm row.
-    Migrator::install(&transaction).await?;
-    let remove_legacy_rhythm_marker = format!(
-        "DELETE FROM \"seaql_migrations\" WHERE \"version\" = '{RHYTHM_MIGRATION_NAME}'"
-    );
-    transaction
-        .execute_unprepared(&remove_legacy_rhythm_marker)
-        .await?;
+        // Rhythm analyses are a rebuildable cache. Keep this migration
+        // idempotent and ensure its schema directly instead of exposing its
+        // version in the legacy migration ledger.
+        let manager = SchemaManager::new(&transaction);
+        m20260721_000003_add_song_rhythm_analyses::Migration
+            .up(&manager)
+            .await?;
 
-    Migrator::up(&transaction, None).await?;
-    RhythmMigrator::up(&transaction, None).await?;
+        Ok::<(), DbErr>(())
+    }
+    .await;
+
+    if let Err(error) = migration_result {
+        transaction.rollback().await?;
+        return Err(error);
+    }
+
     transaction.commit().await
 }
 
@@ -61,12 +62,30 @@ mod tests {
 
     use super::*;
 
-    /// Reproduces the migration list shipped before the rhythm ledger was
-    /// separated for downgrade compatibility.
-    struct PreviouslyDeployedMigrator;
+    const LEGACY_MIGRATION_NAMES: [&str; 2] = [
+        "m20260614_000001_init",
+        "m20260614_000002_add_modified_at_and_playlist_song_sources",
+    ];
+    const FUTURE_MIGRATION_NAME: &str = "m20990101_000004_future_schema";
+
+    struct LegacyMigrator;
 
     #[async_trait::async_trait]
-    impl MigratorTrait for PreviouslyDeployedMigrator {
+    impl MigratorTrait for LegacyMigrator {
+        fn migrations() -> Vec<Box<dyn MigrationTrait>> {
+            vec![
+                Box::new(m20260614_000001_init::Migration),
+                Box::new(m20260614_000002_add_modified_at_and_playlist_song_sources::Migration),
+            ]
+        }
+    }
+
+    /// Reproduces the migration chain shipped by builds that first introduced
+    /// rhythm analysis through the default ledger.
+    struct TaintedMigrator;
+
+    #[async_trait::async_trait]
+    impl MigratorTrait for TaintedMigrator {
         fn migrations() -> Vec<Box<dyn MigrationTrait>> {
             vec![
                 Box::new(m20260614_000001_init::Migration),
@@ -85,31 +104,35 @@ mod tests {
             .expect("value should be an integer")
     }
 
-    #[tokio::test]
-    async fn fresh_database_uses_separate_ledgers() {
-        let db = Database::connect("sqlite::memory:")
-            .await
-            .expect("in-memory SQLite should open");
+    async fn migration_versions(db: &DatabaseConnection) -> Vec<String> {
+        db.query_all(Statement::from_string(
+            DbBackend::Sqlite,
+            "SELECT version FROM seaql_migrations ORDER BY version",
+        ))
+        .await
+        .expect("migration versions should be readable")
+        .into_iter()
+        .map(|row| {
+            row.try_get("", "version")
+                .expect("migration version should be text")
+        })
+        .collect()
+    }
 
-        run_migrations(&db)
-            .await
-            .expect("fresh migrations should apply");
-
+    async fn assert_legacy_ledger(db: &DatabaseConnection) {
         assert_eq!(
-            scalar_i64(&db, "SELECT COUNT(*) AS value FROM seaql_migrations").await,
-            2,
+            migration_versions(db).await,
+            LEGACY_MIGRATION_NAMES
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>(),
         );
+    }
+
+    async fn assert_rhythm_table_exists(db: &DatabaseConnection) {
         assert_eq!(
             scalar_i64(
-                &db,
-                "SELECT COUNT(*) AS value FROM seaql_rhythm_migrations",
-            )
-            .await,
-            1,
-        );
-        assert_eq!(
-            scalar_i64(
-                &db,
+                db,
                 "SELECT COUNT(*) AS value FROM sqlite_master \
                  WHERE type = 'table' AND name = 'song_rhythm_analyses'",
             )
@@ -118,42 +141,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn upgrades_database_with_only_legacy_migrations() {
-        let db = Database::connect("sqlite::memory:")
-            .await
-            .expect("in-memory SQLite should open");
-
-        Migrator::up(&db, None)
-            .await
-            .expect("legacy migrations should apply");
-        run_migrations(&db)
-            .await
-            .expect("rhythm migration should apply separately");
-
-        assert_eq!(
-            scalar_i64(&db, "SELECT COUNT(*) AS value FROM seaql_migrations").await,
-            2,
-        );
-        assert_eq!(
-            scalar_i64(
-                &db,
-                "SELECT COUNT(*) AS value FROM seaql_rhythm_migrations",
-            )
-            .await,
-            1,
-        );
-    }
-
-    #[tokio::test]
-    async fn moves_rhythm_marker_without_losing_cache_or_breaking_legacy_migrator() {
-        let db = Database::connect("sqlite::memory:")
-            .await
-            .expect("in-memory SQLite should open");
-
-        PreviouslyDeployedMigrator::up(&db, None)
-            .await
-            .expect("previous migrations should apply");
+    async fn insert_song_and_cache(db: &DatabaseConnection) {
         db.execute_unprepared(
             "INSERT INTO songs (id, file_path, song_name, song_artists, song_album, \
              duration, lyric_format, lyric) VALUES \
@@ -169,50 +157,128 @@ mod tests {
         )
         .await
         .expect("rhythm cache fixture should insert");
+    }
 
-        assert_eq!(
-            scalar_i64(
-                &db,
-                "SELECT COUNT(*) AS value FROM seaql_migrations \
-                 WHERE version = 'm20260721_000003_add_song_rhythm_analyses'",
-            )
-            .await,
-            1,
+    #[tokio::test]
+    async fn fresh_database_round_trips_between_new_and_legacy_migrators() {
+        let temp_dir = tempfile::tempdir().expect("temporary database directory should exist");
+        let database_path = temp_dir.path().join("library.db");
+        let database_url = format!(
+            "sqlite://{}?mode=rwc",
+            database_path.to_string_lossy().replace('\\', "/")
         );
+
+        let db = Database::connect(database_url.as_str())
+            .await
+            .expect("file-backed SQLite should open");
 
         run_migrations(&db)
             .await
-            .expect("compatibility migration should succeed");
-        run_migrations(&db)
-            .await
-            .expect("compatibility migration should remain idempotent");
-
+            .expect("new migrations should initialize a fresh database");
+        insert_song_and_cache(&db).await;
+        assert_legacy_ledger(&db).await;
+        assert_rhythm_table_exists(&db).await;
         assert_eq!(
             scalar_i64(
                 &db,
-                "SELECT COUNT(*) AS value FROM seaql_migrations",
-            )
-            .await,
-            2,
-        );
-        assert_eq!(
-            scalar_i64(
-                &db,
-                "SELECT COUNT(*) AS value FROM seaql_migrations \
-                 WHERE version = 'm20260721_000003_add_song_rhythm_analyses'",
+                "SELECT COUNT(*) AS value FROM sqlite_master \
+                 WHERE type = 'table' AND name = 'seaql_rhythm_migrations'",
             )
             .await,
             0,
         );
+        db.close()
+            .await
+            .expect("new database connection should close");
+
+        let legacy_db = Database::connect(database_url.as_str())
+            .await
+            .expect("legacy connection should reopen the database");
+        LegacyMigrator::up(&legacy_db, None)
+            .await
+            .expect("legacy migrator should accept the new database");
         assert_eq!(
             scalar_i64(
-                &db,
-                "SELECT COUNT(*) AS value FROM seaql_rhythm_migrations \
-                 WHERE version = 'm20260721_000003_add_song_rhythm_analyses'",
+                &legacy_db,
+                "SELECT COUNT(*) AS value FROM song_rhythm_analyses \
+                 WHERE song_id = 'song-1' AND payload_json = '{\"beats\":[1.0]}'",
             )
             .await,
             1,
         );
+        legacy_db
+            .close()
+            .await
+            .expect("legacy database connection should close");
+
+        let reopened_db = Database::connect(database_url.as_str())
+            .await
+            .expect("new connection should reopen the legacy-checked database");
+        run_migrations(&reopened_db)
+            .await
+            .expect("new migrations should remain usable after the legacy migrator");
+        assert_legacy_ledger(&reopened_db).await;
+        assert_eq!(
+            scalar_i64(
+                &reopened_db,
+                "SELECT COUNT(*) AS value FROM song_rhythm_analyses WHERE song_id = 'song-1'",
+            )
+            .await,
+            1,
+        );
+        reopened_db
+            .close()
+            .await
+            .expect("reopened database connection should close");
+    }
+
+    #[tokio::test]
+    async fn legacy_database_upgrade_is_idempotent_and_remains_downgrade_safe() {
+        let db = Database::connect("sqlite::memory:")
+            .await
+            .expect("in-memory SQLite should open");
+
+        LegacyMigrator::up(&db, None)
+            .await
+            .expect("legacy migrations should initialize the database");
+        run_migrations(&db)
+            .await
+            .expect("new migrations should upgrade the legacy database");
+        run_migrations(&db)
+            .await
+            .expect("new migrations should be idempotent");
+        LegacyMigrator::up(&db, None)
+            .await
+            .expect("legacy migrator should still accept the upgraded database");
+
+        assert_legacy_ledger(&db).await;
+        assert_rhythm_table_exists(&db).await;
+    }
+
+    #[tokio::test]
+    async fn tainted_ledger_is_repaired_without_losing_rhythm_cache() {
+        let db = Database::connect("sqlite::memory:")
+            .await
+            .expect("in-memory SQLite should open");
+
+        TaintedMigrator::up(&db, None)
+            .await
+            .expect("tainted migration chain should initialize the database");
+        insert_song_and_cache(&db).await;
+        assert!(
+            migration_versions(&db)
+                .await
+                .contains(&RHYTHM_MIGRATION_NAME.to_owned())
+        );
+
+        run_migrations(&db)
+            .await
+            .expect("new migrations should repair the tainted ledger");
+        run_migrations(&db)
+            .await
+            .expect("ledger repair should be idempotent");
+
+        assert_legacy_ledger(&db).await;
         assert_eq!(
             scalar_i64(
                 &db,
@@ -222,17 +288,38 @@ mod tests {
             .await,
             1,
         );
-
-        Migrator::up(&db, None)
+        LegacyMigrator::up(&db, None)
             .await
-            .expect("legacy migrator should ignore the separate rhythm ledger");
-        assert_eq!(
-            scalar_i64(
-                &db,
-                "SELECT COUNT(*) AS value FROM song_rhythm_analyses WHERE song_id = 'song-1'",
-            )
-            .await,
-            1,
+            .expect("legacy migrator should accept the repaired database");
+    }
+
+    #[tokio::test]
+    async fn unknown_future_marker_is_rejected_without_partial_ledger_repair() {
+        let db = Database::connect("sqlite::memory:")
+            .await
+            .expect("in-memory SQLite should open");
+
+        TaintedMigrator::up(&db, None)
+            .await
+            .expect("tainted migration chain should initialize the database");
+        db.execute_unprepared(&format!(
+            "INSERT INTO seaql_migrations (version, applied_at) \
+             VALUES ('{FUTURE_MIGRATION_NAME}', 1)"
+        ))
+        .await
+        .expect("future migration marker should insert");
+        let versions_before = migration_versions(&db).await;
+
+        let error = run_migrations(&db)
+            .await
+            .expect_err("unknown future migration should remain an error");
+
+        assert!(error.to_string().contains(FUTURE_MIGRATION_NAME));
+        assert_eq!(migration_versions(&db).await, versions_before);
+        assert!(
+            migration_versions(&db)
+                .await
+                .contains(&RHYTHM_MIGRATION_NAME.to_owned())
         );
     }
 }
