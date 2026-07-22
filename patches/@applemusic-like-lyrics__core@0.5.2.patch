@@ -128,3 +128,13 @@ index 37bd987..d8ab770 100644
 @@ -1449 +1478 @@ var MeshGradientRenderer = class extends BaseRenderer {
 -		this.volume = volume / 10;
 +		this.volume = Number.isFinite(volume) ? volume / 10 : 0;
+diff --git a/dist/style.css b/dist/style.css
+--- a/dist/style.css
++++ b/dist/style.css
+@@ -143 +143,6 @@
++.FmKaba_lyricMainLine span.FmKaba_emphasizeWrapper > span:not(.FmKaba_emphasize) {
++  margin: -.1em;
++  padding: .1em;
++}
++
+ .FmKaba_lyricBgLine {
