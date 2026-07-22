@@ -15,6 +15,18 @@ const STRONG_BEAT_PRE_ROLL_MS = 65;
 const STRONG_BEAT_RELEASE_MS = 130;
 const STRONG_BEAT_IMPACT_START = 0.96;
 const STRONG_BEAT_IMPACT_FULL = 0.995;
+const PERCUSSIVE_ACCENT_PRE_ROLL_MS = 55;
+const PERCUSSIVE_ACCENT_RELEASE_MS = 170;
+const PERCUSSIVE_ACCENT_GRID_TOLERANCE_RATIO = 0.32;
+const PERCUSSIVE_ACCENT_GRID_TOLERANCE_MIN_MS = 90;
+const PERCUSSIVE_ACCENT_GRID_TOLERANCE_MAX_MS = 180;
+const PERCUSSIVE_ACCENT_GRID_COVERAGE_FULL = 0.4;
+const PERCUSSIVE_ACCENT_GRID_COVERAGE_LIMIT = 0.5;
+const PERCUSSIVE_ACCENT_MIN_SALIENT_ONSETS = 6;
+const PERCUSSIVE_ACCENT_NMS_MS = 125;
+const PERCUSSIVE_ACCENT_RAW_FLOOR = 0.18;
+const PERCUSSIVE_ACCENT_STANDALONE_FLOOR = 0.64;
+const PERCUSSIVE_ACCENT_QUANTILE_BIN_COUNT = 1024;
 
 const VISUAL_ATTACK_MS = 70;
 const VISUAL_RELEASE_MS = 250;
@@ -36,12 +48,32 @@ interface BeatStrengthProfile {
 	upper: number;
 }
 
+interface PercussiveAccentPoint {
+	timeMs: number;
+	strength: number;
+	structured: boolean;
+}
+
+interface PercussiveAccentCandidate extends PercussiveAccentPoint {
+	coveredByGrid: boolean;
+}
+
+interface PercussiveAccentProfile {
+	gridCoverage: number;
+	points: PercussiveAccentPoint[];
+	strongPoints: PercussiveAccentPoint[];
+}
+
 const beatStrengthProfiles = new WeakMap<RhythmAnalysis, BeatStrengthProfile>();
 const beatEnergyImpacts = new WeakMap<
 	RhythmAnalysis,
 	Map<RhythmBeatPoint, number>
 >();
 const usableBeatGridCache = new WeakMap<RhythmAnalysis, boolean>();
+const percussiveAccentProfiles = new WeakMap<
+	RhythmAnalysis,
+	PercussiveAccentProfile
+>();
 
 /**
  * 保持现有 0..0.4 接口范围；Mesh 内部会在拆分慢呼吸与重拍相位前将其
@@ -251,6 +283,283 @@ function beatEnergyImpact(
 	return cached.get(beat) ?? 0;
 }
 
+function approximatePercussiveSalientThreshold(
+	onsets: readonly RhythmOnsetPoint[],
+): number {
+	const bins = new Uint32Array(PERCUSSIVE_ACCENT_QUANTILE_BIN_COUNT);
+	for (const onset of onsets) {
+		const bin = Math.min(
+			PERCUSSIVE_ACCENT_QUANTILE_BIN_COUNT - 1,
+			Math.floor(
+				clamp01(onset.strength) * PERCUSSIVE_ACCENT_QUANTILE_BIN_COUNT,
+			),
+		);
+		bins[bin]++;
+	}
+	const position = 0.8 * (onsets.length - 1);
+	const lowerRank = Math.floor(position);
+	const upperRank = Math.ceil(position);
+	let lowerValue: number | undefined;
+	let upperValue = 0;
+	let seen = 0;
+	for (let bin = 0; bin < bins.length; bin++) {
+		seen += bins[bin] ?? 0;
+		const value = bin / PERCUSSIVE_ACCENT_QUANTILE_BIN_COUNT;
+		if (seen > lowerRank && lowerValue === undefined) lowerValue = value;
+		if (seen <= upperRank) continue;
+		upperValue = value;
+		break;
+	}
+	const amount = position - lowerRank;
+	const lower = lowerValue ?? upperValue;
+	return Math.max(0.65, lower + (upperValue - lower) * amount);
+}
+
+function onsetGridCoverageFlags(
+	onsets: readonly RhythmOnsetPoint[],
+	beats: readonly RhythmBeatPoint[],
+	toleranceMs: number,
+): Uint8Array {
+	const covered = new Uint8Array(onsets.length);
+	if (beats.length === 0) return covered;
+
+	let beatIndex = 0;
+	for (let onsetIndex = 0; onsetIndex < onsets.length; onsetIndex++) {
+		const onset = onsets[onsetIndex];
+		if (!onset) continue;
+		while (beatIndex + 1 < beats.length) {
+			const current = beats[beatIndex];
+			const next = beats[beatIndex + 1];
+			if (!(current && next)) break;
+			const currentDistance = Math.abs(current.timeMs - onset.timeMs);
+			const nextDistance = Math.abs(next.timeMs - onset.timeMs);
+			if (nextDistance < currentDistance || next.timeMs === current.timeMs) {
+				beatIndex++;
+			} else {
+				break;
+			}
+		}
+		const nearest = beats[beatIndex];
+		if (nearest && Math.abs(nearest.timeMs - onset.timeMs) <= toleranceMs) {
+			covered[onsetIndex] = 1;
+		}
+	}
+	return covered;
+}
+
+function peakEnergyAroundOnsets(
+	onsets: readonly RhythmOnsetPoint[],
+	energy: readonly RhythmTimedValue[],
+	radiusMs: number,
+): Float64Array {
+	const peaks = new Float64Array(onsets.length);
+	const deque = new Int32Array(energy.length);
+	let head = 0;
+	let tail = 0;
+	let nextEnergy = 0;
+
+	for (let onsetIndex = 0; onsetIndex < onsets.length; onsetIndex++) {
+		const onset = onsets[onsetIndex];
+		if (!onset) continue;
+		const upper = onset.timeMs + radiusMs;
+		const lower = onset.timeMs - radiusMs;
+		while (
+			nextEnergy < energy.length &&
+			(energy[nextEnergy]?.timeMs ?? Number.POSITIVE_INFINITY) <= upper
+		) {
+			const value = clamp01(energy[nextEnergy]?.value ?? 0);
+			while (
+				tail > head &&
+				clamp01(energy[deque[tail - 1] ?? 0]?.value ?? 0) <= value
+			) {
+				tail--;
+			}
+			deque[tail++] = nextEnergy++;
+		}
+		while (
+			head < tail &&
+			(energy[deque[head] ?? 0]?.timeMs ?? Number.NEGATIVE_INFINITY) < lower
+		) {
+			head++;
+		}
+		peaks[onsetIndex] =
+			head < tail ? clamp01(energy[deque[head] ?? 0]?.value ?? 0) : 0;
+	}
+	return peaks;
+}
+
+function percussiveGridToleranceMs(analysis: RhythmAnalysis): number {
+	const periodMs = analysis.globalBpm
+		? 60_000 / Math.max(1, analysis.globalBpm)
+		: PERCUSSIVE_ACCENT_GRID_TOLERANCE_MAX_MS /
+			PERCUSSIVE_ACCENT_GRID_TOLERANCE_RATIO;
+	return clamp(
+		periodMs * PERCUSSIVE_ACCENT_GRID_TOLERANCE_RATIO,
+		PERCUSSIVE_ACCENT_GRID_TOLERANCE_MIN_MS,
+		PERCUSSIVE_ACCENT_GRID_TOLERANCE_MAX_MS,
+	);
+}
+
+/**
+ * 有些歌曲能建立全曲拍点网格，但局部敲击采用切分、三连击或完全不同的
+ * 拍速。先用全曲 P80 强 onset 检查网格覆盖率；只有覆盖率确实偏低时，
+ * 才从 onset 中提取稀疏的可听敲击，避免改变目前已经稳定的多数歌曲。
+ *
+ * 声学门控同时要求频谱变化、至少三个频带的展开以及局部可听能量。
+ * “三声—停—三声”结构允许较弱的第二、第三声被同组强声补足，但结构
+ * 本身不能让没有声学冲击的普通密集 onset 变成重拍。
+ */
+function percussiveAccentProfile(
+	analysis: RhythmAnalysis,
+): PercussiveAccentProfile {
+	const cached = percussiveAccentProfiles.get(analysis);
+	if (cached) return cached;
+
+	const emptyProfile = { gridCoverage: 1, points: [], strongPoints: [] };
+	if (!hasUsableBeatGrid(analysis) || analysis.onsets.length === 0) {
+		percussiveAccentProfiles.set(analysis, emptyProfile);
+		return emptyProfile;
+	}
+
+	const salientThreshold = approximatePercussiveSalientThreshold(
+		analysis.onsets,
+	);
+	// 后端会在网格中保留 strength=0 的占位点；它们不能证明附近的
+	// onset 已被正确解释，否则快歌或错相位网格会天然得到虚假的高覆盖率。
+	const usableBeats = analysis.beats.filter(
+		(point) => clamp01(point.strength) >= 0.06,
+	);
+	const gridToleranceMs = percussiveGridToleranceMs(analysis);
+	const coveredByGrid = onsetGridCoverageFlags(
+		analysis.onsets,
+		usableBeats,
+		gridToleranceMs,
+	);
+	let salientOnsetCount = 0;
+	let coveredSalientOnsetCount = 0;
+	for (let index = 0; index < analysis.onsets.length; index++) {
+		if (clamp01(analysis.onsets[index]?.strength ?? 0) < salientThreshold) {
+			continue;
+		}
+		salientOnsetCount++;
+		coveredSalientOnsetCount += coveredByGrid[index] ?? 0;
+	}
+	const gridCoverage =
+		coveredSalientOnsetCount / Math.max(1, salientOnsetCount);
+	const coverageCorrection =
+		1 -
+		smootherStep01(
+			(gridCoverage - PERCUSSIVE_ACCENT_GRID_COVERAGE_FULL) /
+				(PERCUSSIVE_ACCENT_GRID_COVERAGE_LIMIT -
+					PERCUSSIVE_ACCENT_GRID_COVERAGE_FULL),
+		);
+	if (
+		salientOnsetCount < PERCUSSIVE_ACCENT_MIN_SALIENT_ONSETS ||
+		coverageCorrection <= 0
+	) {
+		const profile = { gridCoverage, points: [], strongPoints: [] };
+		percussiveAccentProfiles.set(analysis, profile);
+		return profile;
+	}
+
+	const peakEnergies = peakEnergyAroundOnsets(
+		analysis.onsets,
+		analysis.energyEnvelope,
+		90,
+	);
+	const candidates: PercussiveAccentCandidate[] = [];
+	for (let onsetIndex = 0; onsetIndex < analysis.onsets.length; onsetIndex++) {
+		const onset = analysis.onsets[onsetIndex];
+		if (!onset) continue;
+		const sortedBands = [...(onset.bands ?? [])].sort(
+			(left, right) => right - left,
+		);
+		const bandBreadth =
+			((sortedBands[0] ?? 0) + (sortedBands[1] ?? 0) + (sortedBands[2] ?? 0)) /
+			3;
+		const spectralStrength = smootherStep01(
+			(clamp01(onset.strength) - 0.68) / 0.22,
+		);
+		const breadthStrength = smootherStep01((bandBreadth - 0.62) / 0.25);
+		const audibleStrength = smootherStep01(
+			((peakEnergies[onsetIndex] ?? 0) - 0.42) / 0.43,
+		);
+		const strength = Math.cbrt(
+			spectralStrength * breadthStrength * audibleStrength,
+		);
+		if (strength < PERCUSSIVE_ACCENT_RAW_FLOOR) continue;
+
+		const candidate = {
+			timeMs: onset.timeMs,
+			strength,
+			structured: false,
+			coveredByGrid: coveredByGrid[onsetIndex] === 1,
+		};
+		const previous = candidates[candidates.length - 1];
+		if (
+			previous &&
+			candidate.timeMs - previous.timeMs < PERCUSSIVE_ACCENT_NMS_MS
+		) {
+			if (candidate.strength > previous.strength) {
+				candidates[candidates.length - 1] = candidate;
+			}
+			continue;
+		}
+		candidates.push(candidate);
+	}
+
+	const structuredTimes = new Set<number>();
+	for (let index = 0; index + 5 < candidates.length; index++) {
+		const window = candidates.slice(index, index + 6);
+		const [first, second, third, fourth, fifth, sixth] = window;
+		if (!(first && second && third && fourth && fifth && sixth)) continue;
+		const shortGaps = [
+			second.timeMs - first.timeMs,
+			third.timeMs - second.timeMs,
+			fifth.timeMs - fourth.timeMs,
+			sixth.timeMs - fifth.timeMs,
+		].sort((left, right) => left - right);
+		const referenceGap = quantile(shortGaps, 0.5);
+		const pauseGap = fourth.timeMs - third.timeMs;
+		const regularTriplets =
+			referenceGap >= 150 &&
+			referenceGap <= 360 &&
+			shortGaps.every(
+				(gap) => Math.abs(gap - referenceGap) <= referenceGap * 0.22,
+			);
+		const separatedGroups =
+			pauseGap >= referenceGap * 1.55 && pauseGap <= referenceGap * 3.2;
+		if (regularTriplets && separatedGroups) {
+			for (const point of window) structuredTimes.add(point.timeMs);
+		}
+	}
+
+	const points = candidates.flatMap((candidate) => {
+		const structured = structuredTimes.has(candidate.timeMs);
+		const rawStrength = structured
+			? Math.max(candidate.strength, 0.52 + candidate.strength * 0.18)
+			: candidate.strength;
+		const strength = rawStrength * coverageCorrection;
+		// 普通 onset 只补拍格没有解释到的动态；结构化三连击需要保留六声，
+		// 即使其中一两声碰巧落在错误的慢速网格附近。
+		return (structured ||
+			(!candidate.coveredByGrid &&
+				rawStrength >= PERCUSSIVE_ACCENT_STANDALONE_FLOOR)) &&
+			strength >= PERCUSSIVE_ACCENT_RAW_FLOOR
+			? [{ timeMs: candidate.timeMs, strength, structured }]
+			: [];
+	});
+	// 普通漏拍会增强色块呼吸和跳动，但不会持续推动旋转。只有具备明确
+	// “三声—停—三声”时序结构的敲击才进入中等旋转通道。
+	const profile = {
+		gridCoverage,
+		points,
+		strongPoints: points.filter((point) => point.structured),
+	};
+	percussiveAccentProfiles.set(analysis, profile);
+	return profile;
+}
+
 function hasUsableBeatGrid(analysis: RhythmAnalysis): boolean {
 	const cached = usableBeatGridCache.get(analysis);
 	if (cached !== undefined) return cached;
@@ -307,7 +616,7 @@ export function sampleSmoothPulse(
 	return 1 - smootherStep01(offset / Math.max(1, releaseMs));
 }
 
-function sampleTimedPulses<T extends RhythmBeatPoint | RhythmOnsetPoint>(
+function sampleTimedPulses<T extends { timeMs: number }>(
 	values: readonly T[],
 	timeMs: number,
 	preRollMs: number,
@@ -403,11 +712,19 @@ export function sampleAnalysisTarget(
 				ONSET_RELEASE_MS,
 				(point) => Math.sqrt(clamp01(point.strength)),
 			);
+	const percussiveAccent = sampleTimedPulses(
+		percussiveAccentProfile(analysis).points,
+		timeMs,
+		PERCUSSIVE_ACCENT_PRE_ROLL_MS,
+		PERCUSSIVE_ACCENT_RELEASE_MS,
+		(point) => point.strength,
+	);
 
 	const breath = Math.sqrt(energy) * 0.2;
 	const beatAccent = hasBeatGrid ? beat * 0.8 : 0;
 	const onsetFallback = hasBeatGrid ? 0 : onset * 0.3;
-	return clamp01(breath + Math.max(beatAccent, onsetFallback));
+	const residualAccent = percussiveAccent * 0.72;
+	return clamp01(breath + Math.max(beatAccent, onsetFallback, residualAccent));
 }
 
 /**
@@ -420,7 +737,7 @@ export function sampleStrongBeatTarget(
 	timeMs: number,
 ): number {
 	if (!Number.isFinite(timeMs) || !hasUsableBeatGrid(analysis)) return 0;
-	return sampleTimedPulses(
+	const lowFrequencyImpact = sampleTimedPulses(
 		analysis.beats,
 		timeMs,
 		STRONG_BEAT_PRE_ROLL_MS,
@@ -431,6 +748,18 @@ export function sampleStrongBeatTarget(
 					(STRONG_BEAT_IMPACT_FULL - STRONG_BEAT_IMPACT_START),
 			),
 	);
+	const percussiveImpact = sampleTimedPulses(
+		percussiveAccentProfile(analysis).strongPoints,
+		timeMs,
+		STRONG_BEAT_PRE_ROLL_MS,
+		STRONG_BEAT_RELEASE_MS,
+		(point) => {
+			const continuousStrength =
+				smootherStep01((point.strength - 0.45) / 0.45) * 0.35;
+			return Math.max(0.22, continuousStrength);
+		},
+	);
+	return Math.max(lowFrequencyImpact, percussiveImpact);
 }
 
 export function mapRhythmTargetToVolume(target: number): number {

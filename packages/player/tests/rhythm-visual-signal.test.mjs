@@ -330,6 +330,256 @@ test("Shots 真实片段只将前 26 个极重拍送入额外旋转通道", () =
 	);
 });
 
+// 来自本机实际缓存的纯数值摘要，不包含音频、路径或歌曲元数据。
+// 第一段保留 2:05 附近的“三声—停—三声”：
+// [onsetTime, novelty, five bands, ±90ms RMS peak]
+const TRIPLET_ACCENT_ROWS = [
+	[125_144, 0.842, [0.34, 0.05, 0.35, 0.98, 0.99], 0.843],
+	[125_341, 0.754, [0, 0, 0.27, 0.87, 0.95], 0.781],
+	[125_550, 0.785, [0, 0.75, 0.75, 0.66, 0.97], 0.689],
+	[125_945, 0.836, [0, 0.64, 0.97, 0.87, 0.83], 0.648],
+	[126_154, 0.758, [0, 0.88, 0.92, 0, 0.43], 0.508],
+	[126_351, 0.751, [0.51, 0.82, 0.69, 0.48, 0.78], 0.571],
+];
+
+// 第二段保留 0:54 后错误慢速网格漏掉的宽频鼓点。
+const DRUM_ACCENT_ROWS = [
+	[54_195, 0.933, [0, 0.96, 1, 1, 1], 0.893],
+	[54_602, 0.86, [0, 0.12, 0.7, 1, 1], 0.755],
+	[54_822, 0.948, [1, 1, 0.94, 0.93, 0.34], 1],
+	[55_031, 0.839, [0.99, 0.4, 0.59, 0.93, 0], 0.938],
+	[55_438, 0.915, [1, 0.87, 0.65, 0.93, 0.6], 1],
+	[55_658, 0.927, [0, 1, 0.96, 1, 0.91], 0.888],
+];
+
+function makeLowCoverageAccentAnalysis({
+	rows,
+	beats,
+	durationMs,
+	globalBpm = 60,
+}) {
+	const quietOnsets = Array.from({ length: 24 }, (_, index) => ({
+		timeMs: 10_000 + index * 1_500,
+		strength: 0.2,
+		bands: [0.1, 0.1, 0.1, 0.1, 0.1],
+	}));
+	const onsets = [
+		...quietOnsets,
+		...rows.map(([timeMs, strength, bands]) => ({
+			timeMs,
+			strength,
+			bands,
+		})),
+	].sort((left, right) => left.timeMs - right.timeMs);
+	const energyEnvelope = [
+		{ timeMs: 0, value: 0.25 },
+		...rows.flatMap(([timeMs, , , peak]) => [
+			{ timeMs: timeMs - 100, value: peak * 0.55 },
+			{ timeMs, value: peak },
+			{ timeMs: timeMs + 100, value: peak * 0.55 },
+		]),
+		{ timeMs: durationMs, value: 0.25 },
+	].sort((left, right) => left.timeMs - right.timeMs);
+	return {
+		analyzerVersion: 1,
+		durationMs,
+		globalBpm,
+		confidence: 0.5,
+		beats,
+		onsets,
+		tempoSegments: [],
+		energyEnvelope,
+	};
+}
+
+test("低覆盖慢速网格会保留三声停顿三声，并只给中等偏重旋转", () => {
+	const analysis = makeLowCoverageAccentAnalysis({
+		rows: [
+			...TRIPLET_ACCENT_ROWS,
+			[125_771, 0.68, [0, 0, 0.87, 0.76, 0.29], 0.482],
+		],
+		beats: [
+			{ timeMs: 125_341, strength: 0.465, confidence: 0.353 },
+			{ timeMs: 126_154, strength: 0.467, confidence: 0.354 },
+		],
+		durationMs: 150_000,
+	});
+	const visualTargets = TRIPLET_ACCENT_ROWS.map(([timeMs]) =>
+		sampleAnalysisTarget(analysis, timeMs),
+	);
+	const strongTargets = TRIPLET_ACCENT_ROWS.map(([timeMs]) =>
+		sampleStrongBeatTarget(analysis, timeMs),
+	);
+
+	assert.ok(
+		Math.min(...visualTargets) >= 0.52,
+		`三连击仍被当成轻拍：${visualTargets}`,
+	);
+	assert.ok(
+		Math.min(...strongTargets) >= 0.21,
+		`三连击没有获得中等旋转：${strongTargets}`,
+	);
+	assert.ok(
+		Math.max(...strongTargets) <= 0.36,
+		`中高频三连击被误判成极重低音：${strongTargets}`,
+	);
+	assert.equal(
+		sampleStrongBeatTarget(analysis, 125_771),
+		0,
+		"两组三连击之间的普通 onset 被补成重拍",
+	);
+});
+
+test("低覆盖网格外的宽频鼓点会补足动态，但不会形成持续旋转", () => {
+	const analysis = makeLowCoverageAccentAnalysis({
+		rows: DRUM_ACCENT_ROWS,
+		beats: [
+			{ timeMs: 54_195, strength: 0.57, confidence: 0.4 },
+			{ timeMs: 55_229, strength: 0.27, confidence: 0.28 },
+			{ timeMs: 56_285, strength: 0.54, confidence: 0.39 },
+		],
+		durationMs: 93_000,
+	});
+	const offGridRows = DRUM_ACCENT_ROWS.slice(1);
+	const visualTargets = offGridRows.map(([timeMs]) =>
+		sampleAnalysisTarget(analysis, timeMs),
+	);
+	const strongTargets = offGridRows.map(([timeMs]) =>
+		sampleStrongBeatTarget(analysis, timeMs),
+	);
+
+	assert.ok(
+		Math.min(...visualTargets) >= 0.68,
+		`网格外鼓点动态仍不足：${visualTargets}`,
+	);
+	assert.deepEqual(
+		strongTargets,
+		[0, 0, 0, 0, 0],
+		`普通宽频鼓点形成了持续旋转：${strongTargets}`,
+	);
+});
+
+test("低覆盖但密集的宽频 onset 只补动态，不会连续推动旋转", () => {
+	const denseRows = Array.from({ length: 12 }, (_, index) => [
+		70_000 + index * 130,
+		0.94,
+		[0.91, 0.93, 0.95, 0.92, 0.9],
+		0.9,
+	]);
+	const analysis = makeLowCoverageAccentAnalysis({
+		rows: denseRows,
+		beats: [{ timeMs: 60_000, strength: 0.5, confidence: 0.5 }],
+		durationMs: 90_000,
+	});
+	const visualTargets = denseRows.map(([timeMs]) =>
+		sampleAnalysisTarget(analysis, timeMs),
+	);
+	const strongTargets = denseRows.map(([timeMs]) =>
+		sampleStrongBeatTarget(analysis, timeMs),
+	);
+
+	assert.ok(
+		Math.min(...visualTargets) >= 0.6,
+		`漏拍动态没有得到补偿：${visualTargets}`,
+	);
+	assert.deepEqual(
+		strongTargets,
+		Array(12).fill(0),
+		`密集 standalone onset 造成连续旋转：${strongTargets}`,
+	);
+});
+
+test("显著 onset 已有一半被有效拍格解释时不会启用补偿", () => {
+	const rows = Array.from({ length: 6 }, (_, index) => [
+		80_000 + index * 400,
+		0.94,
+		[0.9, 0.92, 0.94, 0.91, 0.93],
+		0.9,
+	]);
+	const analysis = makeLowCoverageAccentAnalysis({
+		rows,
+		beats: [0, 2, 4].map((index) => ({
+			timeMs: rows[index][0],
+			strength: 0.5,
+			confidence: 0.5,
+		})),
+		durationMs: 90_000,
+	});
+	const offGridRows = [rows[1], rows[3], rows[5]];
+	const visualTargets = offGridRows.map(([timeMs]) =>
+		sampleAnalysisTarget(analysis, timeMs),
+	);
+	assert.ok(
+		Math.max(...visualTargets) < 0.4,
+		`高覆盖拍格仍补入了离网格动态：${visualTargets}`,
+	);
+	assert.deepEqual(
+		offGridRows.map(([timeMs]) => sampleStrongBeatTarget(analysis, timeMs)),
+		[0, 0, 0],
+		"高覆盖拍格仍启用了额外旋转",
+	);
+});
+
+test("P80 跨越强度断层时会插值，不会用低桶稀释拍格覆盖率", () => {
+	const weakOnsets = Array.from({ length: 80 }, (_, index) => ({
+		timeMs: 1_000 + index * 1_000,
+		strength: 0.65,
+		bands: [0.9, 0.9, 0.9, 0.9, 0.9],
+	}));
+	const strongOnsets = Array.from({ length: 20 }, (_, index) => ({
+		timeMs: 100_000 + index * 1_000,
+		strength: 0.95,
+		bands: [0.9, 0.9, 0.9, 0.9, 0.9],
+	}));
+	const onsets = [...weakOnsets, ...strongOnsets];
+	const analysis = {
+		analyzerVersion: 1,
+		durationMs: 120_000,
+		globalBpm: 60,
+		confidence: 0.5,
+		beats: strongOnsets.slice(0, 10).map((onset) => ({
+			timeMs: onset.timeMs,
+			strength: 0.5,
+			confidence: 0.5,
+		})),
+		onsets,
+		tempoSegments: [],
+		energyEnvelope: [
+			{ timeMs: 0, value: 0.2 },
+			...onsets.map((onset) => ({ timeMs: onset.timeMs, value: 0.9 })),
+			{ timeMs: 120_000, value: 0.2 },
+		],
+	};
+	const target = sampleAnalysisTarget(analysis, 119_000);
+	assert.ok(target < 0.4, `P80 低桶误开了补偿：${target}`);
+});
+
+test("快歌错开半拍的网格不会仅因固定时间容差而吞掉敲击", () => {
+	const rows = Array.from({ length: 6 }, (_, index) => [
+		100_000 + index * 333,
+		0.94,
+		[0.9, 0.92, 0.94, 0.91, 0.93],
+		0.9,
+	]);
+	const analysis = makeLowCoverageAccentAnalysis({
+		rows,
+		beats: rows.map(([timeMs]) => ({
+			timeMs: timeMs + 166,
+			strength: 0.2,
+			confidence: 0.5,
+		})),
+		durationMs: 110_000,
+		globalBpm: 180,
+	});
+	const visualTargets = rows.map(([timeMs]) =>
+		sampleAnalysisTarget(analysis, timeMs),
+	);
+	assert.ok(
+		Math.min(...visualTargets) >= 0.65,
+		`快歌错相位敲击仍被错误网格吞掉：${visualTargets}`,
+	);
+});
+
 test("普通拍可以驱动呼吸，但不会触发极重拍旋转", () => {
 	const analysis = {
 		...makeAnalysis({ beatStrength: 0.95, onsetTime: 1_000 }),
@@ -459,6 +709,56 @@ test("60/120/240Hz 下的视觉轨迹保持一致", () => {
 				`${fps}Hz 在 ${timeMs / 1_000}ms 偏差过大`,
 			);
 		}
+	}
+});
+
+function simulateTripletAccentAtFPS(fps) {
+	const analysis = makeLowCoverageAccentAnalysis({
+		rows: TRIPLET_ACCENT_ROWS,
+		beats: [
+			{ timeMs: 125_341, strength: 0.465, confidence: 0.353 },
+			{ timeMs: 126_154, strength: 0.467, confidence: 0.354 },
+		],
+		durationMs: 150_000,
+	});
+	const deltaMs = 1_000 / fps;
+	let smoothedVolume = 0;
+	let maxStrongBeat = 0;
+	let maxVolume = 0;
+	for (let timeMs = 124_900; timeMs <= 126_650; timeMs += deltaMs) {
+		const target = mapRhythmTargetToVolume(
+			sampleAnalysisTarget(analysis, timeMs),
+		);
+		smoothedVolume = advanceRhythmVisualVolume(smoothedVolume, target, deltaMs);
+		maxStrongBeat = Math.max(
+			maxStrongBeat,
+			sampleStrongBeatTarget(analysis, timeMs),
+		);
+		maxVolume = Math.max(maxVolume, smoothedVolume);
+	}
+	return { maxStrongBeat, maxVolume };
+}
+
+test("三声停顿三声的完整信号链在 60/120/240Hz 下保持一致", () => {
+	const expected = simulateTripletAccentAtFPS(60);
+	assert.ok(
+		expected.maxStrongBeat >= 0.34 && expected.maxStrongBeat <= 0.36,
+		`三连击旋转峰值异常：${expected.maxStrongBeat}`,
+	);
+	assert.ok(
+		expected.maxVolume >= 0.31 && expected.maxVolume <= 0.33,
+		`三连击呼吸峰值异常：${expected.maxVolume}`,
+	);
+	for (const fps of [120, 240]) {
+		const candidate = simulateTripletAccentAtFPS(fps);
+		assert.ok(
+			Math.abs(candidate.maxStrongBeat - expected.maxStrongBeat) < 0.002,
+			`${fps}Hz 的三连击旋转峰值漂移过大`,
+		);
+		assert.ok(
+			Math.abs(candidate.maxVolume - expected.maxVolume) < 0.002,
+			`${fps}Hz 的三连击呼吸峰值漂移过大`,
+		);
 	}
 });
 
