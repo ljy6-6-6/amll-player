@@ -703,6 +703,7 @@ export const LocalMusicContext: FC = () => {
 	return (
 		<>
 			<LyricContext />
+			<FFTToLowPassContext />
 			<LocalRhythmVisualContext />
 			<MusicQualityTagText />
 		</>

@@ -1,33 +1,30 @@
+import { MeshGradientRenderer } from "@applemusic-like-lyrics/core";
 import {
 	fftDataAtom,
-	fftDataRangeAtom,
 	isLyricPageOpenedAtom,
-	lowFreqVolumeAtom,
 	musicIdAtom,
 	musicPlayingAtom,
 	musicPlayingPositionAtom,
 } from "@applemusic-like-lyrics/react-full";
 import { useAtomValue, useStore } from "jotai";
-import { type FC, useEffect, useLayoutEffect } from "react";
+import { type FC, useEffect } from "react";
 import {
 	currentRhythmAnalysisAtom,
 	rhythmVisualResetAtom,
 } from "../../states/appAtoms.ts";
-import { emitAudioThread } from "../../utils/player.ts";
 import {
 	advanceRhythmVisualVolume,
 	clamp01,
 	limitRhythmVisualDelta,
-	MAX_RHYTHM_VISUAL_VOLUME,
 	mapRhythmTargetToVolume,
 	sampleAnalysisTarget,
+	sampleStrongBeatTarget,
 	smootherStep01,
 } from "./rhythm-visual-signal.ts";
 
 export const SILENT_RHYTHM_VOLUME = 0.0001;
 
 const ANALYSIS_FADE_IN_MS = 500;
-const SIGNAL_PUBLISH_INTERVAL_MS = 1000 / 60;
 
 interface SpectralFluxState {
 	lastFrame: number[] | null;
@@ -114,33 +111,16 @@ function updateSpectralFlux(
  */
 export const LocalRhythmVisualContext: FC = () => {
 	const store = useStore();
-	const fftDataRange = useAtomValue(fftDataRangeAtom);
 	const isLyricPageOpened = useAtomValue(isLyricPageOpenedAtom);
 
-	useLayoutEffect(() => {
-		const currentVolume = store.get(lowFreqVolumeAtom);
-		if (
-			!Number.isFinite(currentVolume) ||
-			currentVolume < 0 ||
-			currentVolume > MAX_RHYTHM_VISUAL_VOLUME
-		) {
-			store.set(lowFreqVolumeAtom, SILENT_RHYTHM_VOLUME);
+	useEffect(() => {
+		if (!isLyricPageOpened) {
+			MeshGradientRenderer.setRhythmVisualSignal(0, 0);
+			return;
 		}
-	}, [store]);
-
-	useEffect(() => {
-		emitAudioThread("setFFTRange", {
-			fromFreq: fftDataRange[0],
-			toFreq: fftDataRange[1],
-		});
-	}, [fftDataRange]);
-
-	useEffect(() => {
-		if (!isLyricPageOpened) return;
 
 		let animationFrame = 0;
 		let lastFrameTime = performance.now();
-		let lastPublishedFrameTime = lastFrameTime;
 		let lastPosition: number | null = null;
 		const initialMusicId = store.get(musicIdAtom);
 		const initialRhythmState = store.get(currentRhythmAnalysisAtom);
@@ -152,7 +132,7 @@ export const LocalRhythmVisualContext: FC = () => {
 			initialRhythmState.analysis
 				? 1
 				: 0;
-		let smoothedValue = store.get(lowFreqVolumeAtom);
+		let smoothedValue = SILENT_RHYTHM_VOLUME;
 		const spectralState: SpectralFluxState = {
 			lastFrame: null,
 			lastSource: null,
@@ -187,9 +167,7 @@ export const LocalRhythmVisualContext: FC = () => {
 				analysisBlend = 0;
 				resetSampling(spectrum);
 				if (musicChanged) {
-					smoothedValue = SILENT_RHYTHM_VOLUME;
-					store.set(lowFreqVolumeAtom, SILENT_RHYTHM_VOLUME);
-					lastPublishedFrameTime = frameTime;
+					MeshGradientRenderer.setRhythmVisualSignal(smoothedValue, 0);
 				}
 			}
 			if (resetSignal !== lastResetSignal) {
@@ -211,12 +189,16 @@ export const LocalRhythmVisualContext: FC = () => {
 			const analysis =
 				rhythmState?.musicId === musicId ? rhythmState.analysis : null;
 			let normalizedTarget = playing ? fallback : 0;
+			let strongBeatTarget = 0;
 			if (playing && analysis) {
 				analysisBlend = Math.min(
 					1,
 					analysisBlend + deltaMs / ANALYSIS_FADE_IN_MS,
 				);
 				const analyzed = sampleAnalysisTarget(analysis, position);
+				strongBeatTarget =
+					sampleStrongBeatTarget(analysis, position) *
+					smootherStep01(analysisBlend);
 				normalizedTarget =
 					fallback + (analyzed - fallback) * smootherStep01(analysisBlend);
 			}
@@ -228,17 +210,12 @@ export const LocalRhythmVisualContext: FC = () => {
 				visualDeltaMs,
 			);
 
-			// 连续信号固定以 60Hz 送入 React；Mesh 在自己的高帧率 rAF 内做
-			// 指数插值。避免 240Hz Jotai 更新经过被动 effect 后形成不均匀台阶。
-			const publishElapsed = frameTime - lastPublishedFrameTime;
-			if (publishElapsed >= SIGNAL_PUBLISH_INTERVAL_MS) {
-				lastPublishedFrameTime =
-					frameTime - (publishElapsed % SIGNAL_PUBLISH_INTERVAL_MS);
-				store.set(
-					lowFreqVolumeAtom,
-					Math.max(SILENT_RHYTHM_VOLUME, smoothedValue),
-				);
-			}
+			// 第二通道直接写入 Mesh 的共享轻量状态，避免 Jotai/React effect
+			// 把高帧率信号离散成不均匀台阶。原作者 FFT 低频通道保持独立。
+			MeshGradientRenderer.setRhythmVisualSignal(
+				Math.max(SILENT_RHYTHM_VOLUME, smoothedValue),
+				strongBeatTarget,
+			);
 
 			animationFrame = requestAnimationFrame(update);
 		};
@@ -246,6 +223,7 @@ export const LocalRhythmVisualContext: FC = () => {
 		animationFrame = requestAnimationFrame(update);
 		return () => {
 			cancelAnimationFrame(animationFrame);
+			MeshGradientRenderer.setRhythmVisualSignal(0, 0);
 		};
 	}, [isLyricPageOpened, store]);
 

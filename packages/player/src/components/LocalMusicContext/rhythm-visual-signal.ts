@@ -11,6 +11,10 @@ const ONSET_RELEASE_MS = 240;
 const ONSET_BEAT_MERGE_MS = 180;
 const MIN_BEAT_RELEASE_MS = 300;
 const MAX_BEAT_RELEASE_MS = 520;
+const STRONG_BEAT_PRE_ROLL_MS = 65;
+const STRONG_BEAT_RELEASE_MS = 130;
+const STRONG_BEAT_IMPACT_START = 0.96;
+const STRONG_BEAT_IMPACT_FULL = 0.995;
 
 const VISUAL_ATTACK_MS = 70;
 const VISUAL_RELEASE_MS = 250;
@@ -404,6 +408,29 @@ export function sampleAnalysisTarget(
 	const beatAccent = hasBeatGrid ? beat * 0.8 : 0;
 	const onsetFallback = hasBeatGrid ? 0 : onset * 0.3;
 	return clamp01(breath + Math.max(beatAccent, onsetFallback));
+}
+
+/**
+ * 额外旋转只响应有明确能量冲击的极强拍点。它与连续呼吸信号分离，
+ * 短脉冲结束后由 Mesh 内的物理包络慢慢卸力，使下一拍能在尚未回零时
+ * 再次把画面推开，而不是生成等速、对称的正反摆动。
+ */
+export function sampleStrongBeatTarget(
+	analysis: RhythmAnalysis,
+	timeMs: number,
+): number {
+	if (!Number.isFinite(timeMs) || !hasUsableBeatGrid(analysis)) return 0;
+	return sampleTimedPulses(
+		analysis.beats,
+		timeMs,
+		STRONG_BEAT_PRE_ROLL_MS,
+		STRONG_BEAT_RELEASE_MS,
+		(point) =>
+			smootherStep01(
+				(beatEnergyImpact(analysis, point) - STRONG_BEAT_IMPACT_START) /
+					(STRONG_BEAT_IMPACT_FULL - STRONG_BEAT_IMPACT_START),
+			),
+	);
 }
 
 export function mapRhythmTargetToVolume(target: number): number {

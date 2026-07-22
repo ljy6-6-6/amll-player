@@ -10,6 +10,7 @@ import {
 	normalizeBeatStrength,
 	sampleAnalysisTarget,
 	sampleSmoothPulse,
+	sampleStrongBeatTarget,
 } from "../src/components/LocalMusicContext/rhythm-visual-signal.ts";
 
 globalThis.MouseEvent ??= class {};
@@ -310,6 +311,44 @@ test("Shots 真实片段的持续重低音不会随 novelty 忽强忽弱", () =>
 	);
 });
 
+test("Shots 真实片段只将前 26 个极重拍送入额外旋转通道", () => {
+	const analysis = makeShotsSegmentAnalysis();
+	const strongTargets = analysis.beats.map((beat) =>
+		sampleStrongBeatTarget(analysis, beat.timeMs),
+	);
+	const heavyTargets = strongTargets.slice(0, 26);
+	const endingTargets = strongTargets.slice(26);
+
+	assert.ok(
+		Math.min(...heavyTargets) >= 0.998,
+		`前 26 个极重拍仍有漏判：${heavyTargets}`,
+	);
+	assert.deepEqual(
+		endingTargets,
+		[0, 0],
+		`尾部普通拍被误触发：${endingTargets}`,
+	);
+});
+
+test("普通拍可以驱动呼吸，但不会触发极重拍旋转", () => {
+	const analysis = {
+		...makeAnalysis({ beatStrength: 0.95, onsetTime: 1_000 }),
+		energyEnvelope: [
+			{ timeMs: 700, value: 0.45 },
+			{ timeMs: 954, value: 0.45 },
+			{ timeMs: 1_000, value: 0.9 },
+			{ timeMs: 1_046, value: 0.45 },
+			{ timeMs: 1_300, value: 0.45 },
+		],
+	};
+	assert.ok(
+		sampleAnalysisTarget(analysis, 1_000) >= 0.7,
+		"测试拍点未能驱动普通呼吸通道",
+	);
+	assert.equal(sampleStrongBeatTarget(analysis, 1_000), 0);
+	assert.equal(sampleStrongBeatTarget(analysis, Number.NaN), 0);
+});
+
 test("低动态分位与极弱拍阈值保持连续", () => {
 	const makeLowDynamicAnalysis = (upperStrength) => ({
 		...makeAnalysis(),
@@ -348,6 +387,7 @@ test("能量平滑会滤除约 46ms 的交替折点", () => {
 		Math.max(...samples) - Math.min(...samples) < 0.015,
 		"短周期能量折点仍造成明显呼吸抖动",
 	);
+	assert.ok(Math.max(...samples) > 0.1, "无拍点音乐的能量呼吸被静音");
 });
 
 test("能量呼吸不会提前数百毫秒预响", () => {
@@ -444,6 +484,7 @@ test("长帧恢复只推进一个有限视觉步长，不追赶未显示的动�
 function createMeshHarness() {
 	const noop = () => {};
 	const uniforms = new Map();
+	MeshGradientRenderer.setRhythmVisualSignal(0, 0);
 	const gl = {
 		ARRAY_BUFFER: 0x8892,
 		BLEND: 0x0be2,
@@ -502,10 +543,9 @@ function createMeshHarness() {
 			setUniform1i: noop,
 			use: noop,
 		},
-		rhythmBaseline: 0,
 		rhythmBreath: 0,
-		rhythmInitialized: false,
-		rhythmSwing: 0,
+		rhythmKick: 0,
+		maxFPS: 240,
 		smoothedVolume: 0,
 		volume: 0,
 	});
@@ -513,13 +553,14 @@ function createMeshHarness() {
 
 	return {
 		renderer,
-		step(timeMs, deltaMs, volume) {
-			renderer.setLowFreqVolume(volume);
+		step(timeMs, deltaMs, { breath = 0, strongBeat = 0, rawBass = 0 } = {}) {
+			MeshGradientRenderer.setRhythmVisualSignal(breath, strongBeat);
+			renderer.setLowFreqVolume(rawBass);
 			renderer.onRedraw(timeMs, deltaMs);
-			const breath = uniforms.get("u_volume") ?? 0;
+			const renderedBreath = uniforms.get("u_volume") ?? 0;
 			const alpha = uniforms.get("u_alpha") ?? 1;
-			const swing = renderer.rhythmSwing;
-			const expectedAngle = (timeMs / 1e4) * 2 + swing;
+			const kick = renderer.rhythmKick;
+			const expectedAngle = (timeMs / 1e4 + renderer.volume) * 2 + kick;
 			const sinAngle = uniforms.get("u_sinAngle");
 			const cosAngle = uniforms.get("u_cosAngle");
 			return {
@@ -531,76 +572,208 @@ function createMeshHarness() {
 								Math.abs(cosAngle - Math.cos(expectedAngle)),
 							)
 						: Number.POSITIVE_INFINITY,
-				breath,
-				brightness: alpha * Math.max(0.5, 1 - breath * 0.5),
-				swing,
+				breath: renderedBreath,
+				brightness: alpha * Math.max(0.5, 1 - renderedBreath * 0.5),
+				cosAngle,
+				kick,
+				rawBassVolume: renderer.volume,
+				sinAngle,
 			};
 		},
 	};
 }
 
-function simulateMeshPulse(fps, amplitude) {
+function simulateMeshPulse(
+	fps,
+	{
+		beatTimes = [500],
+		breathAmplitude = 0.4,
+		durationMs = 1_600,
+		rawBass = 0,
+		strongBeatAmplitude = 1,
+	} = {},
+) {
 	const harness = createMeshHarness();
 	const deltaMs = 1_000 / fps;
-	const publishIntervalMs = 1_000 / 60;
-	let nextPublishMs = 0;
-	let publishedVolume = 0;
 	const samples = [];
-	for (let timeMs = deltaMs; timeMs <= 1_600; timeMs += deltaMs) {
-		if (timeMs >= nextPublishMs) {
-			publishedVolume = amplitude * sampleSmoothPulse(timeMs, 500, 140, 250);
-			nextPublishMs = timeMs + publishIntervalMs;
-		}
-		samples.push(harness.step(timeMs, deltaMs, publishedVolume));
+	for (let timeMs = deltaMs; timeMs <= durationMs; timeMs += deltaMs) {
+		const breath =
+			breathAmplitude *
+			Math.max(
+				...beatTimes.map((beatTime) =>
+					sampleSmoothPulse(timeMs, beatTime, 140, 250),
+				),
+			);
+		const strongBeat =
+			strongBeatAmplitude *
+			Math.max(
+				...beatTimes.map((beatTime) =>
+					sampleSmoothPulse(timeMs, beatTime, 65, 130),
+				),
+			);
+		samples.push({
+			...harness.step(timeMs, deltaMs, { breath, rawBass, strongBeat }),
+			timeMs,
+		});
 	}
+	const frameSteps = samples
+		.slice(1)
+		.map((sample, index) =>
+			Math.abs(sample.kick - (samples[index]?.kick ?? sample.kick)),
+		);
+	const breathFrameSteps = samples
+		.slice(1)
+		.map((sample, index) =>
+			Math.abs(sample.breath - (samples[index]?.breath ?? sample.breath)),
+		);
 	return {
+		breathFrameSteps,
+		frameSteps,
 		maxAngleUniformError: Math.max(
 			...samples.map((sample) => sample.angleUniformError),
 		),
 		maxBreath: Math.max(...samples.map((sample) => sample.breath)),
+		maxBreathFrameStep: Math.max(0, ...breathFrameSteps),
 		maxBrightnessError: Math.max(
 			...samples.map((sample) => Math.abs(1 - sample.brightness)),
 		),
-		maxSwing: Math.max(...samples.map((sample) => sample.swing)),
-		minSwing: Math.min(...samples.map((sample) => sample.swing)),
+		maxFrameStep: Math.max(0, ...frameSteps),
+		maxKick: Math.max(...samples.map((sample) => sample.kick)),
+		minKick: Math.min(...samples.map((sample) => sample.kick)),
+		samples,
 	};
 }
 
-test("安装后的 Mesh 重拍会明显前冲、反向回摆并增强呼吸", () => {
-	const weak = simulateMeshPulse(240, 0.12);
-	const heavy = simulateMeshPulse(240, 0.4);
-	const heavyRange = heavy.maxSwing - heavy.minSwing;
-	const weakRange = weak.maxSwing - weak.minSwing;
+test("安装后的 Mesh 会分离呼吸与非负的极重拍冲量", () => {
+	const ordinary = simulateMeshPulse(240, { strongBeatAmplitude: 0 });
+	const heavy = simulateMeshPulse(240);
 
-	assert.ok(heavy.maxSwing >= 0.35, `重拍前冲仅 ${heavy.maxSwing}rad`);
-	assert.ok(
-		heavy.minSwing <= -0.04,
-		`重拍没有反向越过基线：${heavy.minSwing}rad`,
-	);
-	assert.ok(heavyRange >= 0.48, `重拍往返总摆幅仅 ${heavyRange}rad`);
-	assert.ok(
-		heavyRange >= weakRange * 1.8,
-		`重拍与弱拍的旋转幅度对比不足：${heavyRange} / ${weakRange}`,
-	);
+	assert.equal(ordinary.maxKick, 0, "普通呼吸信号泄漏到额外旋转通道");
+	assert.ok(heavy.maxKick >= 0.12, `极重拍前冲仅 ${heavy.maxKick}rad`);
+	assert.ok(heavy.maxKick <= 0.18, `极重拍前冲越界到 ${heavy.maxKick}rad`);
+	assert.ok(heavy.minKick >= 0, `极重拍冲量反向越界：${heavy.minKick}rad`);
 	assert.ok(
 		heavy.maxBreath >= 0.09,
 		`重拍呼吸缩放仍不明显：${heavy.maxBreath}`,
 	);
 	assert.ok(heavy.maxBreath <= 0.12, "呼吸幅度越界");
-	assert.ok(heavy.maxAngleUniformError < 1e-12, "重拍摆动没有写入旋转 uniform");
+	assert.ok(
+		heavy.maxAngleUniformError < 1e-12,
+		"极重拍冲量没有写入旋转 uniform",
+	);
 	assert.ok(heavy.maxBrightnessError < 1e-12, "节拍仍在直接改变着色器乘法亮度");
+	assert.ok(
+		heavy.maxBreathFrameStep < 0.006,
+		`呼吸单帧跳变 ${heavy.maxBreathFrameStep}`,
+	);
 });
 
-function simulateShotsEndToEnd() {
+function nearestSample(samples, timeMs) {
+	return samples.reduce((nearest, sample) =>
+		Math.abs(sample.timeMs - timeMs) < Math.abs(nearest.timeMs - timeMs)
+			? sample
+			: nearest,
+	);
+}
+
+test("极重拍会快速单向推开、慢速部分回落，下一拍在未回零时再推", () => {
+	const beatTimes = [500, 1_000, 1_500, 2_000];
+	const result = simulateMeshPulse(240, {
+		beatTimes,
+		breathAmplitude: 0,
+		durationMs: 2_200,
+	});
+	const beatTime = 1_500;
+	const before = nearestSample(result.samples, beatTime - 65).kick;
+	const peakSamples = result.samples.filter(
+		(sample) => sample.timeMs >= beatTime && sample.timeMs <= beatTime + 100,
+	);
+	const peak = peakSamples.reduce((best, sample) =>
+		sample.kick > best.kick ? sample : best,
+	);
+	const beforeNextBeat = nearestSample(result.samples, beatTime + 430).kick;
+	const attackRate = (peak.kick - before) / (peak.timeMs - (beatTime - 65));
+	const releaseRate =
+		(peak.kick - beforeNextBeat) / (beatTime + 430 - peak.timeMs);
+	const nextPeak = Math.max(
+		...result.samples
+			.filter(
+				(sample) =>
+					sample.timeMs >= beatTime + 500 && sample.timeMs <= beatTime + 600,
+			)
+			.map((sample) => sample.kick),
+	);
+
+	assert.ok(
+		peak.timeMs - beatTime <= 90,
+		`前冲峰值延迟 ${peak.timeMs - beatTime}ms`,
+	);
+	assert.ok(peak.kick - before >= 0.06, `前冲增量仅 ${peak.kick - before}rad`);
+	assert.ok(
+		beforeNextBeat >= peak.kick * 0.4 && beforeNextBeat <= peak.kick * 0.6,
+		`下一拍前回落比例为 ${beforeNextBeat / peak.kick}`,
+	);
+	assert.ok(
+		attackRate >= releaseRate * 3,
+		`前冲与回落速度过于对称：${attackRate} / ${releaseRate}`,
+	);
+	assert.ok(beforeNextBeat > 0, "反作用力把旋转强制拉回了原点");
+	assert.ok(
+		nextPeak - beforeNextBeat >= 0.06,
+		"下一拍未能在残留角度上再次推进",
+	);
+	assert.ok(result.minKick >= 0, "慢速回落期间出现了反向角度");
+});
+
+test("原作者低频旋转保持原公式，并与呼吸、极重拍冲量独立叠加", () => {
+	const baseHarness = createMeshHarness();
+	const base = baseHarness.step(1_000, 16, { breath: 0.4 });
+	const bassHarness = createMeshHarness();
+	const bass = bassHarness.step(1_000, 16, { breath: 0.4, rawBass: 0.8 });
+	const combinedHarness = createMeshHarness();
+	const combined = combinedHarness.step(1_000, 16, {
+		breath: 0.4,
+		rawBass: 0.8,
+		strongBeat: 1,
+	});
+	const baseAngle = Math.atan2(base.sinAngle, base.cosAngle);
+	const bassAngle = Math.atan2(bass.sinAngle, bass.cosAngle);
+
+	assert.ok(
+		Math.abs(bass.rawBassVolume - 0.08) < 1e-12,
+		"原低频 volume / 10 被改变",
+	);
+	assert.ok(
+		Math.abs(bassAngle - baseAngle - 0.16) < 1e-12,
+		`原低频 (uTime + volume) * 2 增量为 ${bassAngle - baseAngle}`,
+	);
+	assert.ok(combined.kick > 0, "极重拍冲量未叠加到原低频角度");
+	assert.ok(
+		combined.angleUniformError < 1e-12,
+		"三通道合成后旋转 uniform 错误",
+	);
+	assert.ok(bass.breath > base.breath, "原低频没有保留原作者的缩放呼吸反馈");
+});
+
+test("持续强呼吸与原作者低频使用软膝叠加，不会在 0.16 处截平", () => {
+	const harness = createMeshHarness();
+	let sample;
+	for (let timeMs = 16; timeMs <= 1_600; timeMs += 16) {
+		sample = harness.step(timeMs, 16, { breath: 0.4, rawBass: 1 });
+	}
+	assert.ok(sample, "未生成 Mesh 样本");
+	assert.ok(sample.breath > 0.19, `低频与呼吸合成仍被压平到 ${sample.breath}`);
+	assert.ok(sample.breath <= 0.2, `软膝合成越过安全上限 ${sample.breath}`);
+	assert.ok(Math.abs(1 - sample.brightness) < 1e-12, "软膝合成破坏亮度补偿");
+});
+
+function simulateShotsEndToEnd(fps = 240) {
 	const analysis = makeShotsSegmentAnalysis();
 	const harness = createMeshHarness();
-	const deltaMs = 1_000 / 240;
+	const deltaMs = 1_000 / fps;
 	const startMs = 48_500;
 	const endMs = 63_000;
-	const publishIntervalMs = 1_000 / 60;
-	let lastPublishMs = 0;
 	let smoothedVolume = 0;
-	let publishedVolume = 0;
 	const samples = [];
 
 	for (
@@ -617,104 +790,105 @@ function simulateShotsEndToEnd() {
 			targetVolume,
 			deltaMs,
 		);
-		const publishElapsed = elapsedMs - lastPublishMs;
-		let publishedNow = false;
-		if (publishElapsed >= publishIntervalMs) {
-			lastPublishMs = elapsedMs - (publishElapsed % publishIntervalMs);
-			publishedVolume = smoothedVolume;
-			publishedNow = true;
-		}
+		const strongBeat = sampleStrongBeatTarget(analysis, musicTimeMs);
 		samples.push({
-			...harness.step(elapsedMs, deltaMs, publishedVolume),
-			publishedNow,
-			publishedVolume,
+			...harness.step(elapsedMs, deltaMs, {
+				breath: smoothedVolume,
+				strongBeat,
+			}),
+			musicTimeMs,
+			smoothedVolume,
+			strongBeat,
 		});
 	}
 
-	const firstDifferences = samples.slice(1).map((sample, index) => ({
-		publishedNow: sample.publishedNow,
-		value: Math.abs(sample.swing - (samples[index]?.swing ?? sample.swing)),
-	}));
+	const firstDifferences = samples
+		.slice(1)
+		.map((sample, index) =>
+			Math.abs(sample.kick - (samples[index]?.kick ?? sample.kick)),
+		);
 	const secondDifferences = samples
 		.slice(2)
 		.map((sample, index) =>
 			Math.abs(
-				sample.swing -
-					2 * (samples[index + 1]?.swing ?? sample.swing) +
-					(samples[index]?.swing ?? sample.swing),
+				sample.kick -
+					2 * (samples[index + 1]?.kick ?? sample.kick) +
+					(samples[index]?.kick ?? sample.kick),
 			),
 		);
-	const boundarySteps = firstDifferences
-		.filter((difference) => difference.publishedNow)
-		.map((difference) => difference.value);
-	const ordinarySteps = firstDifferences
-		.filter((difference) => !difference.publishedNow)
-		.map((difference) => difference.value);
 
 	return {
 		maxAngleUniformError: Math.max(
 			...samples.map((sample) => sample.angleUniformError),
 		),
-		maxBoundaryStep: Math.max(...boundarySteps),
 		maxBreath: Math.max(...samples.map((sample) => sample.breath)),
-		maxFrameStep: Math.max(
-			...firstDifferences.map((difference) => difference.value),
-		),
-		maxOrdinaryStep: Math.max(...ordinarySteps),
-		maxPublishedVolume: Math.max(
-			...samples.map((sample) => sample.publishedVolume),
+		maxFrameStep: Math.max(...firstDifferences),
+		maxKick: Math.max(...samples.map((sample) => sample.kick)),
+		maxSmoothedVolume: Math.max(
+			...samples.map((sample) => sample.smoothedVolume),
 		),
 		maxSecondDifference: Math.max(...secondDifferences),
-		swingRange:
-			Math.max(...samples.map((sample) => sample.swing)) -
-			Math.min(...samples.map((sample) => sample.swing)),
+		minKick: Math.min(...samples.map((sample) => sample.kick)),
+		strongRotationFraction:
+			samples.filter((sample) => sample.kick >= (5 * Math.PI) / 180).length /
+			samples.length,
 	};
 }
 
-test("Shots 真实片段从分析到 60Hz 发布再到 Mesh 都有强而连续的反馈", () => {
+test("Shots 真实片段的呼吸与极重拍冲量都能进入 Mesh", () => {
 	const result = simulateShotsEndToEnd();
 	assert.ok(
-		result.maxPublishedVolume >= 0.3,
-		`完整链路输出仅 ${result.maxPublishedVolume}`,
+		result.maxSmoothedVolume >= 0.3,
+		`完整呼吸链路输出仅 ${result.maxSmoothedVolume}`,
 	);
 	assert.ok(
-		result.swingRange >= 0.55,
-		`完整链路摆幅仅 ${result.swingRange}rad`,
+		result.maxKick >= 0.13 && result.maxKick <= 0.15,
+		`完整极重拍链路峰值为 ${result.maxKick}rad`,
+	);
+	assert.ok(result.minKick >= 0, `完整链路出现反向冲量 ${result.minKick}rad`);
+	assert.ok(
+		result.strongRotationFraction >= 0.5,
+		`Shots 重低音段高于 5° 的时长仅 ${result.strongRotationFraction}`,
 	);
 	assert.ok(result.maxBreath >= 0.09, `完整链路呼吸仅 ${result.maxBreath}`);
 	assert.ok(
-		result.maxFrameStep < 0.025,
+		result.maxFrameStep < 0.012,
 		`单帧旋转跳变 ${result.maxFrameStep}rad`,
 	);
 	assert.ok(
-		result.maxSecondDifference < 0.003,
+		result.maxSecondDifference < 0.004,
 		`旋转二阶跳变 ${result.maxSecondDifference}rad`,
 	);
 	assert.ok(
-		result.maxBoundaryStep <= result.maxOrdinaryStep + 0.002,
-		`60Hz 发布边界形成台阶：${result.maxBoundaryStep} / ${result.maxOrdinaryStep}`,
-	);
-	assert.ok(
 		result.maxAngleUniformError < 1e-12,
-		"完整链路摆动没有进入 Mesh 旋转 uniform",
+		"完整链路冲量没有进入 Mesh 旋转 uniform",
 	);
 });
 
-test("真实 Mesh 旋转与呼吸在 60/120/240Hz 下保持一致", () => {
-	const expected = simulateMeshPulse(60, 0.4);
-	for (const fps of [120, 240]) {
-		const candidate = simulateMeshPulse(fps, 0.4);
+test("真实 Mesh 极重拍冲量在 60/120/240Hz 下峰值一致且无单帧闪跳", () => {
+	const options = {
+		beatTimes: [500, 1_000, 1_500, 2_000],
+		breathAmplitude: 0,
+		durationMs: 2_200,
+	};
+	const expected = simulateMeshPulse(60, options);
+	assert.ok(
+		expected.maxFrameStep < 0.04,
+		`60Hz 单帧跳变 ${expected.maxFrameStep}rad`,
+	);
+	for (const [fps, maxStep] of [
+		[120, 0.02],
+		[240, 0.012],
+	]) {
+		const candidate = simulateMeshPulse(fps, options);
 		assert.ok(
-			Math.abs(candidate.maxSwing - expected.maxSwing) < 0.04,
+			Math.abs(candidate.maxKick - expected.maxKick) < 0.002,
 			`${fps}Hz 的正向摆幅漂移过大`,
 		);
+		assert.ok(candidate.minKick >= 0, `${fps}Hz 出现反向角度`);
 		assert.ok(
-			Math.abs(candidate.minSwing - expected.minSwing) < 0.04,
-			`${fps}Hz 的反向摆幅漂移过大`,
-		);
-		assert.ok(
-			Math.abs(candidate.maxBreath - expected.maxBreath) < 0.006,
-			`${fps}Hz 的呼吸峰值漂移过大`,
+			candidate.maxFrameStep < maxStep,
+			`${fps}Hz 单帧跳变 ${candidate.maxFrameStep}rad`,
 		);
 	}
 });
@@ -722,11 +896,11 @@ test("真实 Mesh 旋转与呼吸在 60/120/240Hz 下保持一致", () => {
 test("真实 Mesh 遇到长帧时不会积分未显示的一整段旋转", () => {
 	const harness = createMeshHarness();
 	harness.renderer.meshStates[0].alpha = 0;
-	harness.step(0, 16, 0);
-	const before = harness.renderer.rhythmSwing;
-	const after = harness.step(1_000, 1_000, 0.4).swing;
+	harness.step(0, 16);
+	const before = harness.renderer.rhythmKick;
+	const after = harness.step(1_000, 1_000, { strongBeat: 1 }).kick;
 	assert.ok(
-		Math.abs(after - before) < 0.4,
+		Math.abs(after - before) < 0.12,
 		`长帧单步旋转 ${after - before}rad`,
 	);
 	assert.ok(
@@ -760,6 +934,31 @@ test("真实 Mesh 的基础旋转也不会追赶未显示的长帧", () => {
 	assert.equal(redrawDelta, 50);
 });
 
+test("真实 Mesh 会尊重合法低帧率，而不是固定截断到 50ms", () => {
+	const renderer = Object.create(MeshGradientRenderer.prototype);
+	let redrawDelta = -1;
+	Object.assign(renderer, {
+		_disposed: false,
+		flowSpeed: 1,
+		frameTime: 0,
+		lastFrameTime: 0,
+		lastTickTime: 0,
+		maxFPS: 10,
+		paused: false,
+		requestTick() {},
+		staticMode: false,
+		tickHandle: 1,
+		updatePerformanceStats() {},
+	});
+	renderer.onRedraw = (_timeMs, deltaMs) => {
+		redrawDelta = deltaMs;
+		return false;
+	};
+	renderer.onTick(100);
+	assert.equal(renderer.frameTime, 100);
+	assert.equal(redrawDelta, 100);
+});
+
 test("重新打开歌词页会沿用当前节奏状态而不是先硬切静音", () => {
 	const source = readFileSync(
 		new URL(
@@ -773,7 +972,30 @@ test("重新打开歌词页会沿用当前节奏状态而不是先硬切静音",
 	assert.doesNotMatch(source, /let lastMusicId = ["']{2}/);
 });
 
-test("安装后的 Mesh 补丁使用独立呼吸、重拍旋转和亮度补偿", () => {
+test("播放器实际挂载原低频桥，并把呼吸与极重拍接入 Mesh", () => {
+	const visualSource = readFileSync(
+		new URL(
+			"../src/components/LocalMusicContext/rhythm-visual.tsx",
+			import.meta.url,
+		),
+		"utf8",
+	);
+	const contextSource = readFileSync(
+		new URL("../src/components/LocalMusicContext/index.tsx", import.meta.url),
+		"utf8",
+	);
+	assert.match(
+		visualSource,
+		/MeshGradientRenderer\.setRhythmVisualSignal\(\s*Math\.max\(SILENT_RHYTHM_VOLUME, smoothedValue\),\s*strongBeatTarget,?\s*\)/,
+	);
+	assert.match(
+		visualSource,
+		/MeshGradientRenderer\.setRhythmVisualSignal\(0, 0\)/,
+	);
+	assert.match(contextSource, /<FFTToLowPassContext\s*\/>/);
+});
+
+test("安装后的 Mesh 补丁使用低频、呼吸、极重拍三通道和亮度补偿", () => {
 	for (const fileName of ["amll-core.mjs", "amll-core.cjs"]) {
 		const source = readFileSync(
 			new URL(
@@ -782,39 +1004,40 @@ test("安装后的 Mesh 补丁使用独立呼吸、重拍旋转和亮度补偿",
 			),
 			"utf8",
 		);
-		assert.match(source, /const signal = .*smoothedVolume \* 25/);
-		assert.match(source, /mesh_frag_default\.replace\(.*vec2\(0\.5\)/);
 		assert.match(
 			source,
-			/const swingGain = 1 \+ Math\.max\(signal, this\.rhythmBaseline\) \* 2\.4/,
+			/static setRhythmVisualSignal\(breath, heavyBeat\) \{/,
 		);
+		assert.match(
+			source,
+			/const signal = Math\.min\(1, Math\.max\(0, MeshGradientRenderer\.rhythmVisualVolume \* 2\.5\)\)/,
+		);
+		assert.match(
+			source,
+			/const targetKick = MeshGradientRenderer\.strongBeat \* \.18/,
+		);
+		assert.match(
+			source,
+			/const kickMs = targetKick > this\.rhythmKick \? 55 : 540/,
+		);
+		assert.match(
+			source,
+			/this\.rhythmKick \+= \(targetKick - this\.rhythmKick\) \* kickFactor/,
+		);
+		assert.match(source, /mesh_frag_default\.replace\(.*vec2\(0\.5\)/);
 		assert.ok(
 			source.indexOf("var mesh_frag_default") <
 				source.indexOf("mesh_frag_default = mesh_frag_default.replace"),
 			`${fileName} 在 shader 声明前执行了替换`,
 		);
-		const setAlbumStart = source.indexOf(
-			"async setAlbum(albumSource, isVideo)",
-		);
-		const volumeReset = source.indexOf("this.volume = 0", setAlbumStart);
-		assert.ok(
-			setAlbumStart >= 0 &&
-				volumeReset > setAlbumStart &&
-				volumeReset < setAlbumStart + 300,
-			`${fileName} 没有在 Mesh setAlbum 入口清除旧输入`,
-		);
-		assert.doesNotMatch(
-			source.slice(setAlbumStart, setAlbumStart + 300),
-			/this\.(?:smoothedVolume|rhythmBaseline|rhythmSwing|rhythmBreath) = 0/,
-			`${fileName} 在换封面时硬清视觉状态`,
+		assert.match(source, /const maxFrameDelta = Math\.max\(50,/);
+		assert.match(
+			source,
+			/const safeDelta = Number\.isFinite\(delta\) \? Math\.min\(maxFrameDelta, Math\.max\(0, delta\)\) : 0/,
 		);
 		assert.match(
 			source,
-			/const safeDelta = Number\.isFinite\(delta\) \? Math\.min\(50, Math\.max\(0, delta\)\) : 0/,
-		);
-		assert.match(
-			source,
-			/const safeFrameDelta = Number\.isFinite\(frameDelta\) \? Math\.min\(50, Math\.max\(0, frameDelta\)\) : 0/,
+			/const safeFrameDelta = Number\.isFinite\(frameDelta\) \? Math\.min\(maxFrameDelta, Math\.max\(0, frameDelta\)\) : 0/,
 		);
 		assert.match(
 			source,
@@ -825,12 +1048,42 @@ test("安装后的 Mesh 补丁使用独立呼吸、重拍旋转和亮度补偿",
 		assert.match(source, /u_cosAngle \* centeredUV\.x/);
 		assert.match(source, /"u_volume", breathVolume/);
 		assert.match(source, /"u_alpha", compensatedAlpha/);
-		assert.match(source, /const angle = uTime \* 2 \+ this\.rhythmSwing/);
-		assert.doesNotMatch(source, /const angle = \(uTime \+ this\.volume\) \* 2/);
-		assert.doesNotMatch(source, /this\.rhythmPhase/);
+		assert.match(
+			source,
+			/const combinedBreath = Math\.max\(0, this\.volume\) \+ this\.rhythmBreath/,
+		);
+		assert.match(source, /const breathKnee = Math\.min\(1,/);
+		assert.match(source, /const breathVolume = combinedBreath <= \.16/);
+		assert.match(
+			source,
+			/const angle = \(uTime \+ this\.volume\) \* 2 \+ this\.rhythmKick/,
+		);
+		assert.match(
+			source,
+			/this\.volume = Number\.isFinite\(volume\) \? volume \/ 10 : 0/,
+		);
+		assert.doesNotMatch(
+			source,
+			/this\.(?:rhythmSwing|rhythmBaseline|rhythmPhase)/,
+		);
 		assert.match(
 			source,
 			/resume\(\) \{[\s\S]*?this\.lastFrameTime = now;[\s\S]*?this\.lastTickTime = now;/,
+		);
+	}
+
+	for (const fileName of ["amll-core.d.mts", "amll-core.d.cts"]) {
+		const source = readFileSync(
+			new URL(
+				`../node_modules/@applemusic-like-lyrics/core/dist/${fileName}`,
+				import.meta.url,
+			),
+			"utf8",
+		);
+		assert.match(
+			source,
+			/static setRhythmVisualSignal\(breath: number, heavyBeat: number\): void;/,
+			`${fileName} 缺少三通道静态 API 类型`,
 		);
 	}
 });
