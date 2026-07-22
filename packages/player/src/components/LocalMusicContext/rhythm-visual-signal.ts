@@ -32,10 +32,13 @@ const PERCUSSIVE_ACCENT_QUANTILE_BIN_COUNT = 1024;
 const PERCUSSIVE_ACCENT_RETIME_MIN_OFFSET_MS = 50;
 const PERCUSSIVE_ACCENT_FAST_GRID_MIN_BPM = 150;
 const PERCUSSIVE_ACCENT_STRONG_MIN_GAP_MS = 420;
+const PERCUSSIVE_ACCENT_STRONG_RECOVERY_MAX_GAP_PERIODS = 6.25;
+const PERCUSSIVE_ACCENT_STRONG_RELEASE_COVERAGE_START = 0.85;
+const PERCUSSIVE_ACCENT_STRONG_RELEASE_COVERAGE_END = 1;
 const PERCUSSIVE_ACCENT_STRONG_RAW_FLOOR = 0.88;
 const PERCUSSIVE_ACCENT_STRONG_BREADTH_FLOOR = 0.85;
 const PERCUSSIVE_ACCENT_STRONG_ENERGY_FLOOR = 0.75;
-const PERCUSSIVE_ACCENT_STRONG_MAX = 0.275;
+const PERCUSSIVE_ACCENT_STRONG_MAX = 0.65;
 
 const VISUAL_ATTACK_MS = 70;
 const VISUAL_RELEASE_MS = 250;
@@ -70,6 +73,14 @@ interface PercussiveAccentCandidate extends PercussiveAccentPoint {
 	coveredByGrid: boolean;
 	bandBreadth: number;
 	peakEnergy: number;
+	localCoverage: number;
+	localSalientOnsetCount: number;
+}
+
+interface LocalGridCoverageProfile {
+	corrections: Float64Array;
+	coverages: Float64Array;
+	counts: Uint32Array;
 }
 
 interface VisualBeatPoint {
@@ -407,11 +418,13 @@ function gridCoverageCorrection(gridCoverage: number): number {
 	);
 }
 
-function localGridCoverageCorrections<T extends { timeMs: number }>(
+function localGridCoverageProfile<T extends { timeMs: number }>(
 	queries: readonly T[],
 	salientOnsets: readonly { timeMs: number; covered: boolean }[],
-): Float64Array {
+): LocalGridCoverageProfile {
 	const corrections = new Float64Array(queries.length);
+	const coverages = new Float64Array(queries.length);
+	const counts = new Uint32Array(queries.length);
 	let left = 0;
 	let right = 0;
 	let covered = 0;
@@ -434,13 +447,16 @@ function localGridCoverageCorrections<T extends { timeMs: number }>(
 			left++;
 		}
 		const count = right - left;
+		const coverage = count > 0 ? covered / count : 1;
+		coverages[queryIndex] = coverage;
+		counts[queryIndex] = count;
 		const localCorrection =
 			count >= PERCUSSIVE_ACCENT_LOCAL_MIN_SALIENT_ONSETS
-				? gridCoverageCorrection(covered / count)
+				? gridCoverageCorrection(coverage)
 				: 0;
 		corrections[queryIndex] = localCorrection;
 	}
-	return corrections;
+	return { corrections, coverages, counts };
 }
 
 function percussiveAccentProfile(
@@ -490,14 +506,16 @@ function percussiveAccentProfile(
 		salientOnsetCount >= PERCUSSIVE_ACCENT_MIN_SALIENT_ONSETS
 			? gridCoverageCorrection(gridCoverage)
 			: 0;
-	const onsetLocalCorrections = localGridCoverageCorrections(
+	const onsetLocalProfile = localGridCoverageProfile(
 		analysis.onsets,
 		salientOnsets,
 	);
-	const beatLocalCorrections = localGridCoverageCorrections(
+	const beatLocalProfile = localGridCoverageProfile(
 		analysis.beats,
 		salientOnsets,
 	);
+	const onsetLocalCorrections = onsetLocalProfile.corrections;
+	const beatLocalCorrections = beatLocalProfile.corrections;
 	const usesFastLocalRecovery =
 		(analysis.globalBpm ?? 0) >= PERCUSSIVE_ACCENT_FAST_GRID_MIN_BPM;
 
@@ -540,6 +558,8 @@ function percussiveAccentProfile(
 			coveredByGrid: coveredByGrid[onsetIndex] === 1,
 			bandBreadth,
 			peakEnergy,
+			localCoverage: onsetLocalProfile.coverages[onsetIndex] ?? 1,
+			localSalientOnsetCount: onsetLocalProfile.counts[onsetIndex] ?? 0,
 		};
 		const previous = candidates[candidates.length - 1];
 		if (
@@ -696,9 +716,13 @@ function percussiveAccentProfile(
 				consumedOnsets.add(point.onsetIndex);
 			} else if (
 				usesFastLocalRecovery &&
-				clamp01(beat.strength) < 0.06 &&
+				!point &&
+				(assignedOnsetStrengths[beatIndex] ?? 0) < salientThreshold &&
 				(beatLocalCorrections[beatIndex] ?? 0) > globalCorrection + 1e-6
 			) {
+				// 局部拍格已经被真实宽频敲击证明不可靠时，不能只移走 strength=0
+				// 的占位拍。没有显著起音支撑的非零旧拍同样会在真实峰后约 200ms
+				// 形成第二个肩峰；仍有显著起音的拍点则保留，避免误删真实敲击。
 				value *= 1 - (beatLocalCorrections[beatIndex] ?? 0);
 			}
 			return value > Number.EPSILON ? [{ timeMs, value }] : [];
@@ -727,47 +751,144 @@ function percussiveAccentProfile(
 				]
 			: [],
 	);
-	const ordinaryStrongPoints: StrongAccentPoint[] = [];
+	const structuredStrongTimes = new Set(
+		points.filter((point) => point.structured).map((point) => point.timeMs),
+	);
+	const localStrongSeeds = points.flatMap((point) => {
+		if (point.structured || point.localCorrection <= globalCorrection + 1e-6) {
+			return [];
+		}
+		const candidate = candidateByOnsetIndex.get(point.onsetIndex);
+		if (
+			!candidate ||
+			candidate.strength < PERCUSSIVE_ACCENT_STRONG_RAW_FLOOR ||
+			candidate.bandBreadth < PERCUSSIVE_ACCENT_STRONG_BREADTH_FLOOR ||
+			candidate.peakEnergy < PERCUSSIVE_ACCENT_STRONG_ENERGY_FLOOR
+		) {
+			return [];
+		}
+		const strength =
+			smootherStep01((candidate.strength - 0.82) / 0.18) *
+			PERCUSSIVE_ACCENT_STRONG_MAX *
+			point.coverageCorrection;
+		return strength >= 0.04
+			? [
+					{
+						timeMs: point.timeMs,
+						strength,
+						coverageCorrection: point.coverageCorrection,
+					},
+				]
+			: [];
+	});
+	const localStrongSeedsByTime = new Map(
+		localStrongSeeds.map((point) => [point.timeMs, point]),
+	);
+	const ordinaryStrongCandidates: (StrongAccentPoint & { seeded: boolean })[] =
+		[];
 	const globalBpm = analysis.globalBpm ?? 0;
 	if (globalBpm >= PERCUSSIVE_ACCENT_FAST_GRID_MIN_BPM) {
+		const beatPeriodMs = 60_000 / globalBpm;
 		const minGapMs = Math.max(
 			PERCUSSIVE_ACCENT_STRONG_MIN_GAP_MS,
-			(60_000 / globalBpm) * 1.25,
+			beatPeriodMs * 1.25,
 		);
-		for (const point of points) {
+		const maxRecoveryEvidenceGapMs =
+			beatPeriodMs * PERCUSSIVE_ACCENT_STRONG_RECOVERY_MAX_GAP_PERIODS;
+		let recoveryActive = false;
+		let lastRecoveryEvidenceTimeMs = Number.NEGATIVE_INFINITY;
+		let lastVisibleRecoveryTimeMs = Number.NEGATIVE_INFINITY;
+		let recoveryCoverageCorrection = 0;
+		let recoveryReleaseWeight = 1;
+		for (const candidate of candidates) {
 			if (
-				point.structured ||
-				point.localCorrection <= globalCorrection + 1e-6
-			) {
-				continue;
-			}
-			const candidate = candidateByOnsetIndex.get(point.onsetIndex);
-			if (
-				!candidate ||
+				structuredStrongTimes.has(candidate.timeMs) ||
 				candidate.strength < PERCUSSIVE_ACCENT_STRONG_RAW_FLOOR ||
 				candidate.bandBreadth < PERCUSSIVE_ACCENT_STRONG_BREADTH_FLOOR ||
 				candidate.peakEnergy < PERCUSSIVE_ACCENT_STRONG_ENERGY_FLOOR
 			) {
 				continue;
 			}
-			const strength =
-				smootherStep01((candidate.strength - 0.82) / 0.18) *
-				PERCUSSIVE_ACCENT_STRONG_MAX *
-				point.coverageCorrection;
+			const seed = localStrongSeedsByTime.get(candidate.timeMs);
+			const seeded = seed !== undefined;
+			let strength = seed?.strength ?? 0;
+			if (seed) {
+				recoveryActive = true;
+				lastRecoveryEvidenceTimeMs = candidate.timeMs;
+				lastVisibleRecoveryTimeMs = candidate.timeMs;
+				recoveryCoverageCorrection = seed.coverageCorrection;
+				recoveryReleaseWeight = 1;
+			} else {
+				const evidenceExpired =
+					candidate.localSalientOnsetCount <
+						PERCUSSIVE_ACCENT_LOCAL_MIN_SALIENT_ONSETS ||
+					candidate.timeMs - lastRecoveryEvidenceTimeMs >
+						maxRecoveryEvidenceGapMs ||
+					candidate.timeMs - lastVisibleRecoveryTimeMs >
+						maxRecoveryEvidenceGapMs * 2;
+				if (!recoveryActive || evidenceExpired) {
+					recoveryActive = false;
+					continue;
+				}
+				const localReleaseWeight =
+					1 -
+					smootherStep01(
+						(candidate.localCoverage -
+							PERCUSSIVE_ACCENT_STRONG_RELEASE_COVERAGE_START) /
+							(PERCUSSIVE_ACCENT_STRONG_RELEASE_COVERAGE_END -
+								PERCUSSIVE_ACCENT_STRONG_RELEASE_COVERAGE_START),
+					);
+				recoveryReleaseWeight = Math.min(
+					recoveryReleaseWeight,
+					localReleaseWeight,
+				);
+				const recoverableStrengthCeiling =
+					PERCUSSIVE_ACCENT_STRONG_MAX *
+					recoveryCoverageCorrection *
+					recoveryReleaseWeight;
+				if (recoverableStrengthCeiling < 0.04) {
+					recoveryActive = false;
+					continue;
+				}
+				strength =
+					smootherStep01((candidate.strength - 0.82) / 0.18) *
+					recoverableStrengthCeiling;
+				lastRecoveryEvidenceTimeMs = candidate.timeMs;
+				if (strength < 0.04 || !candidate.coveredByGrid) {
+					// 离网格的严格敲击只用于证明声学链路仍连续，不能直接升级为
+					// 强旋转；暂时较弱的严格候选也不应关闭仍有恢复余量的链路。
+					continue;
+				}
+				lastVisibleRecoveryTimeMs = candidate.timeMs;
+				// 拍格逐渐恢复时仍由连续的严格声学证据续期，并随局部覆盖率平滑
+				// 单调释放。这样不会在固定秒数处硬切，也不会在一段静默后重新增强。
+			}
 			if (strength < 0.04) continue;
-			const previous = ordinaryStrongPoints[ordinaryStrongPoints.length - 1];
-			if (previous && point.timeMs - previous.timeMs < minGapMs) {
-				if (strength > previous.strength) {
-					ordinaryStrongPoints[ordinaryStrongPoints.length - 1] = {
-						timeMs: point.timeMs,
+			const previous =
+				ordinaryStrongCandidates[ordinaryStrongCandidates.length - 1];
+			if (previous && candidate.timeMs - previous.timeMs < minGapMs) {
+				if (
+					strength > previous.strength ||
+					(seeded && !previous.seeded && strength >= previous.strength - 1e-6)
+				) {
+					ordinaryStrongCandidates[ordinaryStrongCandidates.length - 1] = {
+						timeMs: candidate.timeMs,
 						strength,
+						seeded,
 					};
 				}
 				continue;
 			}
-			ordinaryStrongPoints.push({ timeMs: point.timeMs, strength });
+			ordinaryStrongCandidates.push({
+				timeMs: candidate.timeMs,
+				strength,
+				seeded,
+			});
 		}
 	}
+	const ordinaryStrongPoints = ordinaryStrongCandidates.map(
+		({ timeMs, strength }) => ({ timeMs, strength }),
+	);
 
 	const profile = {
 		gridCoverage,

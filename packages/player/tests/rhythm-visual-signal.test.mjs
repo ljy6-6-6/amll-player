@@ -789,7 +789,7 @@ test("Faded 的 240Hz 呼吸轨迹不会在真实敲击之间新增闪峰", () =
 	const deltaMs = 1_000 / 240;
 	let smoothedVolume = 0;
 	const samples = [];
-	for (let timeMs = 59_200; timeMs <= 62_300; timeMs += deltaMs) {
+	for (let timeMs = 59_200; timeMs <= 62_600; timeMs += deltaMs) {
 		const target = mapRhythmTargetToVolume(
 			sampleAnalysisTarget(analysis, timeMs),
 		);
@@ -811,10 +811,28 @@ test("Faded 的 240Hz 呼吸轨迹不会在真实敲击之间新增闪峰", () =
 			) > 90,
 	);
 	assert.ok(peaks.length >= 8, `真实敲击只形成了 ${peaks.length} 个呼吸峰`);
-	assert.ok(
-		unmatchedPeaks.length <= 1,
-		`真实敲击之间仍有额外闪峰：${JSON.stringify(unmatchedPeaks)}`,
+	assert.deepEqual(
+		unmatchedPeaks,
+		[],
+		`真实敲击后的非零旧拍仍形成肩峰：${JSON.stringify(unmatchedPeaks)}`,
 	);
+});
+
+test("Faded 搬正真实敲击后会完全移除 62.346 秒的非零旧拍", () => {
+	const actual = makeFadedMisphaseAnalysis();
+	const zeroStrengthControl = makeFadedMisphaseAnalysis();
+	zeroStrengthControl.beats = zeroStrengthControl.beats.map((beat) =>
+		beat.timeMs === 62_346 ? { ...beat, strength: 0 } : beat,
+	);
+	for (let timeMs = 62_180; timeMs <= 62_600; timeMs += 2) {
+		assert.ok(
+			Math.abs(
+				sampleAnalysisTarget(actual, timeMs) -
+					sampleAnalysisTarget(zeroStrengthControl, timeMs),
+			) < 1e-12,
+			`${timeMs}ms 仍受到已失准非零旧拍影响`,
+		);
+	}
 });
 
 test("全曲高覆盖的慢速拍格不会误用 Faded 的局部快速网格回退", () => {
@@ -858,7 +876,7 @@ test("全曲高覆盖的慢速拍格不会误用 Faded 的局部快速网格回�
 	}
 });
 
-test("Faded 的局部宽频重拍受 420ms 限流且不会变成连续旋转", () => {
+test("Faded 的局部宽频重拍足够明显且受 420ms 限流", () => {
 	const analysis = makeFadedMisphaseAnalysis();
 	const strongPoints = FADED_MISPHASE_ONSETS.flatMap(([timeMs]) => {
 		const strength = sampleStrongBeatTarget(analysis, timeMs);
@@ -869,8 +887,9 @@ test("Faded 的局部宽频重拍受 420ms 限流且不会变成连续旋转", (
 		[59_443, 60_116, 60_778, 61_452, 62_113],
 	);
 	assert.ok(
-		Math.max(...strongPoints.map((point) => point.strength)) <= 0.281,
-		`局部宽频重拍超过中等旋转上限：${JSON.stringify(strongPoints)}`,
+		Math.max(...strongPoints.map((point) => point.strength)) >= 0.64 &&
+			Math.max(...strongPoints.map((point) => point.strength)) <= 0.651,
+		`局部宽频重拍没有达到可见但受限的强度：${JSON.stringify(strongPoints)}`,
 	);
 	for (let index = 1; index < strongPoints.length; index++) {
 		assert.ok(
@@ -886,8 +905,328 @@ test("Faded 的局部宽频重拍受 420ms 限流且不会变成连续旋转", (
 		totalFrames++;
 	}
 	assert.ok(
-		strongFrames / totalFrames <= 0.15,
-		`中等旋转占空比仍有 ${strongFrames / totalFrames}`,
+		strongFrames / totalFrames <= 0.22,
+		`宽频重拍目标占空比仍有 ${strongFrames / totalFrames}`,
+	);
+});
+
+function makeStrongRecoveryAnalysis({
+	uncoveredSupportTimes = [56_337, 57_004, 59_672, 60_339, 61_006],
+	coveredSupportTimes = [
+		61_672, 62_339, 63_006, 63_673, 64_340, 65_007, 65_674,
+	],
+} = {}) {
+	const narrowBands = [0.1, 0.1, 0.1, 0.1, 0.1];
+	const wideBands = [0.92, 0.98, 1, 0.96, 0.9];
+	const coveredBaseline = Array.from({ length: 20 }, (_, index) => ({
+		timeMs: 10_000 + index * 500,
+		strength: 0.99,
+		bands: narrowBands,
+	}));
+	const localSeeds = Array.from({ length: 8 }, (_, index) => ({
+		timeMs: 50_000 + index * 667,
+		strength: 0.99,
+		bands: wideBands,
+	}));
+	const recoveryCandidates = Array.from({ length: 20 }, (_, index) => ({
+		timeMs: 55_336 + index * 667,
+		strength: 0.99,
+		bands: wideBands,
+	}));
+	const uncoveredSupport = uncoveredSupportTimes.map((timeMs) => ({
+		timeMs,
+		strength: 0.99,
+		bands: narrowBands,
+	}));
+	const coveredSupport = coveredSupportTimes.map((timeMs) => ({
+		timeMs,
+		strength: 0.99,
+		bands: narrowBands,
+	}));
+	const beats = [...coveredBaseline, ...recoveryCandidates, ...coveredSupport]
+		.map((onset) => ({
+			timeMs: onset.timeMs,
+			strength: 0.2,
+			confidence: 0.3,
+		}))
+		.sort((left, right) => left.timeMs - right.timeMs);
+	const onsets = [
+		...coveredBaseline,
+		...localSeeds,
+		...recoveryCandidates,
+		...uncoveredSupport,
+		...coveredSupport,
+	].sort((left, right) => left.timeMs - right.timeMs);
+	const energyEnvelope = [
+		{ timeMs: 0, value: 0.25 },
+		...Array.from({ length: 251 }, (_, index) => ({
+			timeMs: 45_000 + index * 100,
+			value: 0.85,
+		})),
+		{ timeMs: 72_000, value: 0.25 },
+	];
+	return {
+		analysis: {
+			analyzerVersion: 1,
+			durationMs: 72_000,
+			globalBpm: 180,
+			confidence: 0.6,
+			beats,
+			onsets,
+			tempoSegments: [],
+			energyEnvelope,
+		},
+		recoveryCandidates,
+	};
+}
+
+test("Faded 式强敲击由连续证据续期并随拍格恢复平滑释放", () => {
+	const { analysis, recoveryCandidates } = makeStrongRecoveryAnalysis();
+	const lastSeedTimeMs = recoveryCandidates[0]?.timeMs ?? 0;
+	const beyondEightSeconds = recoveryCandidates[12]?.timeMs ?? 0;
+	const middleReleaseCandidate = recoveryCandidates[13]?.timeMs ?? 0;
+	const lateReleaseCandidate = recoveryCandidates[14]?.timeMs ?? 0;
+	const fullyCoveredCandidate = recoveryCandidates[15]?.timeMs ?? 0;
+	assert.ok(
+		sampleStrongBeatTarget(analysis, lastSeedTimeMs) >= 0.15,
+		"测试没有建立最后一个局部失准 seed",
+	);
+	assert.ok(
+		beyondEightSeconds - lastSeedTimeMs > 8_000,
+		"测试候选没有越过旧的固定 8 秒边界",
+	);
+	const continuedStrength = sampleStrongBeatTarget(
+		analysis,
+		beyondEightSeconds,
+	);
+	assert.ok(
+		continuedStrength >= 0.15,
+		`连续声学证据在 8 秒后仅有 ${continuedStrength}`,
+	);
+	const releaseStrengths = [
+		continuedStrength,
+		sampleStrongBeatTarget(analysis, middleReleaseCandidate),
+		sampleStrongBeatTarget(analysis, lateReleaseCandidate),
+	];
+	assert.ok(
+		releaseStrengths.every((strength) => strength > 0) &&
+			(releaseStrengths[0] ?? 0) > (releaseStrengths[1] ?? 0) &&
+			(releaseStrengths[1] ?? 0) > (releaseStrengths[2] ?? 0),
+		`三个非 seed 候选没有随拍格覆盖率回升而连续减弱：${JSON.stringify(releaseStrengths)}`,
+	);
+	assert.equal(
+		sampleStrongBeatTarget(analysis, fullyCoveredCandidate),
+		0,
+		"拍格完全恢复后仍持续升级宽频重拍",
+	);
+
+	const noSeedControl = makeStrongRecoveryAnalysis();
+	noSeedControl.analysis.beats = noSeedControl.analysis.onsets.map((onset) => ({
+		timeMs: onset.timeMs,
+		strength: 0.2,
+		confidence: 0.3,
+	}));
+	assert.equal(
+		sampleStrongBeatTarget(noSeedControl.analysis, beyondEightSeconds),
+		0,
+		"没有局部失准 seed 的可靠快歌被宽频候选升级",
+	);
+
+	const brokenChainControl = makeStrongRecoveryAnalysis();
+	brokenChainControl.analysis.onsets = brokenChainControl.analysis.onsets.map(
+		(onset) =>
+			onset.timeMs >= 59_338 && onset.timeMs < beyondEightSeconds
+				? { ...onset, bands: [0.1, 0.1, 0.1, 0.1, 0.1] }
+				: onset,
+	);
+	assert.equal(
+		sampleStrongBeatTarget(brokenChainControl.analysis, beyondEightSeconds),
+		0,
+		"严格候选中断超过 6.25 个拍周期后仍错误续期",
+	);
+});
+
+test("离网格严格敲击只续接证据，不会自身触发强旋转", () => {
+	const prepareBridgeAnalysis = ({ keepBridgeWide }) => {
+		const { analysis, recoveryCandidates } = makeStrongRecoveryAnalysis();
+		const bridgeTimeMs = recoveryCandidates[10]?.timeMs ?? 0;
+		const narrowTimes = new Set(
+			[8, 9, 11, 12].map(
+				(index) => recoveryCandidates[index]?.timeMs ?? Number.NaN,
+			),
+		);
+		if (!keepBridgeWide) narrowTimes.add(bridgeTimeMs);
+		analysis.onsets = analysis.onsets.map((onset) =>
+			narrowTimes.has(onset.timeMs)
+				? { ...onset, bands: [0.1, 0.1, 0.1, 0.1, 0.1] }
+				: onset,
+		);
+		analysis.beats = analysis.beats.filter(
+			(beat) => beat.timeMs !== bridgeTimeMs,
+		);
+		return {
+			analysis,
+			bridgeTimeMs,
+			coveredTargetTimeMs: recoveryCandidates[13]?.timeMs ?? 0,
+		};
+	};
+
+	const bridged = prepareBridgeAnalysis({ keepBridgeWide: true });
+	assert.equal(
+		sampleStrongBeatTarget(bridged.analysis, bridged.bridgeTimeMs),
+		0,
+		"离开拍格的续链证据被直接升级成强旋转",
+	);
+	assert.ok(
+		sampleStrongBeatTarget(bridged.analysis, bridged.coveredTargetTimeMs) > 0.1,
+		"离网格严格证据没有桥接到后续重新对齐的重拍",
+	);
+
+	const withoutBridge = prepareBridgeAnalysis({ keepBridgeWide: false });
+	assert.equal(
+		sampleStrongBeatTarget(
+			withoutBridge.analysis,
+			withoutBridge.coveredTargetTimeMs,
+		),
+		0,
+		"缺少严格桥接证据时仍跨越 6.25 个拍周期续期",
+	);
+});
+
+test("连续隐藏证据不能在长时间无可见重拍后重新激活旋转", () => {
+	const prepareHiddenChain = ({ revealSecondBridge }) => {
+		const { analysis, recoveryCandidates } = makeStrongRecoveryAnalysis();
+		const firstBridgeTimeMs = recoveryCandidates[10]?.timeMs ?? 0;
+		const secondBridgeTimeMs = recoveryCandidates[13]?.timeMs ?? 0;
+		const finalCoveredTimeMs = recoveryCandidates[16]?.timeMs ?? 0;
+		const retainedWideTimes = new Set([
+			firstBridgeTimeMs,
+			secondBridgeTimeMs,
+			finalCoveredTimeMs,
+		]);
+		analysis.onsets = [
+			...analysis.onsets.map((onset) =>
+				onset.timeMs > (recoveryCandidates[7]?.timeMs ?? 0) &&
+				!retainedWideTimes.has(onset.timeMs)
+					? { ...onset, bands: [0.1, 0.1, 0.1, 0.1, 0.1] }
+					: onset,
+			),
+			...[61_006, 62_340, 63_674, 65_008, 66_342, 67_676].map((timeMs) => ({
+				timeMs,
+				strength: 0.99,
+				bands: [0.1, 0.1, 0.1, 0.1, 0.1],
+			})),
+		].sort((left, right) => left.timeMs - right.timeMs);
+		analysis.beats = analysis.beats.filter(
+			(beat) =>
+				beat.timeMs !== firstBridgeTimeMs &&
+				(revealSecondBridge || beat.timeMs !== secondBridgeTimeMs),
+		);
+		return {
+			analysis,
+			firstBridgeTimeMs,
+			secondBridgeTimeMs,
+			finalCoveredTimeMs,
+		};
+	};
+
+	const hidden = prepareHiddenChain({ revealSecondBridge: false });
+	for (const timeMs of [hidden.firstBridgeTimeMs, hidden.secondBridgeTimeMs]) {
+		assert.equal(
+			sampleStrongBeatTarget(hidden.analysis, timeMs),
+			0,
+			`隐藏证据 ${timeMs}ms 被直接升级成强旋转`,
+		);
+	}
+	assert.equal(
+		sampleStrongBeatTarget(hidden.analysis, hidden.finalCoveredTimeMs),
+		0,
+		"隐藏证据链跨越 12.5 个拍周期后仍让强旋转复活",
+	);
+
+	const revealed = prepareHiddenChain({ revealSecondBridge: true });
+	assert.ok(
+		sampleStrongBeatTarget(revealed.analysis, revealed.secondBridgeTimeMs) >
+			0.1 &&
+			sampleStrongBeatTarget(revealed.analysis, revealed.finalCoveredTimeMs) >
+				0.1,
+		"对照组没有证明同一声学链在可见重拍续期后仍然有效",
+	);
+});
+
+test("略强但暂不可见的严格候选不会反而吞掉下一次重拍", () => {
+	const prepareThresholdProbe = (strength) => {
+		const { analysis, recoveryCandidates } = makeStrongRecoveryAnalysis({
+			uncoveredSupportTimes: [56_200, 58_200, 60_200, 62_200],
+			coveredSupportTimes: [],
+		});
+		const probeTimeMs = recoveryCandidates[14]?.timeMs ?? 0;
+		const nextTimeMs = recoveryCandidates[15]?.timeMs ?? 0;
+		analysis.onsets = analysis.onsets.map((onset) =>
+			onset.timeMs === probeTimeMs ? { ...onset, strength } : onset,
+		);
+		return { analysis, probeTimeMs, nextTimeMs };
+	};
+
+	const belowStrictFloor = prepareThresholdProbe(0.79);
+	const justInsideStrictGate = prepareThresholdProbe(0.812);
+	for (const probe of [belowStrictFloor, justInsideStrictGate]) {
+		assert.equal(
+			sampleStrongBeatTarget(probe.analysis, probe.probeTimeMs),
+			0,
+			"测试候选自身意外进入了可见强旋转",
+		);
+		assert.ok(
+			sampleStrongBeatTarget(probe.analysis, probe.nextTimeMs) > 0.1,
+			"暂不可见的严格候选关闭了仍有恢复余量的证据链",
+		);
+	}
+});
+
+test("局部样本不足时不会仅凭一次旧 seed 继续升级强拍", () => {
+	const narrowBands = [0.1, 0.1, 0.1, 0.1, 0.1];
+	const wideBands = [0.92, 0.98, 1, 0.96, 0.9];
+	const coveredBaseline = Array.from({ length: 20 }, (_, index) => ({
+		timeMs: 10_000 + index * 500,
+		strength: 0.99,
+		bands: narrowBands,
+	}));
+	const clusteredSeeds = [
+		43_500, 43_700, 43_900, 44_100, 44_300, 44_500, 44_700, 47_400,
+	].map((timeMs) => ({ timeMs, strength: 0.99, bands: wideBands }));
+	const probe = { timeMs: 49_400, strength: 0.99, bands: wideBands };
+	const analysis = {
+		analyzerVersion: 1,
+		durationMs: 52_000,
+		globalBpm: 180,
+		confidence: 0.6,
+		beats: [...coveredBaseline, probe]
+			.map((onset) => ({
+				timeMs: onset.timeMs,
+				strength: 0.2,
+				confidence: 0.3,
+			}))
+			.sort((left, right) => left.timeMs - right.timeMs),
+		onsets: [...coveredBaseline, ...clusteredSeeds, probe].sort(
+			(left, right) => left.timeMs - right.timeMs,
+		),
+		tempoSegments: [],
+		energyEnvelope: [
+			{ timeMs: 0, value: 0.25 },
+			...Array.from({ length: 121 }, (_, index) => ({
+				timeMs: 40_000 + index * 100,
+				value: 0.85,
+			})),
+		],
+	};
+	assert.ok(
+		sampleStrongBeatTarget(analysis, 47_400) >= 0.64,
+		"测试没有建立有效的局部失准 seed",
+	);
+	assert.equal(
+		sampleStrongBeatTarget(analysis, probe.timeMs),
+		0,
+		"不足 8 个局部显著样本时仍延续了旧 seed",
 	);
 });
 
@@ -908,7 +1247,7 @@ test("Faded 的 420ms 限流会用后到的强重拍替换先到的弱候选", (
 	});
 	assert.equal(sampleStrongBeatTarget(analysis, 59_443), 0);
 	assert.ok(
-		sampleStrongBeatTarget(analysis, 59_791) >= 0.27,
+		sampleStrongBeatTarget(analysis, 59_791) >= 0.64,
 		"420ms 窗口内后到的极强重拍仍被先到弱候选吞掉",
 	);
 });
@@ -1215,6 +1554,88 @@ function createMeshHarness() {
 		},
 	};
 }
+
+test("Faded 的宽频重拍进入 240Hz Mesh 后明显但不会单帧闪跳", () => {
+	const analysis = makeFadedMisphaseAnalysis();
+	const harness = createMeshHarness();
+	const deltaMs = 1_000 / 240;
+	const startMs = 59_200;
+	const endMs = 62_600;
+	let smoothedVolume = 0;
+	const samples = [];
+	for (
+		let musicTimeMs = startMs;
+		musicTimeMs <= endMs;
+		musicTimeMs += deltaMs
+	) {
+		const targetVolume = mapRhythmTargetToVolume(
+			sampleAnalysisTarget(analysis, musicTimeMs),
+		);
+		smoothedVolume = advanceRhythmVisualVolume(
+			smoothedVolume,
+			targetVolume,
+			deltaMs,
+		);
+		samples.push({
+			...harness.step(musicTimeMs - startMs, deltaMs, {
+				breath: smoothedVolume,
+				strongBeat: sampleStrongBeatTarget(analysis, musicTimeMs),
+			}),
+			musicTimeMs,
+		});
+	}
+	const firstDifferences = samples
+		.slice(1)
+		.map((sample, index) =>
+			Math.abs(sample.kick - (samples[index]?.kick ?? sample.kick)),
+		);
+	const secondDifferences = samples
+		.slice(2)
+		.map((sample, index) =>
+			Math.abs(
+				sample.kick -
+					2 * (samples[index + 1]?.kick ?? sample.kick) +
+					(samples[index]?.kick ?? sample.kick),
+			),
+		);
+	const maxKick = Math.max(...samples.map((sample) => sample.kick));
+	const kickPeaks = samples.filter(
+		(sample, index) =>
+			sample.kick >= 0.07 &&
+			sample.kick > (samples[index - 1]?.kick ?? sample.kick) &&
+			sample.kick >= (samples[index + 1]?.kick ?? sample.kick),
+	);
+	const strongRotationFraction =
+		samples.filter((sample) => sample.kick >= (5 * Math.PI) / 180).length /
+		samples.length;
+
+	const expectedPeakTimes = [59_443, 60_116, 60_778, 61_452, 62_113];
+	assert.equal(kickPeaks.length, expectedPeakTimes.length);
+	for (let index = 0; index < expectedPeakTimes.length; index++) {
+		assert.ok(
+			Math.abs(
+				(kickPeaks[index]?.musicTimeMs ?? 0) - (expectedPeakTimes[index] ?? 0),
+			) <= 60,
+			`第 ${index + 1} 个 Mesh 前冲没有跟随预期重拍`,
+		);
+	}
+	assert.ok(
+		maxKick >= (5 * Math.PI) / 180 && maxKick <= 0.092,
+		`Faded 宽频重拍实际前冲为 ${maxKick}rad`,
+	);
+	assert.ok(
+		strongRotationFraction >= 0.01 && strongRotationFraction <= 0.08,
+		`Faded 高于 5° 的时长占比为 ${strongRotationFraction}`,
+	);
+	assert.ok(
+		Math.max(...firstDifferences) < 0.0065,
+		`Faded 旋转单帧跳变 ${Math.max(...firstDifferences)}rad`,
+	);
+	assert.ok(
+		Math.max(...secondDifferences) < 0.0012,
+		`Faded 旋转二阶跳变 ${Math.max(...secondDifferences)}rad`,
+	);
+});
 
 function simulateMeshPulse(
 	fps,
