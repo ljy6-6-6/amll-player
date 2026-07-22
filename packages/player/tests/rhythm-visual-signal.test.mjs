@@ -430,6 +430,48 @@ test("低覆盖慢速网格会保留三声停顿三声，并只给中等偏重�
 	);
 });
 
+test("慢速三连击只沿用全曲门控，不会被更低的局部覆盖取消", () => {
+	const wideBands = [0.9, 0.92, 0.94, 0.91, 0.93];
+	const controlRows = Array.from({ length: 14 }, (_, index) => [
+		20_000 + index * 1_000,
+		0.92,
+		wideBands,
+		0.9,
+	]);
+	const quietPaddingRows = Array.from({ length: 80 }, (_, index) => [
+		40_000 + index * 500,
+		0.2,
+		[0.1, 0.1, 0.1, 0.1, 0.1],
+		0.2,
+	]);
+	const localRows = [
+		[124_500, 0.9, wideBands, 0.9],
+		...TRIPLET_ACCENT_ROWS,
+		[127_000, 0.9, wideBands, 0.9],
+	];
+	const analysis = makeLowCoverageAccentAnalysis({
+		rows: [...controlRows, ...quietPaddingRows, ...localRows],
+		beats: [
+			...controlRows.slice(0, 8).map(([timeMs]) => ({
+				timeMs,
+				strength: 0.5,
+				confidence: 0.5,
+			})),
+			{ timeMs: 125_341, strength: 0.465, confidence: 0.353 },
+			{ timeMs: 126_154, strength: 0.467, confidence: 0.354 },
+		],
+		durationMs: 150_000,
+		globalBpm: 60,
+	});
+	const strongTargets = TRIPLET_ACCENT_ROWS.map(([timeMs]) =>
+		sampleStrongBeatTarget(analysis, timeMs),
+	);
+	assert.ok(
+		Math.min(...strongTargets) >= 0.21,
+		`部分全曲门控下的慢速三连击被局部覆盖取消：${strongTargets}`,
+	);
+});
+
 test("低覆盖网格外的宽频鼓点会补足动态，但不会形成持续旋转", () => {
 	const analysis = makeLowCoverageAccentAnalysis({
 		rows: DRUM_ACCENT_ROWS,
@@ -577,6 +619,297 @@ test("快歌错开半拍的网格不会仅因固定时间容差而吞掉敲击",
 	assert.ok(
 		Math.min(...visualTargets) >= 0.65,
 		`快歌错相位敲击仍被错误网格吞掉：${visualTargets}`,
+	);
+});
+
+// 来自本机 Faded 约 0:59–1:02 缓存的匿名数值摘要。该段被误建成
+// 180 BPM 网格，真实宽频敲击却稳定晚于相邻拍点约 85–94ms。
+const FADED_MISPHASE_BEATS = [
+	[59_024, 0, 0.219872],
+	[59_358, 0, 0.219872],
+	[59_699, 0.088468, 0.261207],
+	[60_024, 0.150923, 0.290388],
+	[60_359, 0, 0.219872],
+	[60_693, 0, 0.219872],
+	[61_027, 0, 0.219872],
+	[61_360, 0, 0.219872],
+	[61_694, 0, 0.219872],
+	[62_028, 0, 0.219872],
+	[62_346, 0.274632, 0.348188],
+];
+
+// [onsetTime, novelty, five bands, ±90ms RMS peak]
+const FADED_MISPHASE_ONSETS = [
+	[59_443, 0.93104, [0, 0.943009, 0.998267, 0.994121, 0.999415], 0.970064],
+	[
+		59_791,
+		0.818121,
+		[0.951116, 0.58185, 0.390311, 0.508459, 0.839382],
+		0.867171,
+	],
+	[60_116, 0.837995, [0, 0.998717, 0.904863, 0.83184, 0.245476], 0.939261],
+	[
+		60_453,
+		0.811299,
+		[0.87328, 0.741186, 0.524086, 0.721847, 0.820095],
+		0.813691,
+	],
+	[
+		60_778,
+		0.943585,
+		[0.251136, 0.96843, 0.994679, 0.999763, 0.934033],
+		0.931102,
+	],
+	[
+		61_115,
+		0.830966,
+		[0.698354, 0.242242, 0.893086, 0.764439, 0.893656],
+		0.87168,
+	],
+	[
+		61_452,
+		0.933188,
+		[0.932679, 0.999013, 0.959511, 0.89501, 0.39019],
+		0.861091,
+	],
+	[
+		61_788,
+		0.936512,
+		[0.981745, 0.835754, 0.809605, 0.702862, 0.964357],
+		0.982507,
+	],
+	[
+		62_113,
+		0.949961,
+		[0.340269, 0.994055, 0.978485, 0.998897, 0.943874],
+		0.925497,
+	],
+];
+
+function makeFadedMisphaseAnalysis() {
+	const coveredOnsets = Array.from({ length: 36 }, (_, index) => ({
+		timeMs: 10_000 + index * 500,
+		strength: 0.9,
+		bands: [0.1, 0.1, 0.1, 0.1, 0.1],
+	}));
+	const quietOnsets = Array.from({ length: 180 }, (_, index) => ({
+		timeMs: 100 + index * 200,
+		strength: 0.2,
+		bands: [0.1, 0.1, 0.1, 0.1, 0.1],
+	}));
+	const onsets = [
+		...quietOnsets,
+		...coveredOnsets,
+		...FADED_MISPHASE_ONSETS.map(([timeMs, strength, bands]) => ({
+			timeMs,
+			strength,
+			bands,
+		})),
+	].sort((left, right) => left.timeMs - right.timeMs);
+	const beats = [
+		...coveredOnsets.map((onset) => ({
+			timeMs: onset.timeMs,
+			strength: 0.4,
+			confidence: 0.5,
+		})),
+		...FADED_MISPHASE_BEATS.map(([timeMs, strength, confidence]) => ({
+			timeMs,
+			strength,
+			confidence,
+		})),
+	].sort((left, right) => left.timeMs - right.timeMs);
+	const energyEnvelope = [
+		{ timeMs: 0, value: 0.25 },
+		...coveredOnsets.map((onset) => ({ timeMs: onset.timeMs, value: 0.35 })),
+		...FADED_MISPHASE_ONSETS.flatMap(([timeMs, , , peak]) => [
+			{ timeMs: timeMs - 100, value: peak * 0.55 },
+			{ timeMs, value: peak },
+			{ timeMs: timeMs + 100, value: peak * 0.55 },
+		]),
+		{ timeMs: 70_000, value: 0.25 },
+	].sort((left, right) => left.timeMs - right.timeMs);
+	return {
+		analyzerVersion: 1,
+		durationMs: 70_000,
+		globalBpm: 179.811,
+		confidence: 0.631,
+		beats,
+		onsets,
+		tempoSegments: [],
+		energyEnvelope,
+	};
+}
+
+function strongestTargetTime(analysis, centerMs, radiusMs = 130) {
+	let strongestTimeMs = centerMs - radiusMs;
+	let strongest = -Infinity;
+	for (
+		let timeMs = centerMs - radiusMs;
+		timeMs <= centerMs + radiusMs;
+		timeMs++
+	) {
+		const target = sampleAnalysisTarget(analysis, timeMs);
+		if (target > strongest) {
+			strongest = target;
+			strongestTimeMs = timeMs;
+		}
+	}
+	return strongestTimeMs;
+}
+
+test("Faded 局部失准的 180 BPM 占位拍会搬到真实宽频敲击时间", () => {
+	const analysis = makeFadedMisphaseAnalysis();
+	const offsets = FADED_MISPHASE_ONSETS.map(
+		([timeMs]) => strongestTargetTime(analysis, timeMs) - timeMs,
+	);
+	const absoluteOffsets = offsets
+		.map((offset) => Math.abs(offset))
+		.sort((left, right) => left - right);
+	const medianOffset = absoluteOffsets[Math.floor(absoluteOffsets.length / 2)];
+	const p90Offset =
+		absoluteOffsets[Math.floor((absoluteOffsets.length - 1) * 0.9)];
+	const earlyByMoreThan50Ms = offsets.filter((offset) => offset < -50).length;
+
+	assert.ok(medianOffset <= 25, `峰值偏移中位数仍有 ${medianOffset}ms`);
+	assert.ok(p90Offset <= 45, `峰值偏移 P90 仍有 ${p90Offset}ms`);
+	assert.ok(
+		earlyByMoreThan50Ms <= 1,
+		`仍有 ${earlyByMoreThan50Ms} 个峰提前超过 50ms：${offsets}`,
+	);
+	for (const [timeMs] of FADED_MISPHASE_ONSETS) {
+		assert.ok(
+			sampleAnalysisTarget(analysis, timeMs) >= 0.68,
+			`${timeMs}ms 的真实敲击仍被当成轻拍`,
+		);
+	}
+});
+
+test("Faded 的 240Hz 呼吸轨迹不会在真实敲击之间新增闪峰", () => {
+	const analysis = makeFadedMisphaseAnalysis();
+	const deltaMs = 1_000 / 240;
+	let smoothedVolume = 0;
+	const samples = [];
+	for (let timeMs = 59_200; timeMs <= 62_300; timeMs += deltaMs) {
+		const target = mapRhythmTargetToVolume(
+			sampleAnalysisTarget(analysis, timeMs),
+		);
+		smoothedVolume = advanceRhythmVisualVolume(smoothedVolume, target, deltaMs);
+		samples.push({ timeMs, value: smoothedVolume });
+	}
+	const peaks = samples.filter(
+		(sample, index) =>
+			sample.value >= 0.2 &&
+			sample.value > (samples[index - 1]?.value ?? sample.value) &&
+			sample.value >= (samples[index + 1]?.value ?? sample.value),
+	);
+	const unmatchedPeaks = peaks.filter(
+		(peak) =>
+			Math.min(
+				...FADED_MISPHASE_ONSETS.map(([timeMs]) =>
+					Math.abs(timeMs - peak.timeMs),
+				),
+			) > 90,
+	);
+	assert.ok(peaks.length >= 8, `真实敲击只形成了 ${peaks.length} 个呼吸峰`);
+	assert.ok(
+		unmatchedPeaks.length <= 1,
+		`真实敲击之间仍有额外闪峰：${JSON.stringify(unmatchedPeaks)}`,
+	);
+});
+
+test("全曲高覆盖的慢速拍格不会误用 Faded 的局部快速网格回退", () => {
+	const fastAnalysis = makeFadedMisphaseAnalysis();
+	const coveredBeats = fastAnalysis.beats.filter(
+		(beat) => beat.timeMs < 30_000,
+	);
+	const analysis = {
+		...fastAnalysis,
+		globalBpm: 120,
+		beats: [
+			...coveredBeats,
+			...FADED_MISPHASE_ONSETS.map(([timeMs]) => ({
+				timeMs: timeMs - 250,
+				strength: 0.2,
+				confidence: 0.5,
+			})),
+		].sort((left, right) => left.timeMs - right.timeMs),
+	};
+	const acousticallyQuietControl = {
+		...analysis,
+		onsets: analysis.onsets.map((onset) =>
+			onset.timeMs >= 59_000
+				? { ...onset, bands: [0.1, 0.1, 0.1, 0.1, 0.1] }
+				: onset,
+		),
+	};
+	for (const [timeMs] of FADED_MISPHASE_ONSETS) {
+		assert.ok(
+			Math.abs(
+				sampleAnalysisTarget(analysis, timeMs) -
+					sampleAnalysisTarget(acousticallyQuietControl, timeMs),
+			) < 1e-12,
+			`${timeMs}ms 的慢速曲目误加了局部 residual`,
+		);
+		assert.equal(
+			sampleStrongBeatTarget(analysis, timeMs),
+			sampleStrongBeatTarget(acousticallyQuietControl, timeMs),
+			`${timeMs}ms 的慢速曲目误加了局部旋转`,
+		);
+	}
+});
+
+test("Faded 的局部宽频重拍受 420ms 限流且不会变成连续旋转", () => {
+	const analysis = makeFadedMisphaseAnalysis();
+	const strongPoints = FADED_MISPHASE_ONSETS.flatMap(([timeMs]) => {
+		const strength = sampleStrongBeatTarget(analysis, timeMs);
+		return strength >= 0.04 ? [{ timeMs, strength }] : [];
+	});
+	assert.deepEqual(
+		strongPoints.map((point) => point.timeMs),
+		[59_443, 60_116, 60_778, 61_452, 62_113],
+	);
+	assert.ok(
+		Math.max(...strongPoints.map((point) => point.strength)) <= 0.281,
+		`局部宽频重拍超过中等旋转上限：${JSON.stringify(strongPoints)}`,
+	);
+	for (let index = 1; index < strongPoints.length; index++) {
+		assert.ok(
+			strongPoints[index].timeMs - strongPoints[index - 1].timeMs >= 420,
+			`420ms 内出现重复重拍：${JSON.stringify(strongPoints)}`,
+		);
+	}
+	const deltaMs = 1_000 / 240;
+	let strongFrames = 0;
+	let totalFrames = 0;
+	for (let timeMs = 59_250; timeMs <= 62_300; timeMs += deltaMs) {
+		strongFrames += sampleStrongBeatTarget(analysis, timeMs) >= 0.15 ? 1 : 0;
+		totalFrames++;
+	}
+	assert.ok(
+		strongFrames / totalFrames <= 0.15,
+		`中等旋转占空比仍有 ${strongFrames / totalFrames}`,
+	);
+});
+
+test("Faded 的 420ms 限流会用后到的强重拍替换先到的弱候选", () => {
+	const analysis = makeFadedMisphaseAnalysis();
+	analysis.onsets = analysis.onsets.map((onset) => {
+		if (onset.timeMs === 59_443) {
+			return {
+				...onset,
+				strength: 0.83,
+				bands: [0.9, 0.9, 0.9, 0.9, 0.9],
+			};
+		}
+		if (onset.timeMs === 59_791) {
+			return { ...onset, strength: 1, bands: [1, 1, 1, 1, 1] };
+		}
+		return onset;
+	});
+	assert.equal(sampleStrongBeatTarget(analysis, 59_443), 0);
+	assert.ok(
+		sampleStrongBeatTarget(analysis, 59_791) >= 0.27,
+		"420ms 窗口内后到的极强重拍仍被先到弱候选吞掉",
 	);
 });
 
