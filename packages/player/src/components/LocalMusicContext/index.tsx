@@ -59,6 +59,8 @@ import { SyncStatus, syncLyrics } from "../../utils/lyric-db-api.ts";
 import {
 	PlayQueueManager,
 	queueCurrentSongAtom,
+	queueLoudnessUpdatePolicyAtom,
+	shouldSuppressAutomaticLoudnessUpdate,
 } from "../../utils/play-queue-manager.ts";
 import {
 	type AudioQuality,
@@ -341,6 +343,18 @@ export const LocalMusicContext: FC = () => {
 
 	useEffect(() => {
 		if (!currentRhythmAnalysis) return;
+		const loudnessUpdatePolicy = store.get(queueLoudnessUpdatePolicyAtom);
+		if (
+			!enableLoudnessNormalization &&
+			loudnessUpdatePolicy?.musicId === currentRhythmAnalysis.musicId
+		) {
+			store.set(queueLoudnessUpdatePolicyAtom, null);
+		}
+		const suppressAutomaticUpdate = shouldSuppressAutomaticLoudnessUpdate(
+			loudnessUpdatePolicy,
+			currentRhythmAnalysis.musicId,
+			enableLoudnessNormalization,
+		);
 		if (!currentRhythmAnalysis.analysis) {
 			if (!enableLoudnessNormalization) {
 				void emitAudioThread("setLoudnessNormalization", {
@@ -354,7 +368,7 @@ export const LocalMusicContext: FC = () => {
 						error,
 					);
 				});
-			} else {
+			} else if (!suppressAutomaticUpdate) {
 				const failed = failedRhythmAnalysisRef.current;
 				if (
 					failed?.musicId === currentRhythmAnalysis.musicId &&
@@ -370,6 +384,8 @@ export const LocalMusicContext: FC = () => {
 			}
 			return;
 		}
+
+		if (suppressAutomaticUpdate) return;
 
 		const loudness = getCurrentTrackLoudness(currentRhythmAnalysis.analysis);
 		const hasCurrentLoudness = loudness !== null;

@@ -8,7 +8,12 @@ import {
 import { atom, type createStore, type PrimitiveAtom } from "jotai";
 import { atomWithStorage } from "jotai/utils";
 import { enableLoudnessNormalizationAtom } from "../states/appAtoms.ts";
-import { db, type Song, type TrackLoudnessAnalysis } from "./db-client.ts";
+import {
+	db,
+	getCurrentTrackLoudness,
+	type Song,
+	type TrackLoudnessAnalysis,
+} from "./db-client.ts";
 import { emitAudioThread } from "./player.ts";
 
 type JotaiStore = ReturnType<typeof createStore>;
@@ -56,6 +61,21 @@ export const queueShuffleActiveAtom: PrimitiveAtom<boolean> = atom(false);
 export const queuePlaylistIdAtom: PrimitiveAtom<number | null> = atom<
 	number | null
 >(null);
+export interface QueueLoudnessUpdatePolicy {
+	musicId: string;
+	suppressAutomaticUpdate: boolean;
+}
+export const queueLoudnessUpdatePolicyAtom =
+	atom<QueueLoudnessUpdatePolicy | null>(null);
+export function shouldSuppressAutomaticLoudnessUpdate(
+	policy: QueueLoudnessUpdatePolicy | null,
+	musicId: string,
+	enabled: boolean,
+): boolean {
+	return (
+		enabled && policy?.musicId === musicId && policy.suppressAutomaticUpdate
+	);
+}
 /** 当前播放的歌曲（派生） */
 export const queueCurrentSongAtom = atom<Song | null>((get) => {
 	const playlist = get(queuePlaylistAtom);
@@ -144,6 +164,7 @@ export class PlayQueueManager {
 			this.queueRevision++;
 			this.playRequestGeneration++;
 			this.playRequestPending = false;
+			this.store.set(queueLoudnessUpdatePolicyAtom, null);
 		}
 	}
 
@@ -169,6 +190,46 @@ export class PlayQueueManager {
 		return dispatch;
 	}
 
+	private isCurrentPlayRequest(requestGeneration: number): boolean {
+		return !this.disposed && requestGeneration === this.playRequestGeneration;
+	}
+
+	private async prepareTrackLoudness(
+		songId: string,
+		requestGeneration: number,
+	): Promise<TrackLoudnessAnalysis | null> {
+		let cachedLoudness: TrackLoudnessAnalysis | null = null;
+		try {
+			cachedLoudness = await db.songs.getCachedLoudness(songId);
+		} catch (error) {
+			if (this.isCurrentPlayRequest(requestGeneration)) {
+				console.warn(
+					"[VolumeBalance] Failed to read cached track loudness",
+					songId,
+					error,
+				);
+			}
+		}
+
+		if (!this.isCurrentPlayRequest(requestGeneration)) return null;
+		if (cachedLoudness) return cachedLoudness;
+
+		try {
+			const analysis = await db.songs.getOrAnalyzeRhythm(songId, false, true);
+			if (!this.isCurrentPlayRequest(requestGeneration)) return null;
+			return getCurrentTrackLoudness(analysis);
+		} catch (error) {
+			if (this.isCurrentPlayRequest(requestGeneration)) {
+				console.warn(
+					"[VolumeBalance] Failed to analyze track loudness before playback",
+					songId,
+					error,
+				);
+			}
+			return null;
+		}
+	}
+
 	private async playSongAt(
 		index: number,
 		startPaused = false,
@@ -189,19 +250,10 @@ export class PlayQueueManager {
 
 			let loudness: TrackLoudnessAnalysis | null = null;
 			if (this.store.get(enableLoudnessNormalizationAtom)) {
-				try {
-					loudness = await db.songs.getCachedLoudness(song.id);
-				} catch (error) {
-					console.warn(
-						"[VolumeBalance] Failed to read cached track loudness",
-						song.id,
-						error,
-					);
-				}
+				loudness = await this.prepareTrackLoudness(song.id, requestGeneration);
 			}
 
-			if (this.disposed || requestGeneration !== this.playRequestGeneration)
-				return false;
+			if (!this.isCurrentPlayRequest(requestGeneration)) return false;
 
 			const resolvedIndex = this.findInPlayList(song.id);
 			if (resolvedIndex < 0) return false;
@@ -217,6 +269,15 @@ export class PlayQueueManager {
 				const enabled = this.store.get(enableLoudnessNormalizationAtom);
 				const shouldStartPaused = !this.desiredPlaying;
 				this.currentPlaybackId = playbackId;
+				this.store.set(
+					queueLoudnessUpdatePolicyAtom,
+					enabled && !loudness
+						? {
+								musicId: song.id,
+								suppressAutomaticUpdate: true,
+							}
+						: null,
+				);
 
 				await emitAudioThread("playAudio", {
 					song: {
