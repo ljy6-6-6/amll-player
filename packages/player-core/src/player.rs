@@ -46,6 +46,7 @@ pub struct AudioPlayer {
     current_decoder_handle: Option<FFmpegDecoder>,
     volume: f32,
     current_song: Option<SongData>,
+    current_playback_id: String,
     current_audio_info: Arc<TokioRwLock<AudioInfo>>,
     current_audio_quality: Arc<TokioRwLock<AudioQuality>>,
     playback_state: Arc<ParkingLotRwLock<PlaybackState>>,
@@ -319,6 +320,7 @@ impl AudioPlayer {
             current_decoder_handle: None,
             volume: 1.0,
             current_song: None,
+            current_playback_id: String::new(),
             current_audio_info,
             current_audio_quality,
             playback_state,
@@ -358,6 +360,12 @@ impl AudioPlayer {
                 },
                 _ = check_end_interval.tick() => {
                     if self.cpal_state.track_finished.load(Ordering::Acquire) && self.current_song.is_some() {
+                        let music_id = self
+                            .current_song
+                            .as_ref()
+                            .map(SongData::get_id)
+                            .unwrap_or_default();
+                        let playback_id = self.current_playback_id.clone();
                         self.current_stream = None;
 
                         {
@@ -373,7 +381,14 @@ impl AudioPlayer {
 
                         let _ = self.is_playing_tx.send(false);
 
-                        if let Err(e) = self.emitter().emit(AudioThreadEvent::TrackEnded).await {
+                        if let Err(e) = self
+                            .emitter()
+                            .emit(AudioThreadEvent::TrackEnded {
+                                music_id,
+                                playback_id,
+                            })
+                            .await
+                        {
                             warn!("发送 TrackEnded 事件失败：{e:?}");
                         }
                     }
@@ -461,11 +476,12 @@ impl AudioPlayer {
                         warn!("找不到解码器句柄, 无法执行跳转");
                     }
                 }
-                AudioThreadMessage::PlayAudio { song } => {
+                AudioThreadMessage::PlayAudio { song, playback_id } => {
                     self.cpal_state
                         .loudness_gain_bits
                         .store(1.0_f32.to_bits(), Ordering::Relaxed);
                     self.current_song = Some(song.clone());
+                    self.current_playback_id = playback_id.clone().unwrap_or_default();
                     self.start_playing_song(true).await?;
                 }
                 AudioThreadMessage::SetVolume { volume } => {

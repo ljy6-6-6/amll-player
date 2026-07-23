@@ -85,6 +85,7 @@ export class PlayQueueManager {
 	private repeatMode: RepeatMode = RepeatMode.Off;
 	private shuffleActive = false;
 	private playlistId: number | null = null;
+	private currentPlaybackId: string | null = null;
 
 	constructor(store: JotaiStore) {
 		this.store = store;
@@ -139,11 +140,14 @@ export class PlayQueueManager {
 		this.currentIndex = index;
 		this.syncToAtoms();
 		const song = this.playList[index];
+		const playbackId = crypto.randomUUID();
+		this.currentPlaybackId = playbackId;
 		emitAudioThread("playAudio", {
 			song: {
 				songId: song.id,
 				filePath: song.filePath,
 			},
+			playbackId,
 		});
 	}
 
@@ -232,8 +236,10 @@ export class PlayQueueManager {
 	 * - 顺序/随机：播放下一首
 	 * - 列表播放完毕（非循环）：停止
 	 */
-	advanceForAutoEnd(): void {
+	advanceForAutoEnd(endedSongId: string, endedPlaybackId: string): void {
 		if (this.playList.length === 0) return;
+		if (this.getCurrentSong()?.id !== endedSongId) return;
+		if (this.currentPlaybackId !== endedPlaybackId) return;
 
 		if (this.repeatMode === RepeatMode.One) {
 			this.playSongAt(this.currentIndex);

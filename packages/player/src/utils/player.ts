@@ -40,6 +40,7 @@ export type AudioThreadMessageMap = {
 	};
 	playAudio: {
 		song: SongData;
+		playbackId?: string;
 	};
 	setVolume: {
 		volume: number;
@@ -108,6 +109,7 @@ export type AudioThreadEvent =
 	  }
 	| {
 			type: "trackEnded";
+			data: { musicId: string; playbackId: string };
 	  }
 	| {
 			type: "hardwareMediaCommand";

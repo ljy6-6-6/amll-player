@@ -725,7 +725,10 @@ export const LocalMusicContext: FC = () => {
 				}
 
 				case "trackEnded": {
-					queueManager.advanceForAutoEnd();
+					queueManager.advanceForAutoEnd(
+						evtData.data.musicId,
+						evtData.data.playbackId,
+					);
 					break;
 				}
 

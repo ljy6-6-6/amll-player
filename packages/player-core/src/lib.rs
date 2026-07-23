@@ -53,7 +53,11 @@ pub enum AudioThreadMessage {
     #[serde(rename_all = "camelCase")]
     SeekAudio { position: f64 },
     #[serde(rename_all = "camelCase")]
-    PlayAudio { song: SongData },
+    PlayAudio {
+        song: SongData,
+        #[serde(default)]
+        playback_id: Option<String>,
+    },
     #[serde(rename_all = "camelCase")]
     SetVolume { volume: f64 },
     #[serde(rename_all = "camelCase")]
@@ -118,7 +122,10 @@ pub enum AudioThreadEvent {
     #[serde(rename_all = "camelCase")]
     AudioPlayFinished { music_id: String },
     #[serde(rename_all = "camelCase")]
-    TrackEnded,
+    TrackEnded {
+        music_id: String,
+        playback_id: String,
+    },
     #[serde(rename_all = "camelCase")]
     HardwareMediaCommand { command: String },
     #[serde(rename_all = "camelCase")]
