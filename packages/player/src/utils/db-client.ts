@@ -49,6 +49,14 @@ export interface RhythmTimedValue {
 	value: number;
 }
 
+export interface TrackLoudnessAnalysis {
+	analyzerVersion: number;
+	integratedLoudnessLufs: number | null;
+	samplePeak: number;
+}
+
+export const LOUDNESS_ANALYZER_VERSION = 1;
+
 export interface RhythmAnalysis {
 	analyzerVersion: number;
 	durationMs: number;
@@ -60,6 +68,24 @@ export interface RhythmAnalysis {
 	energyEnvelope: RhythmTimedValue[];
 	/** energyEnvelope 归一化前的全曲帧 RMS P95，用于跨歌曲比较实际能量。 */
 	energyScale: number;
+	/** 旧节奏缓存可能没有该字段，开启音量平衡后会在后台补充。 */
+	loudness?: TrackLoudnessAnalysis | null;
+}
+
+export function getCurrentTrackLoudness(
+	analysis: RhythmAnalysis | null | undefined,
+): TrackLoudnessAnalysis | null {
+	const loudness = analysis?.loudness;
+	if (
+		loudness?.analyzerVersion !== LOUDNESS_ANALYZER_VERSION ||
+		!Number.isFinite(loudness.samplePeak) ||
+		loudness.samplePeak < 0 ||
+		(loudness.integratedLoudnessLufs !== null &&
+			!Number.isFinite(loudness.integratedLoudnessLufs))
+	) {
+		return null;
+	}
+	return loudness;
 }
 
 interface UpdatePlaylistPayload {
@@ -190,8 +216,19 @@ class SongsClient {
 	async getOrAnalyzeRhythm(
 		songId: string,
 		force = false,
+		requireLoudness = false,
 	): Promise<RhythmAnalysis> {
-		return invoke("get_or_analyze_song_rhythm", { songId, force });
+		return invoke("get_or_analyze_song_rhythm", {
+			songId,
+			force,
+			requireLoudness,
+		});
+	}
+
+	async getCachedLoudness(
+		songId: string,
+	): Promise<TrackLoudnessAnalysis | null> {
+		return invoke("get_cached_song_loudness", { songId });
 	}
 }
 

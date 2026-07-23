@@ -6,12 +6,15 @@ use std::{
 };
 
 use anyhow::Context;
+use bs1770::{ChannelLoudnessMeter, gated_mean, reduce_stereo};
 use ffmpeg_audio::{AudioReader, ResampleOptions};
 use serde::{Deserialize, Serialize};
 
 pub const RHYTHM_ANALYZER_VERSION: u32 = 2;
+pub const LOUDNESS_ANALYZER_VERSION: u32 = 1;
 
 const TARGET_SAMPLE_RATE: u32 = 22_050;
+const LOUDNESS_SAMPLE_RATE: u32 = 48_000;
 const FFT_SIZE: usize = 1_024;
 const HOP_SIZE: usize = 256;
 const BAND_COUNT: usize = 5;
@@ -53,6 +56,26 @@ pub struct RhythmTimedValue {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TrackLoudnessAnalysis {
+    pub analyzer_version: u32,
+    pub integrated_loudness_lufs: Option<f32>,
+    /// Maximum absolute sample value after the 48 kHz stereo analysis resample.
+    pub sample_peak: f32,
+}
+
+impl TrackLoudnessAnalysis {
+    pub fn is_current(&self) -> bool {
+        self.analyzer_version == LOUDNESS_ANALYZER_VERSION
+            && self
+                .integrated_loudness_lufs
+                .is_none_or(|loudness| loudness.is_finite())
+            && self.sample_peak.is_finite()
+            && self.sample_peak >= 0.0
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RhythmAnalysis {
     pub analyzer_version: u32,
     pub duration_ms: u64,
@@ -67,6 +90,10 @@ pub struct RhythmAnalysis {
     /// duplicating another full-length time series in the cache.
     #[serde(default)]
     pub energy_scale: f32,
+    /// Per-track perceived loudness. This has its own version so adding it does
+    /// not invalidate otherwise compatible rhythm caches or the legacy schema.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loudness: Option<TrackLoudnessAnalysis>,
 }
 
 impl RhythmAnalysis {
@@ -81,6 +108,81 @@ impl RhythmAnalysis {
             tempo_segments: Vec::new(),
             energy_envelope: Vec::new(),
             energy_scale: 0.0,
+            loudness: Some(TrackLoudnessAnalysis {
+                analyzer_version: LOUDNESS_ANALYZER_VERSION,
+                integrated_loudness_lufs: None,
+                sample_peak: 0.0,
+            }),
+        }
+    }
+
+    pub fn has_current_loudness_analysis(&self) -> bool {
+        self.loudness
+            .as_ref()
+            .is_some_and(TrackLoudnessAnalysis::is_current)
+    }
+}
+
+struct TrackLoudnessMeter {
+    left: ChannelLoudnessMeter,
+    right: ChannelLoudnessMeter,
+    sample_peak: f32,
+}
+
+impl TrackLoudnessMeter {
+    fn new(sample_rate: u32) -> Self {
+        Self {
+            left: ChannelLoudnessMeter::new(sample_rate),
+            right: ChannelLoudnessMeter::new(sample_rate),
+            sample_peak: 0.0,
+        }
+    }
+
+    fn clean_sample(sample: f32) -> f32 {
+        if sample.is_finite() { sample } else { 0.0 }
+    }
+
+    fn push_interleaved_stereo(&mut self, samples: &[f32]) {
+        self.left.push(
+            samples
+                .chunks_exact(2)
+                .map(|frame| Self::clean_sample(frame[0])),
+        );
+        self.right.push(
+            samples
+                .chunks_exact(2)
+                .map(|frame| Self::clean_sample(frame[1])),
+        );
+        for &sample in samples {
+            self.sample_peak = self.sample_peak.max(Self::clean_sample(sample).abs());
+        }
+    }
+
+    fn push_dual_mono(&mut self, samples: &[f32]) {
+        self.left
+            .push(samples.iter().copied().map(Self::clean_sample));
+        self.right
+            .push(samples.iter().copied().map(Self::clean_sample));
+        for &sample in samples {
+            self.sample_peak = self.sample_peak.max(Self::clean_sample(sample).abs());
+        }
+    }
+
+    fn finish(self) -> TrackLoudnessAnalysis {
+        let left = self.left.into_100ms_windows();
+        let right = self.right.into_100ms_windows();
+        let stereo = reduce_stereo(left.as_ref(), right.as_ref());
+        let integrated_loudness_lufs = if stereo.len() >= 4 {
+            let loudness = gated_mean(stereo.as_ref()).loudness_lkfs();
+            loudness.is_finite().then_some(loudness)
+        } else {
+            None
+        };
+
+        TrackLoudnessAnalysis {
+            analyzer_version: LOUDNESS_ANALYZER_VERSION,
+            integrated_loudness_lufs,
+            sample_peak: self.sample_peak,
         }
     }
 }
@@ -108,6 +210,14 @@ where
     let mut resampler = reader
         .build_resampler(options)
         .context("failed to initialize rhythm analysis resampler")?;
+    let loudness_options = ResampleOptions::new()
+        .sample_rate(LOUDNESS_SAMPLE_RATE as i32)
+        .channels(2)
+        .format::<f32>();
+    let mut loudness_resampler = reader
+        .build_resampler(loudness_options)
+        .context("failed to initialize loudness analysis resampler")?;
+    let mut loudness_meter = TrackLoudnessMeter::new(LOUDNESS_SAMPLE_RATE);
     let mut pcm = Vec::new();
 
     while let Some(frame) = reader
@@ -120,6 +230,12 @@ where
         {
             pcm.extend_from_slice(resampler.output_as::<f32>());
         }
+        if loudness_resampler
+            .process::<f32>(Some(&frame))
+            .context("failed to resample audio for loudness analysis")?
+        {
+            loudness_meter.push_interleaved_stereo(loudness_resampler.output_as::<f32>());
+        }
     }
 
     while resampler
@@ -129,7 +245,14 @@ where
         pcm.extend_from_slice(resampler.output_as::<f32>());
     }
 
-    analyze_mono_pcm(&pcm, TARGET_SAMPLE_RATE)
+    while loudness_resampler
+        .process::<f32>(None)
+        .context("failed to flush loudness analysis resampler")?
+    {
+        loudness_meter.push_interleaved_stereo(loudness_resampler.output_as::<f32>());
+    }
+
+    analyze_mono_pcm_with_loudness(&pcm, TARGET_SAMPLE_RATE, Some(loudness_meter.finish()))
 }
 
 /// Analyze a complete mono PCM signal. This pure boundary is intentionally free
@@ -138,9 +261,21 @@ where
 pub fn analyze_mono_pcm(samples: &[f32], sample_rate: u32) -> anyhow::Result<RhythmAnalysis> {
     anyhow::ensure!(sample_rate > 0, "sample rate must be greater than zero");
 
+    let mut loudness_meter = TrackLoudnessMeter::new(sample_rate);
+    loudness_meter.push_dual_mono(samples);
+    analyze_mono_pcm_with_loudness(samples, sample_rate, Some(loudness_meter.finish()))
+}
+
+fn analyze_mono_pcm_with_loudness(
+    samples: &[f32],
+    sample_rate: u32,
+    loudness: Option<TrackLoudnessAnalysis>,
+) -> anyhow::Result<RhythmAnalysis> {
     let duration_ms = samples_to_ms(samples.len() as f64, sample_rate);
     if samples.is_empty() {
-        return Ok(RhythmAnalysis::empty(duration_ms));
+        let mut analysis = RhythmAnalysis::empty(duration_ms);
+        analysis.loudness = loudness;
+        return Ok(analysis);
     }
 
     let frame_count = samples.len().div_ceil(HOP_SIZE);
@@ -171,8 +306,8 @@ pub fn analyze_mono_pcm(samples: &[f32], sample_rate: u32) -> anyhow::Result<Rhy
         fft_in_place(&mut real, &mut imaginary);
         let mut band_bin_counts = [0_usize; BAND_COUNT];
         for bin in 1..=FFT_SIZE / 2 {
-            let magnitude = (real[bin] * real[bin] + imaginary[bin] * imaginary[bin]).sqrt()
-                / FFT_SIZE as f32;
+            let magnitude =
+                (real[bin] * real[bin] + imaginary[bin] * imaginary[bin]).sqrt() / FFT_SIZE as f32;
             current_spectrum[bin] = (1.0 + magnitude * 64.0).ln();
         }
         for bin in 1..=FFT_SIZE / 2 {
@@ -215,12 +350,8 @@ pub fn analyze_mono_pcm(samples: &[f32], sample_rate: u32) -> anyhow::Result<Rhy
             let beats = build_beat_grid(&tempo_envelope, tempo, sample_rate, duration_ms);
             let coverage = beat_coverage(&beats);
             let confidence = unit(tempo.confidence * (0.75 + 0.25 * coverage));
-            let segments = estimate_tempo_segments(
-                &tempo_envelope,
-                sample_rate,
-                duration_ms,
-                tempo,
-            );
+            let segments =
+                estimate_tempo_segments(&tempo_envelope, sample_rate, duration_ms, tempo);
             (Some(tempo.bpm), confidence, beats, segments)
         }
         None => (None, 0.0, Vec::new(), Vec::new()),
@@ -236,6 +367,7 @@ pub fn analyze_mono_pcm(samples: &[f32], sample_rate: u32) -> anyhow::Result<Rhy
         tempo_segments,
         energy_envelope,
         energy_scale,
+        loudness,
     })
 }
 
@@ -244,10 +376,7 @@ fn samples_to_ms(samples: f64, sample_rate: u32) -> u64 {
 }
 
 fn frame_to_ms(frame: f64, sample_rate: u32) -> u64 {
-    samples_to_ms(
-        frame * HOP_SIZE as f64 + FFT_SIZE as f64 * 0.5,
-        sample_rate,
-    )
+    samples_to_ms(frame * HOP_SIZE as f64 + FFT_SIZE as f64 * 0.5, sample_rate)
 }
 
 fn frame_boundary_to_ms(frame: usize, sample_rate: u32) -> u64 {
@@ -318,8 +447,7 @@ fn fft_in_place(real: &mut [f32], imaginary: &mut [f32]) {
                 let even = block_start + offset;
                 let odd = even + length / 2;
                 let odd_real = real[odd] * twiddle_real - imaginary[odd] * twiddle_imaginary;
-                let odd_imaginary =
-                    real[odd] * twiddle_imaginary + imaginary[odd] * twiddle_real;
+                let odd_imaginary = real[odd] * twiddle_imaginary + imaginary[odd] * twiddle_real;
                 let even_real = real[even];
                 let even_imaginary = imaginary[even];
                 real[even] = even_real + odd_real;
@@ -328,8 +456,7 @@ fn fft_in_place(real: &mut [f32], imaginary: &mut [f32]) {
                 imaginary[odd] = even_imaginary - odd_imaginary;
 
                 let next_real = twiddle_real * step_real - twiddle_imaginary * step_imaginary;
-                twiddle_imaginary =
-                    twiddle_real * step_imaginary + twiddle_imaginary * step_real;
+                twiddle_imaginary = twiddle_real * step_imaginary + twiddle_imaginary * step_real;
                 twiddle_real = next_real;
             }
         }
@@ -671,8 +798,8 @@ fn estimate_tempo_segments(
             let previous_duration = previous.end_ms.saturating_sub(previous.start_ms) as f32;
             let segment_duration = segment.end_ms.saturating_sub(segment.start_ms) as f32;
             let total_duration = (previous_duration + segment_duration).max(1.0);
-            previous.bpm =
-                (previous.bpm * previous_duration + segment.bpm * segment_duration) / total_duration;
+            previous.bpm = (previous.bpm * previous_duration + segment.bpm * segment_duration)
+                / total_duration;
             previous.confidence = unit(
                 (previous.confidence * previous_duration + segment.confidence * segment_duration)
                     / total_duration,
@@ -718,6 +845,35 @@ mod tests {
         assert!(analysis.onsets.is_empty());
         assert!(analysis.energy_envelope.is_empty());
         assert_eq!(analysis.energy_scale, 0.0);
+        let loudness = analysis
+            .loudness
+            .expect("silence should be marked as analyzed");
+        assert!(loudness.is_current());
+        assert_eq!(loudness.integrated_loudness_lufs, None);
+        assert_eq!(loudness.sample_peak, 0.0);
+    }
+
+    #[test]
+    fn integrated_loudness_tracks_perceived_amplitude() {
+        let pcm = (0..TARGET_SAMPLE_RATE as usize * 3)
+            .map(|sample| {
+                (2.0 * PI * 1_000.0 * sample as f32 / TARGET_SAMPLE_RATE as f32).sin() * 0.4
+            })
+            .collect::<Vec<_>>();
+        let quieter_pcm = pcm.iter().map(|sample| sample * 0.5).collect::<Vec<_>>();
+        let loud = analyze_mono_pcm(&pcm, TARGET_SAMPLE_RATE).unwrap();
+        let quiet = analyze_mono_pcm(&quieter_pcm, TARGET_SAMPLE_RATE).unwrap();
+        let loudness = loud.loudness.unwrap();
+        let quiet_loudness = quiet.loudness.unwrap();
+        let difference = loudness.integrated_loudness_lufs.unwrap()
+            - quiet_loudness.integrated_loudness_lufs.unwrap();
+
+        assert!(
+            (difference - 6.0206).abs() < 0.05,
+            "difference was {difference}"
+        );
+        assert!((loudness.sample_peak - 0.4).abs() < 1.0e-4);
+        assert!((quiet_loudness.sample_peak - 0.2).abs() < 1.0e-4);
     }
 
     #[test]
@@ -749,9 +905,21 @@ mod tests {
         let analysis = analyze_mono_pcm(&pcm, TARGET_SAMPLE_RATE).unwrap();
         let bpm = analysis.global_bpm.expect("expected a tempo estimate");
         assert!((115.0..=125.0).contains(&bpm), "unexpected BPM: {bpm}");
-        assert!(analysis.confidence > 0.2, "low confidence: {}", analysis.confidence);
-        assert!(analysis.onsets.len() >= 18, "too few onsets: {}", analysis.onsets.len());
-        assert!(analysis.beats.len() >= 18, "too few beats: {}", analysis.beats.len());
+        assert!(
+            analysis.confidence > 0.2,
+            "low confidence: {}",
+            analysis.confidence
+        );
+        assert!(
+            analysis.onsets.len() >= 18,
+            "too few onsets: {}",
+            analysis.onsets.len()
+        );
+        assert!(
+            analysis.beats.len() >= 18,
+            "too few beats: {}",
+            analysis.beats.len()
+        );
         assert!(analysis.onsets.iter().any(|onset| onset.bands[4] > 0.4));
     }
 
@@ -776,13 +944,21 @@ mod tests {
         assert_eq!(value["durationMs"], 1_234);
         assert!(value["globalBpm"].is_null());
         assert_eq!(value["energyScale"], 0.0);
+        assert_eq!(
+            value["loudness"]["analyzerVersion"],
+            LOUDNESS_ANALYZER_VERSION
+        );
+        assert!(value["loudness"]["integratedLoudnessLufs"].is_null());
         assert!(value.get("analyzer_version").is_none());
         let restored: RhythmAnalysis = serde_json::from_value(value).unwrap();
         assert_eq!(analysis, restored);
 
         let mut legacy_value = serde_json::to_value(&analysis).unwrap();
         legacy_value.as_object_mut().unwrap().remove("energyScale");
+        legacy_value.as_object_mut().unwrap().remove("loudness");
         let restored_legacy: RhythmAnalysis = serde_json::from_value(legacy_value).unwrap();
         assert_eq!(restored_legacy.energy_scale, 0.0);
+        assert_eq!(restored_legacy.loudness, None);
+        assert!(!restored_legacy.has_current_loudness_analysis());
     }
 }

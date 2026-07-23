@@ -7,7 +7,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use amll_player_core::{RhythmAnalysis, RHYTHM_ANALYZER_VERSION, analyze_rhythm_file};
+use amll_player_core::{
+    RHYTHM_ANALYZER_VERSION, RhythmAnalysis, TrackLoudnessAnalysis, analyze_rhythm_file,
+};
 use sea_orm::{ActiveValue::Set, EntityTrait, sea_query::OnConflict};
 use tauri::State;
 use tokio::sync::Semaphore;
@@ -52,8 +54,12 @@ fn source_signature(path: &Path) -> Result<SourceSignature, String> {
         .as_millis();
 
     Ok(SourceSignature {
-        modified_at: i64::try_from(modified_at)
-            .map_err(|_| format!("Audio file modification time is out of range: {}", path.display()))?,
+        modified_at: i64::try_from(modified_at).map_err(|_| {
+            format!(
+                "Audio file modification time is out of range: {}",
+                path.display()
+            )
+        })?,
         file_size: i64::try_from(metadata.len())
             .map_err(|_| format!("Audio file is too large: {}", path.display()))?,
     })
@@ -66,11 +72,7 @@ async fn remove_cached_row(db: &DbConnection, song_id: &str) -> Result<(), Strin
         .map_err(|e| format!("Failed to delete song rhythm analysis: {e}"))?;
 
     if result.rows_affected > 0 {
-        db_events::emit_event(
-            "song_rhythm_analyses",
-            "delete",
-            serde_json::json!(song_id),
-        );
+        db_events::emit_event("song_rhythm_analyses", "delete", serde_json::json!(song_id));
     }
 
     Ok(())
@@ -79,6 +81,7 @@ async fn remove_cached_row(db: &DbConnection, song_id: &str) -> Result<(), Strin
 async fn load_valid_cached_analysis(
     db: &DbConnection,
     song_id: &str,
+    require_loudness: bool,
 ) -> Result<Option<RhythmAnalysis>, String> {
     let Some(cached) = song_rhythm_analysis::Entity::find_by_id(song_id)
         .one(db)
@@ -116,7 +119,13 @@ async fn load_valid_cached_analysis(
     }
 
     match serde_json::from_str::<RhythmAnalysis>(&cached.payload_json) {
-        Ok(analysis) if analysis.analyzer_version == RHYTHM_ANALYZER_VERSION => Ok(Some(analysis)),
+        Ok(analysis)
+            if analysis.analyzer_version == RHYTHM_ANALYZER_VERSION
+                && (!require_loudness || analysis.has_current_loudness_analysis()) =>
+        {
+            Ok(Some(analysis))
+        }
+        Ok(analysis) if analysis.analyzer_version == RHYTHM_ANALYZER_VERSION => Ok(None),
         Ok(_) => {
             remove_cached_row(db, song_id).await?;
             Ok(None)
@@ -164,11 +173,7 @@ async fn store_analysis(
         .await
         .map_err(|e| format!("Failed to cache song rhythm analysis: {e}"))?;
 
-    db_events::emit_event(
-        "song_rhythm_analyses",
-        "upsert",
-        serde_json::json!(song_id),
-    );
+    db_events::emit_event("song_rhythm_analyses", "upsert", serde_json::json!(song_id));
     Ok(())
 }
 
@@ -177,7 +182,18 @@ pub async fn get_cached_song_rhythm(
     db: State<'_, DbConnection>,
     song_id: String,
 ) -> Result<Option<RhythmAnalysis>, String> {
-    load_valid_cached_analysis(&*db, &song_id).await
+    load_valid_cached_analysis(&*db, &song_id, false).await
+}
+
+#[tauri::command]
+pub async fn get_cached_song_loudness(
+    db: State<'_, DbConnection>,
+    song_id: String,
+) -> Result<Option<TrackLoudnessAnalysis>, String> {
+    Ok(load_valid_cached_analysis(&*db, &song_id, false)
+        .await?
+        .and_then(|analysis| analysis.loudness)
+        .filter(TrackLoudnessAnalysis::is_current))
 }
 
 #[tauri::command]
@@ -194,14 +210,16 @@ pub async fn get_or_analyze_song_rhythm(
     state: State<'_, RhythmAnalysisState>,
     song_id: String,
     force: Option<bool>,
+    require_loudness: Option<bool>,
 ) -> Result<RhythmAnalysis, String> {
     let request_id = state
         .latest_request
         .fetch_add(1, Ordering::AcqRel)
         .wrapping_add(1);
     let force = force.unwrap_or(false);
+    let require_loudness = require_loudness.unwrap_or(false);
     if !force
-        && let Some(analysis) = load_valid_cached_analysis(&*db, &song_id).await?
+        && let Some(analysis) = load_valid_cached_analysis(&*db, &song_id, require_loudness).await?
     {
         return Ok(analysis);
     }
@@ -222,7 +240,7 @@ pub async fn get_or_analyze_song_rhythm(
 
     // A request for the same song may have completed while this request was waiting.
     if !force
-        && let Some(analysis) = load_valid_cached_analysis(&*db, &song_id).await?
+        && let Some(analysis) = load_valid_cached_analysis(&*db, &song_id, require_loudness).await?
     {
         return Ok(analysis);
     }
@@ -263,7 +281,9 @@ pub async fn get_or_analyze_song_rhythm(
         .map_err(|e| format!("Failed to verify song after rhythm analysis: {e}"))?
         .ok_or_else(|| format!("Song {song_id} was removed during rhythm analysis"))?;
     if song_after.file_path != source_path {
-        return Err(format!("Song {song_id} changed path during rhythm analysis"));
+        return Err(format!(
+            "Song {song_id} changed path during rhythm analysis"
+        ));
     }
 
     store_analysis(&*db, &song_id, signature_after, &analysis).await?;

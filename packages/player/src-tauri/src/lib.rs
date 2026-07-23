@@ -277,6 +277,7 @@ pub fn run() {
             db::commands::refresh_playlist,
             db::rhythm::get_or_analyze_song_rhythm,
             db::rhythm::get_cached_song_rhythm,
+            db::rhythm::get_cached_song_loudness,
             db::rhythm::delete_song_rhythm,
             db::migrate::migrate_songs_batch,
             db::migrate::migrate_playlists_batch,
