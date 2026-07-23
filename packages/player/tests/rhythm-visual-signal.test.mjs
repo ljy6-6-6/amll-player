@@ -201,6 +201,157 @@ test("持续高能量铺底不会把缺少局部冲击的拍点误判为重拍",
 	assert.ok(weakBeatTarget < 0.4, `持续响亮铺底把弱拍推到 ${weakBeatTarget}`);
 });
 
+function makeAbsoluteEnergyPulseAnalysis(energyScale) {
+	return {
+		analyzerVersion: 2,
+		durationMs: 5_000,
+		globalBpm: 180,
+		confidence: 0.7,
+		beats: Array.from({ length: 12 }, (_, index) => ({
+			timeMs: 500 + index * 333,
+			strength: 0.55,
+			confidence: 0.8,
+		})),
+		onsets: [],
+		tempoSegments: [],
+		energyEnvelope: Array.from({ length: 110 }, (_, index) => ({
+			timeMs: index * 46,
+			value: 0.82,
+		})),
+		energyScale,
+	};
+}
+
+function summarizeAbsoluteEnergyMotion(analysis) {
+	const deltaMs = 1_000 / 240;
+	let volume = 0;
+	let previousDifference = 0;
+	let total = 0;
+	let count = 0;
+	let motion = 0;
+	let maxStep = 0;
+	let maxSecondDifference = 0;
+	for (let timeMs = 0; timeMs <= 4_500; timeMs += deltaMs) {
+		const next = advanceRhythmVisualVolume(
+			volume,
+			mapRhythmTargetToVolume(sampleAnalysisTarget(analysis, timeMs)),
+			deltaMs,
+		);
+		const difference = next - volume;
+		if (timeMs >= 500) {
+			total += next;
+			count++;
+			motion += Math.abs(difference);
+			maxStep = Math.max(maxStep, Math.abs(difference));
+			maxSecondDifference = Math.max(
+				maxSecondDifference,
+				Math.abs(difference - previousDifference),
+			);
+		}
+		previousDifference = difference;
+		volume = next;
+	}
+	return {
+		mean: total / count,
+		motion,
+		maxStep,
+		maxSecondDifference,
+	};
+}
+
+test("相同节律证据的动态强度会随绝对 RMS 单调增加", () => {
+	const quiet = makeAbsoluteEnergyPulseAnalysis(0.12);
+	const medium = makeAbsoluteEnergyPulseAnalysis(0.3);
+	const loud = makeAbsoluteEnergyPulseAnalysis(0.58);
+	const quietMotion = summarizeAbsoluteEnergyMotion(quiet);
+	const mediumMotion = summarizeAbsoluteEnergyMotion(medium);
+	const loudMotion = summarizeAbsoluteEnergyMotion(loud);
+
+	assert.ok(
+		sampleAnalysisTarget(quiet, 1_500) < sampleAnalysisTarget(medium, 1_500) &&
+			sampleAnalysisTarget(medium, 1_500) < sampleAnalysisTarget(loud, 1_500),
+		"绝对能量没有传递到拍点峰值",
+	);
+	assert.ok(
+		quietMotion.mean < mediumMotion.mean && mediumMotion.mean < loudMotion.mean,
+		`平均动态未随能量递增：${JSON.stringify({ quietMotion, mediumMotion, loudMotion })}`,
+	);
+	assert.ok(
+		loudMotion.mean >= quietMotion.mean * 2.5 &&
+			loudMotion.motion >= quietMotion.motion * 2.5,
+		"高、低绝对能量的视觉差距仍被相对拍强度压平",
+	);
+	assert.ok(loudMotion.maxStep < 0.012);
+	assert.ok(loudMotion.maxSecondDifference < 0.0015);
+});
+
+test("缺少绝对能量标尺的旧缓存保持原视觉映射", () => {
+	const legacy = makeAnalysis({ onsetTime: 1_000 });
+	const expectedVisual = sampleAnalysisTarget(legacy, 1_000);
+	const expectedStrong = sampleStrongBeatTarget(legacy, 1_000);
+	for (const energyScale of [undefined, 0, Number.NaN]) {
+		const compatible = { ...legacy, energyScale };
+		assert.equal(sampleAnalysisTarget(compatible, 1_000), expectedVisual);
+		assert.equal(sampleStrongBeatTarget(compatible, 1_000), expectedStrong);
+	}
+});
+
+test("无结构化敲击的安静片段不会用旧相对呼吸绕过绝对能量门控", () => {
+	const legacy = {
+		...makeAnalysis(),
+		globalBpm: null,
+		beats: [],
+		onsets: [],
+		energyEnvelope: [
+			{ timeMs: 0, value: 0.5 },
+			{ timeMs: 4_000, value: 0.5 },
+		],
+	};
+	const quiet = {
+		...legacy,
+		analyzerVersion: 2,
+		energyScale: 0.12,
+	};
+	const legacyTarget = sampleAnalysisTarget(legacy, 2_000);
+	const quietTarget = sampleAnalysisTarget(quiet, 2_000);
+	assert.ok(quietTarget > 0, "安静歌曲的呼吸被完全清零");
+	assert.ok(
+		quietTarget < legacyTarget * 0.5,
+		`绝对能量门控被旧呼吸下限绕过：${legacyTarget} -> ${quietTarget}`,
+	);
+});
+
+test("变速段使用局部 BPM 收紧快节奏拍点包络", () => {
+	const globalTempo = makeAnalysis();
+	globalTempo.globalBpm = 60;
+	const localTempo = {
+		...globalTempo,
+		tempoSegments: [{ startMs: 500, endMs: 2_000, bpm: 180, confidence: 0.8 }],
+	};
+	const globalTail = sampleAnalysisTarget(globalTempo, 1_250);
+	const localTail = sampleAnalysisTarget(localTempo, 1_250);
+	assert.ok(
+		localTail < globalTail - 0.15,
+		`局部快节奏没有缩短拍点尾部：${globalTail} -> ${localTail}`,
+	);
+});
+
+test("拍点释放跨过变速段边界时保持连续", () => {
+	const analysis = {
+		...makeAnalysis({ beatTime: 900 }),
+		globalBpm: 60,
+		tempoSegments: [
+			{ startMs: 0, endMs: 1_000, bpm: 60, confidence: 0.8 },
+			{ startMs: 1_000, endMs: 3_000, bpm: 180, confidence: 0.8 },
+		],
+	};
+	const before = sampleAnalysisTarget(analysis, 999.99);
+	const atBoundary = sampleAnalysisTarget(analysis, 1_000);
+	const after = sampleAnalysisTarget(analysis, 1_000.01);
+	assert.ok(Math.abs(atBoundary - before) < 0.001);
+	assert.ok(Math.abs(after - atBoundary) < 0.001);
+});
+
 test("全曲分位映射会明确拉开弱拍与重拍", () => {
 	const analysis = {
 		...makeAnalysis(),
@@ -328,11 +479,26 @@ test("Shots 真实片段只将前 26 个极重拍送入额外旋转通道", () =
 		[0, 0],
 		`尾部普通拍被误触发：${endingTargets}`,
 	);
+
+	const absoluteAnalysis = {
+		...analysis,
+		analyzerVersion: 2,
+		energyScale: 0.76178,
+	};
+	assert.deepEqual(
+		absoluteAnalysis.beats.map((beat) =>
+			sampleStrongBeatTarget(absoluteAnalysis, beat.timeMs),
+		),
+		strongTargets,
+		"加入绝对能量标尺后改变了原版重低音旋转通道",
+	);
 });
 
 // 来自本机实际缓存的纯数值摘要，不包含音频、路径或歌曲元数据。
 // 第一段保留 2:05 附近的“三声—停—三声”：
 // [onsetTime, novelty, five bands, ±90ms RMS peak]
+const PERCUSSIVE_TEST_PRE_ROLL_MS = 55;
+const PERCUSSIVE_TEST_RELEASE_MS = 170;
 const TRIPLET_ACCENT_ROWS = [
 	[125_144, 0.842, [0.34, 0.05, 0.35, 0.98, 0.99], 0.843],
 	[125_341, 0.754, [0, 0, 0.27, 0.87, 0.95], 0.781],
@@ -428,6 +594,39 @@ test("低覆盖慢速网格会保留三声停顿三声，并只给中等偏重�
 		0,
 		"两组三连击之间的普通 onset 被补成重拍",
 	);
+
+	const absoluteAnalysis = {
+		...analysis,
+		analyzerVersion: 2,
+		energyScale: 0.65945,
+	};
+	const absoluteVisualTargets = TRIPLET_ACCENT_ROWS.map(([timeMs]) =>
+		sampleAnalysisTarget(absoluteAnalysis, timeMs),
+	);
+	const absoluteStrongTargets = TRIPLET_ACCENT_ROWS.map(([timeMs]) =>
+		sampleStrongBeatTarget(absoluteAnalysis, timeMs),
+	);
+	assert.ok(
+		Math.min(...absoluteVisualTargets) >= 0.52,
+		`绝对能量门控压掉了结构化三连击：${absoluteVisualTargets}`,
+	);
+	assert.ok(
+		Math.min(...absoluteStrongTargets) >= 0.21,
+		`绝对能量标尺削弱了结构化三连击旋转：${absoluteStrongTargets}`,
+	);
+	for (const boundaryMs of [
+		(TRIPLET_ACCENT_ROWS[0]?.[0] ?? 0) - PERCUSSIVE_TEST_PRE_ROLL_MS,
+		(TRIPLET_ACCENT_ROWS.at(-1)?.[0] ?? 0) + PERCUSSIVE_TEST_RELEASE_MS,
+	]) {
+		const before = sampleAnalysisTarget(absoluteAnalysis, boundaryMs - 0.01);
+		const atBoundary = sampleAnalysisTarget(absoluteAnalysis, boundaryMs);
+		const after = sampleAnalysisTarget(absoluteAnalysis, boundaryMs + 0.01);
+		assert.ok(
+			Math.abs(atBoundary - before) < 0.001 &&
+				Math.abs(after - atBoundary) < 0.001,
+			`结构化敲击窗口边界发生跳变：${before},${atBoundary},${after}`,
+		);
+	}
 });
 
 test("慢速三连击只沿用全曲门控，不会被更低的局部覆盖取消", () => {
@@ -498,6 +697,19 @@ test("低覆盖网格外的宽频鼓点会补足动态，但不会形成持续�
 		strongTargets,
 		[0, 0, 0, 0, 0],
 		`普通宽频鼓点形成了持续旋转：${strongTargets}`,
+	);
+
+	const absoluteAnalysis = {
+		...analysis,
+		analyzerVersion: 2,
+		energyScale: 0.55429,
+	};
+	const absoluteVisualTargets = offGridRows.map(([timeMs]) =>
+		sampleAnalysisTarget(absoluteAnalysis, timeMs),
+	);
+	assert.ok(
+		Math.min(...absoluteVisualTargets) >= 0.68,
+		`绝对能量门控压掉了网格外宽频鼓点：${absoluteVisualTargets}`,
 	);
 });
 

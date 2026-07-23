@@ -58,6 +58,8 @@ export interface RhythmAnalysis {
 	onsets: RhythmOnsetPoint[];
 	tempoSegments: RhythmTempoSegment[];
 	energyEnvelope: RhythmTimedValue[];
+	/** energyEnvelope 归一化前的全曲帧 RMS P95，用于跨歌曲比较实际能量。 */
+	energyScale: number;
 }
 
 interface UpdatePlaylistPayload {

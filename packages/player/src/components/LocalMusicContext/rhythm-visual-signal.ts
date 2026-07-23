@@ -5,12 +5,15 @@ import type {
 	RhythmTimedValue,
 } from "../../utils/db-client.ts";
 
-const BEAT_PRE_ROLL_MS = 140;
+const MIN_BEAT_PRE_ROLL_MS = 80;
+const MAX_BEAT_PRE_ROLL_MS = 140;
+const BEAT_PRE_ROLL_PERIOD_RATIO = 0.32;
 const ONSET_PRE_ROLL_MS = 55;
 const ONSET_RELEASE_MS = 240;
 const ONSET_BEAT_MERGE_MS = 180;
-const MIN_BEAT_RELEASE_MS = 300;
+const MIN_BEAT_RELEASE_MS = 180;
 const MAX_BEAT_RELEASE_MS = 520;
+const BEAT_RELEASE_PERIOD_RATIO = 0.55;
 const STRONG_BEAT_PRE_ROLL_MS = 65;
 const STRONG_BEAT_RELEASE_MS = 130;
 const STRONG_BEAT_IMPACT_START = 0.96;
@@ -54,6 +57,10 @@ const ENERGY_SMOOTH_FUTURE_EDGE_MS = 80;
 const BEAT_ENERGY_PEAK_RADIUS_MS = 90;
 const BEAT_ENERGY_BASELINE_INNER_MS = 120;
 const BEAT_ENERGY_BASELINE_RADIUS_MS = 320;
+const ABSOLUTE_RMS_SILENCE_FLOOR = 0.015;
+const ABSOLUTE_RMS_FULL_DRIVE = 0.55;
+const ABSOLUTE_ACCENT_GAIN_FLOOR = 0.18;
+const ABSOLUTE_BREATH_RELATIVE_FLOOR = 0.2;
 
 interface BeatStrengthProfile {
 	lower: number;
@@ -64,6 +71,7 @@ interface PercussiveAccentPoint {
 	timeMs: number;
 	strength: number;
 	structured: boolean;
+	peakEnergy: number;
 	onsetIndex: number;
 	coverageCorrection: number;
 	localCorrection: number;
@@ -72,7 +80,6 @@ interface PercussiveAccentPoint {
 interface PercussiveAccentCandidate extends PercussiveAccentPoint {
 	coveredByGrid: boolean;
 	bandBreadth: number;
-	peakEnergy: number;
 	localCoverage: number;
 	localSalientOnsetCount: number;
 }
@@ -207,6 +214,51 @@ function sampleSmoothedEnergy(
 	return totalWeight > Number.EPSILON
 		? clamp01(weightedValue / totalWeight)
 		: sampleEnergy(values, timeMs);
+}
+
+/**
+ * 后端 envelope 仍描述曲内相对起伏；energyScale 把它还原为近似绝对
+ * RMS。视觉使用平滑的物理能量门控，避免轻缓歌曲中“相对最强”的拍点
+ * 抢到与高响度电音相同的振幅。
+ *
+ * 返回 null 表示旧缓存或测试夹具没有绝对标尺，此时沿用旧映射，保证
+ * JSON 向后兼容；v2 缓存会始终携带有效标尺（静音除外）。
+ */
+function absoluteEnergyDrive(
+	analysis: RhythmAnalysis,
+	relativeEnergy: number,
+): number | null {
+	const scale = analysis.energyScale;
+	if (!Number.isFinite(scale) || scale <= Number.EPSILON) return null;
+	const absoluteRms = clamp01(relativeEnergy) * scale;
+	return smootherStep01(
+		(absoluteRms - ABSOLUTE_RMS_SILENCE_FLOOR) /
+			(ABSOLUTE_RMS_FULL_DRIVE - ABSOLUTE_RMS_SILENCE_FLOOR),
+	);
+}
+
+function visualEnergyDrive(
+	analysis: RhythmAnalysis,
+	relativeEnergy: number,
+): number {
+	const relativeDrive = Math.sqrt(clamp01(relativeEnergy));
+	const absoluteDrive = absoluteEnergyDrive(analysis, relativeEnergy);
+	return absoluteDrive === null
+		? relativeDrive
+		: relativeDrive *
+				(ABSOLUTE_BREATH_RELATIVE_FLOOR +
+					(1 - ABSOLUTE_BREATH_RELATIVE_FLOOR) * absoluteDrive);
+}
+
+function absoluteAccentGain(
+	analysis: RhythmAnalysis,
+	relativeEnergy: number,
+): number {
+	const absoluteDrive = absoluteEnergyDrive(analysis, relativeEnergy);
+	return absoluteDrive === null
+		? 1
+		: ABSOLUTE_ACCENT_GAIN_FLOOR +
+				(1 - ABSOLUTE_ACCENT_GAIN_FLOOR) * absoluteDrive;
 }
 
 function quantile(sortedValues: readonly number[], amount: number): number {
@@ -631,6 +683,7 @@ function percussiveAccentProfile(
 				timeMs: candidate.timeMs,
 				strength,
 				structured,
+				peakEnergy: candidate.peakEnergy,
 				onsetIndex: candidate.onsetIndex,
 				coverageCorrection: correction,
 				localCorrection: candidate.localCorrection,
@@ -991,11 +1044,96 @@ function sampleTimedPulses<T extends { timeMs: number }>(
 	return clamp01(result);
 }
 
-function beatReleaseMs(analysis: RhythmAnalysis): number {
-	const periodMs = analysis.globalBpm
-		? 60_000 / Math.max(1, analysis.globalBpm)
-		: 500;
-	return clamp(periodMs * 0.55, MIN_BEAT_RELEASE_MS, MAX_BEAT_RELEASE_MS);
+function beatPeriodMs(analysis: RhythmAnalysis, timeMs: number): number {
+	let low = 0;
+	let high = analysis.tempoSegments.length;
+	while (low < high) {
+		const middle = (low + high) >>> 1;
+		if ((analysis.tempoSegments[middle]?.startMs ?? Infinity) <= timeMs) {
+			low = middle + 1;
+		} else {
+			high = middle;
+		}
+	}
+	const segment = analysis.tempoSegments[low - 1];
+	const segmentBpm =
+		segment && timeMs >= segment.startMs && timeMs < segment.endMs
+			? segment.bpm
+			: 0;
+	const bpm =
+		Number.isFinite(segmentBpm) && segmentBpm > 0
+			? segmentBpm
+			: (analysis.globalBpm ?? 0);
+	return bpm > 0 ? 60_000 / Math.max(1, bpm) : 500;
+}
+
+function beatPreRollMs(analysis: RhythmAnalysis, timeMs: number): number {
+	const periodMs = beatPeriodMs(analysis, timeMs);
+	return clamp(
+		periodMs * BEAT_PRE_ROLL_PERIOD_RATIO,
+		MIN_BEAT_PRE_ROLL_MS,
+		MAX_BEAT_PRE_ROLL_MS,
+	);
+}
+
+function beatReleaseMs(analysis: RhythmAnalysis, timeMs: number): number {
+	const periodMs = beatPeriodMs(analysis, timeMs);
+	return clamp(
+		periodMs * BEAT_RELEASE_PERIOD_RATIO,
+		MIN_BEAT_RELEASE_MS,
+		MAX_BEAT_RELEASE_MS,
+	);
+}
+
+/**
+ * 每个拍点在自身时刻锁定局部 BPM。这样旧拍的释放跨过变速段边界时，
+ * 不会因为当前采样时刻换段而在一帧内改用另一套包络时长。
+ */
+function sampleBeatPulses(
+	analysis: RhythmAnalysis,
+	values: readonly VisualBeatPoint[],
+	timeMs: number,
+): number {
+	if (values.length === 0 || !Number.isFinite(timeMs)) return 0;
+	const nextIndex = lowerBound(values, timeMs);
+	let result = 0;
+
+	const next = values[nextIndex];
+	if (next) {
+		const preRollMs = beatPreRollMs(analysis, next.timeMs);
+		if (next.timeMs - timeMs <= preRollMs) {
+			result = Math.max(
+				result,
+				clamp01(next.value) *
+					sampleSmoothPulse(
+						timeMs,
+						next.timeMs,
+						preRollMs,
+						beatReleaseMs(analysis, next.timeMs),
+					),
+			);
+		}
+	}
+
+	for (let index = nextIndex - 1; index >= 0; index--) {
+		const point = values[index];
+		if (!point) break;
+		const ageMs = timeMs - point.timeMs;
+		if (ageMs > MAX_BEAT_RELEASE_MS) break;
+		const releaseMs = beatReleaseMs(analysis, point.timeMs);
+		if (ageMs > releaseMs) continue;
+		result = Math.max(
+			result,
+			clamp01(point.value) *
+				sampleSmoothPulse(
+					timeMs,
+					point.timeMs,
+					beatPreRollMs(analysis, point.timeMs),
+					releaseMs,
+				),
+		);
+	}
+	return clamp01(result);
 }
 
 /**
@@ -1016,13 +1154,7 @@ export function sampleAnalysisTarget(
 		? percussiveAccentProfile(analysis)
 		: undefined;
 	const beat = hasBeatGrid
-		? sampleTimedPulses(
-				accentProfile?.visualBeats ?? [],
-				timeMs,
-				BEAT_PRE_ROLL_MS,
-				beatReleaseMs(analysis),
-				(point) => point.value,
-			)
+		? sampleBeatPulses(analysis, accentProfile?.visualBeats ?? [], timeMs)
 		: 0;
 	const onset = hasBeatGrid
 		? 0
@@ -1033,19 +1165,49 @@ export function sampleAnalysisTarget(
 				ONSET_RELEASE_MS,
 				(point) => Math.sqrt(clamp01(point.strength)),
 			);
-	const percussiveAccent = sampleTimedPulses(
+	const ordinaryPercussiveAccent = sampleTimedPulses(
 		accentProfile?.points ?? [],
 		timeMs,
 		PERCUSSIVE_ACCENT_PRE_ROLL_MS,
 		PERCUSSIVE_ACCENT_RELEASE_MS,
-		(point) => point.strength,
+		(point) =>
+			point.structured
+				? 0
+				: point.strength * absoluteAccentGain(analysis, point.peakEnergy),
+	);
+	const structuredPercussiveAccent = sampleTimedPulses(
+		accentProfile?.points ?? [],
+		timeMs,
+		PERCUSSIVE_ACCENT_PRE_ROLL_MS,
+		PERCUSSIVE_ACCENT_RELEASE_MS,
+		(point) => (point.structured ? point.strength : 0),
+	);
+	const structuredPresence = sampleTimedPulses(
+		accentProfile?.points ?? [],
+		timeMs,
+		PERCUSSIVE_ACCENT_PRE_ROLL_MS,
+		PERCUSSIVE_ACCENT_RELEASE_MS,
+		(point) => (point.structured ? 1 : 0),
 	);
 
-	const breath = Math.sqrt(energy) * 0.2;
+	const energyDrive = visualEnergyDrive(analysis, energy);
+	const accentEnergyGain = absoluteAccentGain(analysis, energy);
+	const breath = energyDrive * 0.2;
 	const beatAccent = hasBeatGrid ? beat * 0.8 : 0;
 	const onsetFallback = hasBeatGrid ? 0 : onset * 0.3;
-	const residualAccent = percussiveAccent * 0.72;
-	return clamp01(breath + Math.max(beatAccent, onsetFallback, residualAccent));
+	const ordinaryResidualAccent = ordinaryPercussiveAccent * 0.72;
+	const structuredResidualAccent = structuredPercussiveAccent * 0.72;
+	const energyScaledTarget =
+		breath +
+		Math.max(
+			Math.max(beatAccent, onsetFallback) * accentEnergyGain,
+			ordinaryResidualAccent,
+		);
+	const legacyBreath = Math.sqrt(energy) * 0.2;
+	const structuredBreath =
+		breath + (legacyBreath - breath) * structuredPresence;
+	const structuredTarget = structuredBreath + structuredResidualAccent;
+	return clamp01(Math.max(energyScaledTarget, structuredTarget));
 }
 
 /**

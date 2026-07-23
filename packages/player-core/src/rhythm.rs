@@ -9,7 +9,7 @@ use anyhow::Context;
 use ffmpeg_audio::{AudioReader, ResampleOptions};
 use serde::{Deserialize, Serialize};
 
-pub const RHYTHM_ANALYZER_VERSION: u32 = 1;
+pub const RHYTHM_ANALYZER_VERSION: u32 = 2;
 
 const TARGET_SAMPLE_RATE: u32 = 22_050;
 const FFT_SIZE: usize = 1_024;
@@ -62,6 +62,11 @@ pub struct RhythmAnalysis {
     pub onsets: Vec<RhythmOnsetPoint>,
     pub tempo_segments: Vec<RhythmTempoSegment>,
     pub energy_envelope: Vec<RhythmTimedValue>,
+    /// Absolute P95 frame RMS before `energy_envelope` is normalized. Keeping
+    /// this scalar makes the relative envelope comparable across tracks without
+    /// duplicating another full-length time series in the cache.
+    #[serde(default)]
+    pub energy_scale: f32,
 }
 
 impl RhythmAnalysis {
@@ -75,6 +80,7 @@ impl RhythmAnalysis {
             onsets: Vec::new(),
             tempo_segments: Vec::new(),
             energy_envelope: Vec::new(),
+            energy_scale: 0.0,
         }
     }
 }
@@ -200,7 +206,7 @@ pub fn analyze_mono_pcm(samples: &[f32], sample_rate: u32) -> anyhow::Result<Rhy
             bands: normalized_bands[frame].map(unit),
         })
         .collect::<Vec<_>>();
-    let energy_envelope = make_energy_envelope(&rms, sample_rate, duration_ms);
+    let (energy_envelope, energy_scale) = make_energy_envelope(&rms, sample_rate, duration_ms);
 
     let tempo_envelope = smooth_tempo_envelope(&novelty, &onset_frames);
     let global_tempo = estimate_tempo(&tempo_envelope, sample_rate);
@@ -229,6 +235,7 @@ pub fn analyze_mono_pcm(samples: &[f32], sample_rate: u32) -> anyhow::Result<Rhy
         onsets,
         tempo_segments,
         energy_envelope,
+        energy_scale,
     })
 }
 
@@ -414,10 +421,10 @@ fn make_energy_envelope(
     rms: &[f32],
     sample_rate: u32,
     duration_ms: u64,
-) -> Vec<RhythmTimedValue> {
+) -> (Vec<RhythmTimedValue>, f32) {
     let scale = percentile(rms.iter().copied(), 0.95);
     if scale <= 1.0e-8 {
-        return Vec::new();
+        return (Vec::new(), 0.0);
     }
     const FRAMES_PER_POINT: usize = 4;
     let mut points = Vec::with_capacity(rms.len().div_ceil(FRAMES_PER_POINT));
@@ -429,7 +436,7 @@ fn make_energy_envelope(
             value: unit(mean / scale),
         });
     }
-    points
+    (points, scale)
 }
 
 fn smooth_tempo_envelope(novelty: &[f32], onset_frames: &[usize]) -> Vec<f32> {
@@ -710,6 +717,30 @@ mod tests {
         assert!(analysis.beats.is_empty());
         assert!(analysis.onsets.is_empty());
         assert!(analysis.energy_envelope.is_empty());
+        assert_eq!(analysis.energy_scale, 0.0);
+    }
+
+    #[test]
+    fn energy_scale_preserves_absolute_pcm_level() {
+        let pcm = (0..TARGET_SAMPLE_RATE as usize * 2)
+            .map(|sample| {
+                (2.0 * PI * 440.0 * sample as f32 / TARGET_SAMPLE_RATE as f32).sin() * 0.6
+            })
+            .collect::<Vec<_>>();
+        let quieter_pcm = pcm.iter().map(|sample| sample * 0.25).collect::<Vec<_>>();
+        let loud = analyze_mono_pcm(&pcm, TARGET_SAMPLE_RATE).unwrap();
+        let quiet = analyze_mono_pcm(&quieter_pcm, TARGET_SAMPLE_RATE).unwrap();
+
+        assert!(loud.energy_scale > 0.0);
+        assert!((loud.energy_scale / quiet.energy_scale - 4.0).abs() < 1.0e-4);
+        assert_eq!(loud.energy_envelope.len(), quiet.energy_envelope.len());
+        for (loud_point, quiet_point) in loud
+            .energy_envelope
+            .iter()
+            .zip(quiet.energy_envelope.iter())
+        {
+            assert!((loud_point.value - quiet_point.value).abs() < 1.0e-5);
+        }
     }
 
     #[test]
@@ -744,8 +775,14 @@ mod tests {
         assert_eq!(value["analyzerVersion"], RHYTHM_ANALYZER_VERSION);
         assert_eq!(value["durationMs"], 1_234);
         assert!(value["globalBpm"].is_null());
+        assert_eq!(value["energyScale"], 0.0);
         assert!(value.get("analyzer_version").is_none());
         let restored: RhythmAnalysis = serde_json::from_value(value).unwrap();
         assert_eq!(analysis, restored);
+
+        let mut legacy_value = serde_json::to_value(&analysis).unwrap();
+        legacy_value.as_object_mut().unwrap().remove("energyScale");
+        let restored_legacy: RhythmAnalysis = serde_json::from_value(legacy_value).unwrap();
+        assert_eq!(restored_legacy.energy_scale, 0.0);
     }
 }
