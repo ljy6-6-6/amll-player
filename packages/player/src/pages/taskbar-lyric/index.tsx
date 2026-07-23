@@ -7,6 +7,7 @@ import type React from "react";
 import {
 	useCallback,
 	useEffect,
+	useLayoutEffect,
 	useMemo,
 	useReducer,
 	useRef,
@@ -185,6 +186,13 @@ export const TaskbarLyricApp = () => {
 		"horizontal",
 	);
 	const [isHovered, setIsHovered] = useState(false);
+	const [hoverTextExtent, setHoverTextExtent] = useState<{
+		orientation: "horizontal" | "vertical";
+		value: number;
+	} | null>(null);
+	const isHoveredRef = useRef(false);
+	const hoverUnlockTimerRef = useRef<number | null>(null);
+	const textPanelRef = useRef<HTMLDivElement>(null);
 	const prevHoverRef = useRef(isHovered);
 	const isHoverEvent = prevHoverRef.current !== isHovered;
 	useEffect(() => {
@@ -408,6 +416,8 @@ export const TaskbarLyricApp = () => {
 	const displayAsMetadata = isMetadataMode || isHovered;
 	const isSingleLineMode =
 		modeSetting === "auto" ? systemMode === "single" : modeSetting === "single";
+	const isVert = orientation === "vertical";
+	const isHoverLayoutLocked = hoverTextExtent !== null;
 
 	const currentLine =
 		currentLyricIndex >= 0 ? lyricLines[currentLyricIndex] : null;
@@ -480,19 +490,86 @@ export const TaskbarLyricApp = () => {
 		subLyricText,
 	]);
 
+	const clearHoverUnlockTimer = useCallback(() => {
+		if (hoverUnlockTimerRef.current === null) return;
+		window.clearTimeout(hoverUnlockTimerRef.current);
+		hoverUnlockTimerRef.current = null;
+	}, []);
+
 	const handleMouseEnter = () => {
+		isHoveredRef.current = true;
+		clearHoverUnlockTimer();
+
+		const panelRect = textPanelRef.current?.getBoundingClientRect();
+		if (panelRect) {
+			setHoverTextExtent({
+				orientation,
+				value: isVert ? panelRect.height : panelRect.width,
+			});
+		}
+
 		setIsHovered(true);
 		setClickInterception(true);
 	};
 
 	const handleMouseLeave = () => {
+		isHoveredRef.current = false;
 		setIsHovered(false);
 		setClickInterception(false);
+
+		clearHoverUnlockTimer();
+		hoverUnlockTimerRef.current = window.setTimeout(() => {
+			hoverUnlockTimerRef.current = null;
+			if (!isHoveredRef.current) {
+				setHoverTextExtent(null);
+			}
+		}, 1500);
+	};
+
+	const handleControlsExitComplete = () => {
+		if (isHoveredRef.current) return;
+		clearHoverUnlockTimer();
+		setHoverTextExtent(null);
 	};
 
 	useEffect(() => {
 		setClickInterception(false);
 	}, []);
+
+	useEffect(
+		() => () => {
+			clearHoverUnlockTimer();
+		},
+		[clearHoverUnlockTimer],
+	);
+
+	useLayoutEffect(() => {
+		if (!isHoverLayoutLocked) return;
+
+		const textPanel = textPanelRef.current;
+		if (!textPanel) return;
+
+		const preserveLargestExtent = () => {
+			const panelRect = textPanel.getBoundingClientRect();
+			const measuredExtent =
+				orientation === "vertical" ? panelRect.height : panelRect.width;
+			if (!Number.isFinite(measuredExtent) || measuredExtent <= 0) return;
+
+			setHoverTextExtent((previous) => {
+				if (!previous) return previous;
+				if (previous.orientation !== orientation) {
+					return { orientation, value: measuredExtent };
+				}
+				if (measuredExtent <= previous.value + 0.5) return previous;
+				return { orientation, value: measuredExtent };
+			});
+		};
+
+		preserveLargestExtent();
+		const observer = new ResizeObserver(preserveLargestExtent);
+		observer.observe(textPanel);
+		return () => observer.disconnect();
+	}, [isHoverLayoutLocked, orientation]);
 
 	const handlePrev = (e: React.MouseEvent) => {
 		e.stopPropagation();
@@ -521,8 +598,13 @@ export const TaskbarLyricApp = () => {
 		};
 	}, []);
 
-	const isVert = orientation === "vertical";
 	const isOnlyOneItem = lyricItems.length === 1;
+	const lockedTextPanelStyle: React.CSSProperties | undefined =
+		hoverTextExtent?.orientation === orientation
+			? isVert
+				? { minHeight: hoverTextExtent.value }
+				: { minWidth: hoverTextExtent.value }
+			: undefined;
 
 	return (
 		<div
@@ -582,9 +664,13 @@ export const TaskbarLyricApp = () => {
 					</AnimatePresence>
 				</div>
 
-				<AnimatePresence initial={false}>
+				<AnimatePresence
+					initial={false}
+					onExitComplete={handleControlsExitComplete}
+				>
 					{isHovered && (
 						<motion.div
+							key={orientation}
 							className={styles.controlsWrapper}
 							initial={
 								isVert
@@ -625,7 +711,11 @@ export const TaskbarLyricApp = () => {
 					)}
 				</AnimatePresence>
 
-				<div className={styles.textPanel}>
+				<div
+					ref={textPanelRef}
+					className={styles.textPanel}
+					style={lockedTextPanelStyle}
+				>
 					<AnimatePresence custom={isHoverEvent}>
 						<motion.div
 							key={groupKey}
