@@ -7,8 +7,9 @@ use std::{
 
 use anyhow::Context;
 use bs1770::{ChannelLoudnessMeter, gated_mean, reduce_stereo};
-use ffmpeg_audio::{AudioReader, ResampleOptions};
+use ffmpeg_audio::{AudioError, AudioReader, ResampleOptions};
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 pub const RHYTHM_ANALYZER_VERSION: u32 = 2;
 pub const LOUDNESS_ANALYZER_VERSION: u32 = 1;
@@ -21,6 +22,15 @@ const BAND_COUNT: usize = 5;
 const BAND_EDGES_HZ: [f32; BAND_COUNT + 1] = [30.0, 150.0, 400.0, 1_200.0, 3_500.0, 11_025.0];
 const MIN_TEMPO_BPM: f32 = 55.0;
 const MAX_TEMPO_BPM: f32 = 210.0;
+const MAX_RECOVERABLE_DECODE_ERRORS: usize = 8;
+
+fn can_skip_decode_error(error: &AudioError, skipped_errors: usize) -> bool {
+    skipped_errors < MAX_RECOVERABLE_DECODE_ERRORS
+        && matches!(
+            error,
+            AudioError::FFmpeg(code, _) if *code == ffmpeg_audio::sys::AVERROR_INVALIDDATA
+        )
+}
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -220,10 +230,24 @@ where
     let mut loudness_meter = TrackLoudnessMeter::new(LOUDNESS_SAMPLE_RATE);
     let mut pcm = Vec::new();
 
-    while let Some(frame) = reader
-        .receive_frame()
-        .context("failed while decoding audio for rhythm analysis")?
-    {
+    let mut recoverable_decode_errors = 0;
+    loop {
+        let frame = match reader.receive_frame() {
+            Ok(Some(frame)) => frame,
+            Ok(None) => break,
+            Err(error) if can_skip_decode_error(&error, recoverable_decode_errors) => {
+                recoverable_decode_errors += 1;
+                warn!(
+                    error = %error,
+                    skipped_errors = recoverable_decode_errors,
+                    "skipping recoverable damaged audio data during rhythm analysis"
+                );
+                continue;
+            }
+            Err(error) => {
+                return Err(error).context("failed while decoding audio for rhythm analysis");
+            }
+        };
         if resampler
             .process::<f32>(Some(&frame))
             .context("failed to resample audio for rhythm analysis")?
@@ -833,6 +857,27 @@ mod tests {
             beat += beat_period;
         }
         pcm
+    }
+
+    #[test]
+    fn ffmpeg_invalid_data_errors_are_recoverable_only_within_budget() {
+        let damaged_frame = AudioError::FFmpeg(
+            ffmpeg_audio::sys::AVERROR_INVALIDDATA,
+            "invalid data".to_owned(),
+        );
+        let unrelated_ffmpeg_error = AudioError::FFmpeg(-1, "unrelated".to_owned());
+
+        assert!(can_skip_decode_error(&damaged_frame, 0));
+        assert!(can_skip_decode_error(
+            &damaged_frame,
+            MAX_RECOVERABLE_DECODE_ERRORS - 1
+        ));
+        assert!(!can_skip_decode_error(
+            &damaged_frame,
+            MAX_RECOVERABLE_DECODE_ERRORS
+        ));
+        assert!(!can_skip_decode_error(&unrelated_ffmpeg_error, 0));
+        assert!(!can_skip_decode_error(&AudioError::Eof, 0));
     }
 
     #[test]
