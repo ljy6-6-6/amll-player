@@ -78,6 +78,15 @@ function shuffleArray<T>(arr: readonly T[]): T[] {
 	return result;
 }
 
+function dedupeSongsById(songs: readonly Song[]): Song[] {
+	const seen = new Set<string>();
+	return songs.filter((song) => {
+		if (seen.has(song.id)) return false;
+		seen.add(song.id);
+		return true;
+	});
+}
+
 export class PlayQueueManager {
 	private store: JotaiStore;
 	private originalList: Song[] = [];
@@ -317,13 +326,15 @@ export class PlayQueueManager {
 	 */
 	setQueue(songs: Song[], playlistId?: number): void {
 		if (this.disposed || songs.length === 0) return;
-		this.originalList = [...songs];
+		const uniqueSongs = dedupeSongsById(songs);
+		if (uniqueSongs.length === 0) return;
+		this.originalList = uniqueSongs;
 		this.playlistId = playlistId ?? null;
 
 		if (this.shuffleActive) {
-			this.playList = shuffleArray(songs);
+			this.playList = shuffleArray(uniqueSongs);
 		} else {
-			this.playList = [...songs];
+			this.playList = [...uniqueSongs];
 		}
 
 		void this.playSongAt(0);
@@ -542,14 +553,18 @@ export class PlayQueueManager {
 			const songMap = new Map(songs.map((s) => [s.id, s]));
 
 			// 恢复 playList
-			this.playList = persisted.songIds
-				.map((id) => songMap.get(id))
-				.filter((s): s is Song => s !== undefined);
+			this.playList = dedupeSongsById(
+				persisted.songIds
+					.map((id) => songMap.get(id))
+					.filter((s): s is Song => s !== undefined),
+			);
 
 			// 恢复 originalList
-			this.originalList = persisted.originalSongIds
-				.map((id) => songMap.get(id))
-				.filter((s): s is Song => s !== undefined);
+			this.originalList = dedupeSongsById(
+				persisted.originalSongIds
+					.map((id) => songMap.get(id))
+					.filter((s): s is Song => s !== undefined),
+			);
 
 			// 如果 originalList 因为某些歌曲被删除而为空，用 playList 兜底
 			if (this.originalList.length === 0) {
