@@ -11,9 +11,9 @@ const BEAT_PRE_ROLL_PERIOD_RATIO = 0.32;
 const ONSET_PRE_ROLL_MS = 55;
 const ONSET_RELEASE_MS = 240;
 const ONSET_BEAT_MERGE_MS = 180;
-const MIN_BEAT_RELEASE_MS = 180;
+const MIN_BEAT_RELEASE_MS = 185;
 const MAX_BEAT_RELEASE_MS = 520;
-const BEAT_RELEASE_PERIOD_RATIO = 0.55;
+const BEAT_RELEASE_PERIOD_RATIO = 0.35;
 const STRONG_BEAT_PRE_ROLL_MS = 65;
 const STRONG_BEAT_RELEASE_MS = 130;
 const STRONG_BEAT_IMPACT_START = 0.96;
@@ -44,7 +44,7 @@ const PERCUSSIVE_ACCENT_STRONG_ENERGY_FLOOR = 0.75;
 const PERCUSSIVE_ACCENT_STRONG_MAX = 0.65;
 
 const VISUAL_ATTACK_MS = 70;
-const VISUAL_RELEASE_MS = 250;
+const VISUAL_RELEASE_MS = 180;
 const BEAT_DYNAMIC_RANGE_SCALE = 0.2;
 export const MAX_RHYTHM_VISUAL_STEP_MS = 50;
 
@@ -61,6 +61,12 @@ const ABSOLUTE_RMS_SILENCE_FLOOR = 0.015;
 const ABSOLUTE_RMS_FULL_DRIVE = 0.55;
 const ABSOLUTE_ACCENT_GAIN_FLOOR = 0.18;
 const ABSOLUTE_BREATH_RELATIVE_FLOOR = 0.2;
+const EVENT_AUDIBILITY_FULL_RMS = 0.08;
+const MIN_PERCEPTIBLE_ACCENT = 0.32;
+const UNDERSAMPLED_TEMPO_MIN_CONFIDENCE = 0.45;
+const UNDERSAMPLED_TEMPO_MIN_DURATION_MS = 8_000;
+const UNDERSAMPLED_TEMPO_MIN_BEAT_GAPS = 6;
+const UNDERSAMPLED_TEMPO_MIN_PERIOD_RATIO = 1.6;
 
 interface BeatStrengthProfile {
 	lower: number;
@@ -82,6 +88,14 @@ interface PercussiveAccentCandidate extends PercussiveAccentPoint {
 	bandBreadth: number;
 	localCoverage: number;
 	localSalientOnsetCount: number;
+	undersampledTempo: boolean;
+}
+
+interface TempoGridProfile {
+	startMs: number;
+	endMs: number;
+	periodMs: number;
+	undersampled: boolean;
 }
 
 interface LocalGridCoverageProfile {
@@ -117,6 +131,7 @@ const percussiveAccentProfiles = new WeakMap<
 	RhythmAnalysis,
 	PercussiveAccentProfile
 >();
+const tempoGridProfiles = new WeakMap<RhythmAnalysis, TempoGridProfile[]>();
 
 /**
  * 保持现有 0..0.4 接口范围；Mesh 内部会在拆分慢呼吸与重拍相位前将其
@@ -224,13 +239,21 @@ function sampleSmoothedEnergy(
  * 返回 null 表示旧缓存或测试夹具没有绝对标尺，此时沿用旧映射，保证
  * JSON 向后兼容；v2 缓存会始终携带有效标尺（静音除外）。
  */
-function absoluteEnergyDrive(
+function approximateAbsoluteRms(
 	analysis: RhythmAnalysis,
 	relativeEnergy: number,
 ): number | null {
 	const scale = analysis.energyScale;
 	if (!Number.isFinite(scale) || scale <= Number.EPSILON) return null;
-	const absoluteRms = clamp01(relativeEnergy) * scale;
+	return clamp01(relativeEnergy) * scale;
+}
+
+function absoluteEnergyDrive(
+	analysis: RhythmAnalysis,
+	relativeEnergy: number,
+): number | null {
+	const absoluteRms = approximateAbsoluteRms(analysis, relativeEnergy);
+	if (absoluteRms === null) return null;
 	return smootherStep01(
 		(absoluteRms - ABSOLUTE_RMS_SILENCE_FLOOR) /
 			(ABSOLUTE_RMS_FULL_DRIVE - ABSOLUTE_RMS_SILENCE_FLOOR),
@@ -261,6 +284,30 @@ function absoluteAccentGain(
 				(1 - ABSOLUTE_ACCENT_GAIN_FLOOR) * absoluteDrive;
 }
 
+/**
+ * 绝对能量继续决定普通拍的主要幅度；另一条更低的可听性曲线只保证
+ * 已经通过 beat/onset 声学验证的事件不被多级平滑压成肉眼不可见。
+ * 下限封顶而不按比例抬高整段呼吸，因此轻缓段仍明显弱于高能量段。
+ */
+function perceptibleAccent(
+	analysis: RhythmAnalysis,
+	rawAccent: number,
+	relativeEnergy: number,
+): number {
+	const accent = clamp01(rawAccent);
+	const energyScaled = accent * absoluteAccentGain(analysis, relativeEnergy);
+	const absoluteRms = approximateAbsoluteRms(analysis, relativeEnergy);
+	if (absoluteRms === null) return accent;
+	const audibility = smootherStep01(
+		(absoluteRms - ABSOLUTE_RMS_SILENCE_FLOOR) /
+			(EVENT_AUDIBILITY_FULL_RMS - ABSOLUTE_RMS_SILENCE_FLOOR),
+	);
+	return Math.max(
+		energyScaled,
+		Math.min(accent, MIN_PERCEPTIBLE_ACCENT) * audibility,
+	);
+}
+
 function quantile(sortedValues: readonly number[], amount: number): number {
 	if (sortedValues.length === 0) return 0;
 	const position = clamp01(amount) * (sortedValues.length - 1);
@@ -269,6 +316,75 @@ function quantile(sortedValues: readonly number[], amount: number): number {
 	const lower = sortedValues[lowerIndex] ?? 0;
 	const upper = sortedValues[upperIndex] ?? lower;
 	return lower + (upper - lower) * (position - lowerIndex);
+}
+
+/**
+ * tempoSegments 是局部估计，而 beats 目前仍按 globalBpm 建格。若一个
+ * 足够长且可信的快速分段，其局部周期明显短于该段实际拍点间距，就说明
+ * 拍格被欠采样了。记录实际网格周期，既避免把稀疏拍的包络错误缩短，
+ * 也给严格 onset 补普通视觉脉冲提供纯声学判据。
+ */
+function buildTempoGridProfiles(analysis: RhythmAnalysis): TempoGridProfile[] {
+	const cached = tempoGridProfiles.get(analysis);
+	if (cached) return cached;
+	const profiles = analysis.tempoSegments.map((segment) => {
+		const gaps: number[] = [];
+		let beatIndex = Math.max(1, lowerBound(analysis.beats, segment.startMs));
+		while (beatIndex < analysis.beats.length) {
+			const previous = analysis.beats[beatIndex - 1];
+			const current = analysis.beats[beatIndex];
+			if (!(previous && current)) break;
+			const midpoint = (previous.timeMs + current.timeMs) * 0.5;
+			if (midpoint >= segment.endMs) break;
+			if (midpoint >= segment.startMs) {
+				const gap = current.timeMs - previous.timeMs;
+				if (gap > 0) gaps.push(gap);
+			}
+			beatIndex++;
+		}
+		gaps.sort((left, right) => left - right);
+		const observedPeriodMs = quantile(gaps, 0.5);
+		const localPeriodMs =
+			Number.isFinite(segment.bpm) && segment.bpm > 0
+				? 60_000 / segment.bpm
+				: 0;
+		const undersampled =
+			segment.bpm >= PERCUSSIVE_ACCENT_FAST_GRID_MIN_BPM &&
+			segment.confidence >= UNDERSAMPLED_TEMPO_MIN_CONFIDENCE &&
+			segment.endMs - segment.startMs >= UNDERSAMPLED_TEMPO_MIN_DURATION_MS &&
+			gaps.length >= UNDERSAMPLED_TEMPO_MIN_BEAT_GAPS &&
+			localPeriodMs > 0 &&
+			observedPeriodMs / localPeriodMs >= UNDERSAMPLED_TEMPO_MIN_PERIOD_RATIO;
+		return {
+			startMs: segment.startMs,
+			endMs: segment.endMs,
+			periodMs: undersampled ? observedPeriodMs : localPeriodMs,
+			undersampled,
+		};
+	});
+	tempoGridProfiles.set(analysis, profiles);
+	return profiles;
+}
+
+function tempoGridProfileAt(
+	analysis: RhythmAnalysis,
+	timeMs: number,
+): TempoGridProfile | undefined {
+	const profiles = buildTempoGridProfiles(analysis);
+	let low = 0;
+	let high = profiles.length;
+	while (low < high) {
+		const middle = (low + high) >>> 1;
+		if ((profiles[middle]?.startMs ?? Infinity) <= timeMs) {
+			low = middle + 1;
+		} else {
+			high = middle;
+		}
+	}
+	const profile = profiles[low - 1];
+	return profile && timeMs >= profile.startMs && timeMs < profile.endMs
+		? profile
+		: undefined;
 }
 
 function beatStrengthProfile(analysis: RhythmAnalysis): BeatStrengthProfile {
@@ -397,22 +513,22 @@ function onsetGridCoverageFlags(
 	return covered;
 }
 
-function peakEnergyAroundOnsets(
-	onsets: readonly RhythmOnsetPoint[],
+function peakEnergyAroundPoints(
+	points: readonly { timeMs: number }[],
 	energy: readonly RhythmTimedValue[],
 	radiusMs: number,
 ): Float64Array {
-	const peaks = new Float64Array(onsets.length);
+	const peaks = new Float64Array(points.length);
 	const deque = new Int32Array(energy.length);
 	let head = 0;
 	let tail = 0;
 	let nextEnergy = 0;
 
-	for (let onsetIndex = 0; onsetIndex < onsets.length; onsetIndex++) {
-		const onset = onsets[onsetIndex];
-		if (!onset) continue;
-		const upper = onset.timeMs + radiusMs;
-		const lower = onset.timeMs - radiusMs;
+	for (let pointIndex = 0; pointIndex < points.length; pointIndex++) {
+		const point = points[pointIndex];
+		if (!point) continue;
+		const upper = point.timeMs + radiusMs;
+		const lower = point.timeMs - radiusMs;
 		while (
 			nextEnergy < energy.length &&
 			(energy[nextEnergy]?.timeMs ?? Number.POSITIVE_INFINITY) <= upper
@@ -432,7 +548,7 @@ function peakEnergyAroundOnsets(
 		) {
 			head++;
 		}
-		peaks[onsetIndex] =
+		peaks[pointIndex] =
 			head < tail ? clamp01(energy[deque[head] ?? 0]?.value ?? 0) : 0;
 	}
 	return peaks;
@@ -571,7 +687,7 @@ function percussiveAccentProfile(
 	const usesFastLocalRecovery =
 		(analysis.globalBpm ?? 0) >= PERCUSSIVE_ACCENT_FAST_GRID_MIN_BPM;
 
-	const peakEnergies = peakEnergyAroundOnsets(
+	const peakEnergies = peakEnergyAroundPoints(
 		analysis.onsets,
 		analysis.energyEnvelope,
 		90,
@@ -596,6 +712,9 @@ function percussiveAccentProfile(
 			spectralStrength * breadthStrength * audibleStrength,
 		);
 		if (strength < PERCUSSIVE_ACCENT_RAW_FLOOR) continue;
+		const undersampledTempo =
+			tempoGridProfileAt(analysis, onset.timeMs)?.undersampled ?? false;
+		const localCorrection = onsetLocalCorrections[onsetIndex] ?? 0;
 
 		const candidate = {
 			timeMs: onset.timeMs,
@@ -604,14 +723,15 @@ function percussiveAccentProfile(
 			onsetIndex,
 			coverageCorrection: Math.max(
 				globalCorrection,
-				usesFastLocalRecovery ? (onsetLocalCorrections[onsetIndex] ?? 0) : 0,
+				usesFastLocalRecovery || undersampledTempo ? localCorrection : 0,
 			),
-			localCorrection: onsetLocalCorrections[onsetIndex] ?? 0,
+			localCorrection,
 			coveredByGrid: coveredByGrid[onsetIndex] === 1,
 			bandBreadth,
 			peakEnergy,
 			localCoverage: onsetLocalProfile.coverages[onsetIndex] ?? 1,
 			localSalientOnsetCount: onsetLocalProfile.counts[onsetIndex] ?? 0,
+			undersampledTempo,
 		};
 		const previous = candidates[candidates.length - 1];
 		if (
@@ -659,6 +779,7 @@ function percussiveAccentProfile(
 		// 结构化三连击只沿用已经验证过的全曲低覆盖门控。局部恢复出来的
 		// 333ms 双速节拍即使外形相似，也必须走受限的普通重拍通道。
 		const structured =
+			!candidate.undersampledTempo &&
 			structuredTimes.has(candidate.timeMs) &&
 			globalCorrection > 0 &&
 			(!usesFastLocalRecovery ||
@@ -675,6 +796,7 @@ function percussiveAccentProfile(
 			candidate.localCorrection > globalCorrection + 1e-6;
 		if (
 			(structured ||
+				candidate.undersampledTempo ||
 				((!candidate.coveredByGrid || fastLocalRecovery) &&
 					rawStrength >= PERCUSSIVE_ACCENT_STANDALONE_FLOOR)) &&
 			strength >= PERCUSSIVE_ACCENT_RAW_FLOOR
@@ -726,24 +848,36 @@ function percussiveAccentProfile(
 
 	const reroutePointByBeat = new Int32Array(analysis.beats.length);
 	reroutePointByBeat.fill(-1);
-	if (usesFastLocalRecovery) {
-		for (let pointIndex = 0; pointIndex < points.length; pointIndex++) {
-			const point = points[pointIndex];
-			if (!point || point.localCorrection <= globalCorrection + 1e-6) {
-				continue;
-			}
-			const beatIndex = assignedBeatByOnset[point.onsetIndex] ?? -1;
-			if (beatIndex < 0) continue;
-			const currentPoint = points[reroutePointByBeat[beatIndex] ?? -1];
-			if (!currentPoint || point.strength > currentPoint.strength) {
-				reroutePointByBeat[beatIndex] = pointIndex;
-			}
+	for (let pointIndex = 0; pointIndex < points.length; pointIndex++) {
+		const point = points[pointIndex];
+		const candidate = point
+			? candidateByOnsetIndex.get(point.onsetIndex)
+			: undefined;
+		if (
+			!point ||
+			(!usesFastLocalRecovery && !candidate?.undersampledTempo) ||
+			point.localCorrection <= globalCorrection + 1e-6
+		) {
+			continue;
+		}
+		const beatIndex = assignedBeatByOnset[point.onsetIndex] ?? -1;
+		if (beatIndex < 0) continue;
+		const currentPoint = points[reroutePointByBeat[beatIndex] ?? -1];
+		if (!currentPoint || point.strength > currentPoint.strength) {
+			reroutePointByBeat[beatIndex] = pointIndex;
 		}
 	}
 
 	const consumedOnsets = new Set<number>();
+	const beatPeakEnergies = peakEnergyAroundPoints(
+		analysis.beats,
+		analysis.energyEnvelope,
+		BEAT_ENERGY_PEAK_RADIUS_MS,
+	);
 	const visualBeats = analysis.beats
 		.flatMap((beat, beatIndex) => {
+			const undersampledTempo =
+				tempoGridProfileAt(analysis, beat.timeMs)?.undersampled ?? false;
 			const normalizedStrength = normalizeBeatStrength(analysis, beat.strength);
 			const impact = Math.max(
 				normalizedStrength,
@@ -756,6 +890,7 @@ function percussiveAccentProfile(
 				Math.sqrt(assignedOnsetStrengths[beatIndex] ?? 0) *
 				(0.76 + placeholderBlend * 0.12);
 			let value = Math.max(beatValue, onsetValue);
+			let peakEnergy = beatPeakEnergies[beatIndex] ?? 0;
 			let timeMs = beat.timeMs;
 			const point = points[reroutePointByBeat[beatIndex] ?? -1];
 			if (
@@ -766,9 +901,10 @@ function percussiveAccentProfile(
 			) {
 				timeMs += (point.timeMs - beat.timeMs) * point.coverageCorrection;
 				value = Math.max(value, point.strength * 0.88);
+				peakEnergy = Math.max(peakEnergy, point.peakEnergy);
 				consumedOnsets.add(point.onsetIndex);
 			} else if (
-				usesFastLocalRecovery &&
+				(usesFastLocalRecovery || undersampledTempo) &&
 				!point &&
 				(assignedOnsetStrengths[beatIndex] ?? 0) < salientThreshold &&
 				(beatLocalCorrections[beatIndex] ?? 0) > globalCorrection + 1e-6
@@ -778,17 +914,18 @@ function percussiveAccentProfile(
 				// 形成第二个肩峰；仍有显著起音的拍点则保留，避免误删真实敲击。
 				value *= 1 - (beatLocalCorrections[beatIndex] ?? 0);
 			}
+			value = perceptibleAccent(analysis, value * 0.8, peakEnergy);
 			return value > Number.EPSILON ? [{ timeMs, value }] : [];
 		})
 		.sort((left, right) => left.timeMs - right.timeMs);
 	const residualPoints = points.filter((point) => {
 		if (consumedOnsets.has(point.onsetIndex)) return false;
 		const candidate = candidateByOnsetIndex.get(point.onsetIndex);
-		const coveredFastLocalRecovery =
-			usesFastLocalRecovery &&
+		const coveredLocalRecovery =
+			(usesFastLocalRecovery || candidate?.undersampledTempo) &&
 			point.localCorrection > globalCorrection + 1e-6 &&
 			candidate?.coveredByGrid;
-		return !coveredFastLocalRecovery;
+		return !coveredLocalRecovery;
 	});
 
 	const structuredStrongPoints = points.flatMap((point) =>
@@ -814,6 +951,7 @@ function percussiveAccentProfile(
 		const candidate = candidateByOnsetIndex.get(point.onsetIndex);
 		if (
 			!candidate ||
+			candidate.undersampledTempo ||
 			candidate.strength < PERCUSSIVE_ACCENT_STRONG_RAW_FLOOR ||
 			candidate.bandBreadth < PERCUSSIVE_ACCENT_STRONG_BREADTH_FLOOR ||
 			candidate.peakEnergy < PERCUSSIVE_ACCENT_STRONG_ENERGY_FLOOR
@@ -855,6 +993,7 @@ function percussiveAccentProfile(
 		let recoveryReleaseWeight = 1;
 		for (const candidate of candidates) {
 			if (
+				candidate.undersampledTempo ||
 				structuredStrongTimes.has(candidate.timeMs) ||
 				candidate.strength < PERCUSSIVE_ACCENT_STRONG_RAW_FLOOR ||
 				candidate.bandBreadth < PERCUSSIVE_ACCENT_STRONG_BREADTH_FLOOR ||
@@ -1045,25 +1184,11 @@ function sampleTimedPulses<T extends { timeMs: number }>(
 }
 
 function beatPeriodMs(analysis: RhythmAnalysis, timeMs: number): number {
-	let low = 0;
-	let high = analysis.tempoSegments.length;
-	while (low < high) {
-		const middle = (low + high) >>> 1;
-		if ((analysis.tempoSegments[middle]?.startMs ?? Infinity) <= timeMs) {
-			low = middle + 1;
-		} else {
-			high = middle;
-		}
+	const localPeriodMs = tempoGridProfileAt(analysis, timeMs)?.periodMs ?? 0;
+	if (Number.isFinite(localPeriodMs) && localPeriodMs > 0) {
+		return localPeriodMs;
 	}
-	const segment = analysis.tempoSegments[low - 1];
-	const segmentBpm =
-		segment && timeMs >= segment.startMs && timeMs < segment.endMs
-			? segment.bpm
-			: 0;
-	const bpm =
-		Number.isFinite(segmentBpm) && segmentBpm > 0
-			? segmentBpm
-			: (analysis.globalBpm ?? 0);
+	const bpm = analysis.globalBpm ?? 0;
 	return bpm > 0 ? 60_000 / Math.max(1, bpm) : 500;
 }
 
@@ -1163,7 +1288,12 @@ export function sampleAnalysisTarget(
 				timeMs,
 				ONSET_PRE_ROLL_MS,
 				ONSET_RELEASE_MS,
-				(point) => Math.sqrt(clamp01(point.strength)),
+				(point) =>
+					perceptibleAccent(
+						analysis,
+						Math.sqrt(clamp01(point.strength)) * 0.3,
+						sampleEnergy(analysis.energyEnvelope, point.timeMs),
+					),
 			);
 	const ordinaryPercussiveAccent = sampleTimedPulses(
 		accentProfile?.points ?? [],
@@ -1173,7 +1303,7 @@ export function sampleAnalysisTarget(
 		(point) =>
 			point.structured
 				? 0
-				: point.strength * absoluteAccentGain(analysis, point.peakEnergy),
+				: perceptibleAccent(analysis, point.strength * 0.72, point.peakEnergy),
 	);
 	const structuredPercussiveAccent = sampleTimedPulses(
 		accentProfile?.points ?? [],
@@ -1191,18 +1321,14 @@ export function sampleAnalysisTarget(
 	);
 
 	const energyDrive = visualEnergyDrive(analysis, energy);
-	const accentEnergyGain = absoluteAccentGain(analysis, energy);
 	const breath = energyDrive * 0.2;
-	const beatAccent = hasBeatGrid ? beat * 0.8 : 0;
-	const onsetFallback = hasBeatGrid ? 0 : onset * 0.3;
-	const ordinaryResidualAccent = ordinaryPercussiveAccent * 0.72;
+	const beatAccent = hasBeatGrid ? beat : 0;
+	const onsetFallback = hasBeatGrid ? 0 : onset;
+	const ordinaryGridAccent = Math.max(beatAccent, onsetFallback);
+	const ordinaryResidualAccent = ordinaryPercussiveAccent;
 	const structuredResidualAccent = structuredPercussiveAccent * 0.72;
 	const energyScaledTarget =
-		breath +
-		Math.max(
-			Math.max(beatAccent, onsetFallback) * accentEnergyGain,
-			ordinaryResidualAccent,
-		);
+		breath + Math.max(ordinaryGridAccent, ordinaryResidualAccent);
 	const legacyBreath = Math.sqrt(energy) * 0.2;
 	const structuredBreath =
 		breath + (legacyBreath - breath) * structuredPresence;

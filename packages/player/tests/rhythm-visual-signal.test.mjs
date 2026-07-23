@@ -277,9 +277,12 @@ test("相同节律证据的动态强度会随绝对 RMS 单调增加", () => {
 		`平均动态未随能量递增：${JSON.stringify({ quietMotion, mediumMotion, loudMotion })}`,
 	);
 	assert.ok(
-		loudMotion.mean >= quietMotion.mean * 2.5 &&
-			loudMotion.motion >= quietMotion.motion * 2.5,
-		"高、低绝对能量的视觉差距仍被相对拍强度压平",
+		loudMotion.mean >= quietMotion.mean * 2.5,
+		`高、低绝对能量的平均视觉差距被压平：${JSON.stringify({ quietMotion, loudMotion })}`,
+	);
+	assert.ok(
+		loudMotion.motion >= quietMotion.motion * 2.25,
+		`高能量累计运动未达到弱能量的 2.25 倍：${JSON.stringify({ quietMotion, loudMotion })}`,
 	);
 	assert.ok(loudMotion.maxStep < 0.012);
 	assert.ok(loudMotion.maxSecondDifference < 0.0015);
@@ -321,6 +324,366 @@ test("无结构化敲击的安静片段不会用旧相对呼吸绕过绝对能�
 	);
 });
 
+// 以下两组是本机真实缓存的匿名前奏摘要：
+// [beatTime, beatStrength, confidence, ±90ms RMS peak, merged onset strength]
+const LOVE_PRELUDE_ROWS = [
+	[1_126, 0.534339, 0.284344, 0.192783, 0.867434],
+	[1_962, 0.502214, 0.275254, 0.178513, 0.815282],
+	[2_798, 0.580302, 0.297349, 0.183003, 0.942049],
+	[3_599, 0.49882, 0.274294, 0.181695, 0.809773],
+	[4_423, 0.403407, 0.247297, 0.152946, 0.654882],
+	[5_248, 0.513739, 0.278515, 0.142355, 0.833991],
+	[6_049, 0.534016, 0.284253, 0.183869, 0.866908],
+];
+
+const SHOTS_PRELUDE_ROWS = [
+	[801, 0.546143, 0.462952, 0.27016, 0.886596],
+	[1_300, 0.546271, 0.46301, 0.278821, 0.886804],
+	[1_800, 0.552883, 0.46602, 0.283731, 0.897537],
+	[2_287, 0.486478, 0.435784, 0.249478, 0.789737],
+	[2_798, 0.504174, 0.443842, 0.26507, 0.818464],
+	[3_297, 0.491979, 0.438289, 0.261317, 0.798667],
+	[3_796, 0.498327, 0.441179, 0.240177, 0.808972],
+	[4_296, 0.541328, 0.460759, 0.277331, 0.878779],
+	[4_795, 0.512616, 0.447686, 0.289015, 0.832169],
+	[5_294, 0.50628, 0.444801, 0.28815, 0.821884],
+	[5_793, 0.532006, 0.456514, 0.267049, 0.863645],
+	[6_293, 0.547062, 0.46337, 0.305954, 0.888088],
+];
+
+const SHOTS_LATER_WEAK_ROWS = [
+	[12_806, 0.493518, 0.43899, 0.375169, 0.801165],
+	[13_328, 0.304684, 0.353007, 0.381372, 0.577053],
+	[37_779, 0.490425, 0.437582, 0.363436, 0.796145],
+	[38_301, 0.259099, 0.332251, 0.365461, 0.727938],
+];
+
+function makePreludeEnergyEnvelope(rows, baseline) {
+	const values = new Map([
+		[0, 0],
+		[7_000, baseline],
+	]);
+	for (const [timeMs, , , peakEnergy] of rows) {
+		values.set(timeMs - 220, baseline);
+		values.set(timeMs, peakEnergy);
+		values.set(timeMs + 220, baseline);
+	}
+	return [...values]
+		.sort(([left], [right]) => left - right)
+		.map(([timeMs, value]) => ({ timeMs, value }));
+}
+
+function makeWeakPreludeAnalysis(kind) {
+	const isLove = kind === "love";
+	const rows = isLove ? LOVE_PRELUDE_ROWS : SHOTS_PRELUDE_ROWS;
+	const profileAnchors = isLove
+		? [0.2, 0.3, 0.411315, 0.411315, 0.45, 0.5, 0.55, 0.574871, 0.574871, 0.7]
+		: [0.3, 0.4, 0.437584, 0.437584, 0.48, 0.51, 0.53, 0.541507, 0.541507, 0.7];
+	return {
+		analyzerVersion: 2,
+		durationMs: 80_000,
+		globalBpm: isLove ? 72.975655 : 120.0448,
+		confidence: isLove ? 0.408238 : 0.662615,
+		beats: [
+			...rows.map(([timeMs, strength, confidence]) => ({
+				timeMs,
+				strength,
+				confidence,
+			})),
+			...profileAnchors.map((strength, index) => ({
+				timeMs: 60_000 + index * 600,
+				strength,
+				confidence: 0.5,
+			})),
+		],
+		onsets: rows.map(([timeMs, , , , strength]) => ({
+			timeMs,
+			strength,
+			bands: [0.9, 0.86, 0.8, 0.65, 0.25],
+		})),
+		tempoSegments: [
+			{
+				startMs: 0,
+				endMs: 80_000,
+				bpm: isLove ? 144.47739 : 120.0504,
+				confidence: isLove ? 0.425359 : 0.680576,
+			},
+		],
+		energyEnvelope: makePreludeEnergyEnvelope(rows, isLove ? 0.1 : 0.17),
+		energyScale: isLove ? 0.481243 : 0.76178,
+	};
+}
+
+function makeExtendedShotsPreludeAnalysis() {
+	const analysis = makeWeakPreludeAnalysis("shots");
+	return {
+		...analysis,
+		beats: [
+			...analysis.beats,
+			...SHOTS_LATER_WEAK_ROWS.map(([timeMs, strength, confidence]) => ({
+				timeMs,
+				strength,
+				confidence,
+			})),
+		].sort((left, right) => left.timeMs - right.timeMs),
+		onsets: [
+			...analysis.onsets,
+			...SHOTS_LATER_WEAK_ROWS.map(([timeMs, , , , strength]) => ({
+				timeMs,
+				strength,
+				bands: [0.9, 0.86, 0.8, 0.65, 0.25],
+			})),
+		].sort((left, right) => left.timeMs - right.timeMs),
+		energyEnvelope: makePreludeEnergyEnvelope(
+			[...SHOTS_PRELUDE_ROWS, ...SHOTS_LATER_WEAK_ROWS],
+			0.17,
+		),
+	};
+}
+
+const INFERIORITY_SUPERIORITY_BEAT_ROWS = [
+	[72_202, 0.484681, 0.345604],
+	[73_143, 0.380015, 0.307737],
+	[74_072, 0.540097, 0.365652],
+	[75_024, 0.176453, 0.234091],
+	[75_952, 0.498668, 0.350664],
+	[76_870, 0.245963, 0.259239],
+	[77_810, 0.272822, 0.268956],
+	[78_762, 0.318449, 0.285463],
+	[79_702, 0.335497, 0.291631],
+	[80_620, 0.186169, 0.237606],
+	[81_583, 0.470048, 0.34031],
+	[82_512, 0.273584, 0.269232],
+	[83_476, 0.373858, 0.305509],
+	[84_393, 0.335613, 0.291673],
+	[85_322, 0.40058, 0.315177],
+	[86_262, 0.455158, 0.334922],
+	[87_203, 0.46593, 0.33882],
+	[88_131, 0.3977, 0.314135],
+	[89_083, 0.507642, 0.353911],
+];
+
+// [onsetTime, novelty, bands, ±90ms RMS peak]
+const INFERIORITY_SUPERIORITY_ONSET_ROWS = [
+	[72_945, 0.824085, [0.032, 0.837, 0.967, 0.66, 0.795], 0.470889],
+	[73_329, 0.868931, [0.189, 0.978, 0.928, 0.653, 0.701], 0.467816],
+	[73_700, 0.871011, [0, 0.976, 0.992, 0.835, 0.356], 0.645393],
+	[74_072, 0.87678, [0, 0.953, 0.854, 0.88, 0.942], 0.710859],
+	[74_826, 0.914962, [0.313, 0.989, 0.943, 0.857, 0.933], 0.616511],
+	[77_079, 0.954308, [0.516, 1, 0.947, 0.966, 0.978], 0.994145],
+	[78_576, 0.87333, [0, 0.943, 0.975, 0.977, 0.381], 1],
+	[80_074, 0.840825, [0, 0.813, 0.965, 0.988, 0], 1],
+];
+
+function makeInferioritySuperiorityAnalysis() {
+	const energy = new Map([
+		[0, 0.3],
+		[90_000, 0.3],
+	]);
+	for (const [timeMs, , , peakEnergy] of INFERIORITY_SUPERIORITY_ONSET_ROWS) {
+		energy.set(timeMs - 100, 0.3);
+		energy.set(timeMs, peakEnergy);
+		energy.set(timeMs + 100, 0.3);
+	}
+	return {
+		analyzerVersion: 2,
+		durationMs: 90_000,
+		globalBpm: 63.962917,
+		confidence: 0.51661,
+		beats: INFERIORITY_SUPERIORITY_BEAT_ROWS.map(
+			([timeMs, strength, confidence]) => ({
+				timeMs,
+				strength,
+				confidence,
+			}),
+		),
+		onsets: [
+			...Array.from({ length: 32 }, (_, index) => ({
+				timeMs: 1_000 + index * 1_500,
+				strength: 0.4,
+				bands: [0.2, 0.25, 0.3, 0.2, 0.15],
+			})),
+			...INFERIORITY_SUPERIORITY_ONSET_ROWS.map(
+				([timeMs, strength, bands]) => ({ timeMs, strength, bands }),
+			),
+		],
+		tempoSegments: [
+			{ startMs: 0, endMs: 71_982, bpm: 63.961353, confidence: 0.602393 },
+			{
+				startMs: 71_982,
+				endMs: 89_977,
+				bpm: 160.30145,
+				confidence: 0.500841,
+			},
+		],
+		energyEnvelope: [...energy]
+			.sort(([left], [right]) => left - right)
+			.map(([timeMs, value]) => ({ timeMs, value })),
+		energyScale: 0.450716,
+	};
+}
+
+test("劣等上等的局部快拍欠采样会补普通脉冲而不会升级成强旋转", () => {
+	const analysis = makeInferioritySuperiorityAnalysis();
+	const recoveredTimes = [72_945, 73_329, 73_700, 74_826];
+	const recovered = recoveredTimes.map((timeMs) =>
+		sampleAnalysisTarget(analysis, timeMs),
+	);
+	assert.ok(
+		Math.min(...recovered) >= 0.18,
+		`局部 160 BPM 的可信敲击仍被 64 BPM 拍格吞掉：${recovered}`,
+	);
+	assert.deepEqual(
+		recoveredTimes.map((timeMs) => sampleStrongBeatTarget(analysis, timeMs)),
+		[0, 0, 0, 0],
+		"局部补拍错误进入了强旋转通道",
+	);
+
+	const slowControl = {
+		...analysis,
+		tempoSegments: [
+			{ startMs: 0, endMs: 90_000, bpm: 63.962917, confidence: 0.6 },
+		],
+	};
+	const control = recoveredTimes
+		.slice(0, 2)
+		.map((timeMs) => sampleAnalysisTarget(slowControl, timeMs));
+	assert.ok(
+		control.every((value, index) => value < recovered[index] - 0.05),
+		`段外同等 onset 也被当作欠采样快拍：${control} -> ${recovered}`,
+	);
+
+	const boundaryMs = 71_982;
+	const before = sampleAnalysisTarget(analysis, boundaryMs - 0.01);
+	const atBoundary = sampleAnalysisTarget(analysis, boundaryMs);
+	const after = sampleAnalysisTarget(analysis, boundaryMs + 0.01);
+	assert.ok(
+		Math.abs(atBoundary - before) < 0.001 &&
+			Math.abs(after - atBoundary) < 0.001,
+		`局部快拍分段边界发生跳变：${before},${atBoundary},${after}`,
+	);
+});
+
+test("全曲本身较快时局部欠采样补拍也不会进入强旋转", () => {
+	const beats = Array.from({ length: 49 }, (_, index) => ({
+		timeMs: index * 375,
+		strength: 0.5,
+		confidence: 0.7,
+	}));
+	const onsets = [];
+	for (let timeMs = 0; timeMs <= 18_000; timeMs += 375) {
+		if (timeMs >= 5_000 && timeMs < 13_000) continue;
+		onsets.push({ timeMs, strength: 1, bands: [1, 1, 1, 1, 1] });
+	}
+	for (let timeMs = 5_000; timeMs < 13_000; timeMs += 125) {
+		const strictAccent = (timeMs - 5_000) % 1_000 === 0;
+		onsets.push({
+			timeMs,
+			strength: strictAccent ? 1 : 0.7,
+			bands: strictAccent ? [1, 1, 1, 1, 1] : [0, 0, 0, 0, 0],
+		});
+	}
+	onsets.sort((left, right) => left.timeMs - right.timeMs);
+	const analysis = {
+		analyzerVersion: 2,
+		durationMs: 18_000,
+		globalBpm: 160,
+		confidence: 0.8,
+		beats,
+		onsets,
+		tempoSegments: [
+			{ startMs: 0, endMs: 5_000, bpm: 160, confidence: 0.8 },
+			{ startMs: 5_000, endMs: 13_000, bpm: 480, confidence: 0.8 },
+			{ startMs: 13_000, endMs: 18_001, bpm: 160, confidence: 0.8 },
+		],
+		energyEnvelope: onsets.map(({ timeMs }) => ({ timeMs, value: 1 })),
+		energyScale: 1,
+	};
+
+	assert.ok(
+		sampleAnalysisTarget(analysis, 9_000) >= 0.5,
+		"局部欠采样的可信敲击没有进入普通视觉通道",
+	);
+	assert.equal(
+		sampleStrongBeatTarget(analysis, 9_000),
+		0,
+		"局部欠采样补拍被快速全局 BPM 错误升级成强旋转",
+	);
+});
+
+test("全曲覆盖率较高时局部欠采样仍会使用局部证据补普通脉冲", () => {
+	const beats = Array.from({ length: 33 }, (_, index) => ({
+		timeMs: index * 937.5,
+		strength: 0.5,
+		confidence: 0.7,
+	}));
+	const onsets = [
+		...beats
+			.filter((point) => point.timeMs < 10_000 || point.timeMs >= 20_000)
+			.map((point) => ({
+				timeMs: point.timeMs,
+				strength: 0.7,
+				bands: [0, 0, 0, 0, 0],
+			})),
+		...Array.from({ length: 26 }, (_, index) => {
+			const timeMs = 10_312.5 + index * 375;
+			const strictAccent = timeMs === 14_437.5;
+			return {
+				timeMs,
+				strength: strictAccent ? 1 : 0.7,
+				bands: strictAccent ? [1, 1, 1, 1, 1] : [0, 0, 0, 0, 0],
+			};
+		}),
+	].sort((left, right) => left.timeMs - right.timeMs);
+	const base = {
+		analyzerVersion: 2,
+		durationMs: 30_000,
+		globalBpm: 64,
+		confidence: 0.8,
+		beats,
+		onsets,
+		energyEnvelope: onsets.map(({ timeMs }) => ({ timeMs, value: 1 })),
+		energyScale: 1,
+	};
+	const undersampled = {
+		...base,
+		tempoSegments: [
+			{ startMs: 0, endMs: 10_000, bpm: 64, confidence: 0.8 },
+			{ startMs: 10_000, endMs: 20_000, bpm: 160, confidence: 0.8 },
+			{ startMs: 20_000, endMs: 30_001, bpm: 64, confidence: 0.8 },
+		],
+	};
+	const matchedGlobalTempo = {
+		...base,
+		tempoSegments: [{ startMs: 0, endMs: 30_001, bpm: 64, confidence: 0.8 }],
+	};
+	const targetMs = 14_437.5;
+	const recovered = sampleAnalysisTarget(undersampled, targetMs);
+	const control = sampleAnalysisTarget(matchedGlobalTempo, targetMs);
+	assert.ok(
+		recovered >= control + 0.5 && control <= 0.21,
+		`全曲高覆盖率清除了局部欠采样补拍：${control} -> ${recovered}`,
+	);
+	const unsupportedGridTimeMs = 15_000;
+	const suppressedGrid = sampleAnalysisTarget(
+		undersampled,
+		unsupportedGridTimeMs,
+	);
+	const controlGrid = sampleAnalysisTarget(
+		matchedGlobalTempo,
+		unsupportedGridTimeMs,
+	);
+	assert.ok(
+		suppressedGrid <= 0.205 && suppressedGrid <= controlGrid - 0.1,
+		`没有声学事件支撑的旧拍仍与补拍叠成双峰：${controlGrid} -> ${suppressedGrid}`,
+	);
+	assert.equal(
+		sampleStrongBeatTarget(undersampled, targetMs),
+		0,
+		"慢速全局拍格的局部补拍错误进入了强旋转通道",
+	);
+});
+
 test("变速段使用局部 BPM 收紧快节奏拍点包络", () => {
 	const globalTempo = makeAnalysis();
 	globalTempo.globalBpm = 60;
@@ -331,7 +694,7 @@ test("变速段使用局部 BPM 收紧快节奏拍点包络", () => {
 	const globalTail = sampleAnalysisTarget(globalTempo, 1_250);
 	const localTail = sampleAnalysisTarget(localTempo, 1_250);
 	assert.ok(
-		localTail < globalTail - 0.15,
+		localTail < globalTail - 0.1,
 		`局部快节奏没有缩短拍点尾部：${globalTail} -> ${localTail}`,
 	);
 });
@@ -1766,6 +2129,208 @@ function createMeshHarness() {
 		},
 	};
 }
+
+function median(values) {
+	if (values.length === 0) return 0;
+	const sorted = [...values].sort((left, right) => left - right);
+	const middle = Math.floor(sorted.length / 2);
+	return sorted.length % 2 === 0
+		? ((sorted[middle - 1] ?? 0) + (sorted[middle] ?? 0)) / 2
+		: (sorted[middle] ?? 0);
+}
+
+function simulateWeakPreludeEndToEnd(
+	analysis,
+	endMs = 7_000,
+	probeBeats = analysis.beats,
+) {
+	const harness = createMeshHarness();
+	const fps = 240;
+	const deltaMs = 1_000 / fps;
+	let smoothedVolume = 0;
+	const samples = [];
+	for (let frame = 0; frame <= Math.round((endMs * fps) / 1_000); frame++) {
+		const musicTimeMs = frame * deltaMs;
+		smoothedVolume = advanceRhythmVisualVolume(
+			smoothedVolume,
+			mapRhythmTargetToVolume(sampleAnalysisTarget(analysis, musicTimeMs)),
+			deltaMs,
+		);
+		samples.push({
+			...harness.step(musicTimeMs, deltaMs, {
+				breath: smoothedVolume,
+				strongBeat: sampleStrongBeatTarget(analysis, musicTimeMs),
+			}),
+			musicTimeMs,
+		});
+	}
+
+	const sampleRange = (startMs, rangeEndMs) => {
+		const start = Math.max(0, Math.floor((startMs * fps) / 1_000));
+		const end = Math.min(
+			samples.length,
+			Math.ceil((rangeEndMs * fps) / 1_000) + 1,
+		);
+		return samples.slice(start, end);
+	};
+	const beats = probeBeats.filter((point) => point.timeMs < endMs);
+	const modulations = [];
+	for (let index = 1; index < beats.length; index++) {
+		const previous = beats[index - 1];
+		const beat = beats[index];
+		if (!(previous && beat)) continue;
+		const midpoint = (previous.timeMs + beat.timeMs) * 0.5;
+		const valley = Math.min(
+			...sampleRange(midpoint - 50, midpoint + 50).map(
+				(sample) => sample.breath,
+			),
+		);
+		const peak = Math.max(
+			...sampleRange(beat.timeMs, beat.timeMs + 180).map(
+				(sample) => sample.breath,
+			),
+		);
+		modulations.push(Math.max(0, peak - valley));
+	}
+	const breathDifferences = samples
+		.slice(1)
+		.map(
+			(sample, index) =>
+				sample.breath - (samples[index]?.breath ?? sample.breath),
+		);
+	const breathSecondDifferences = breathDifferences
+		.slice(1)
+		.map((difference, index) =>
+			Math.abs(difference - (breathDifferences[index] ?? difference)),
+		);
+	return {
+		samples,
+		maxBreath: Math.max(...samples.map((sample) => sample.breath)),
+		maxBreathStep: Math.max(...breathDifferences.map(Math.abs)),
+		maxBreathSecondDifference: Math.max(...breathSecondDifferences),
+		maxStrongBeat: Math.max(
+			...samples.map((sample) =>
+				sampleStrongBeatTarget(analysis, sample.musicTimeMs),
+			),
+		),
+		medianModulation: median(modulations),
+		modulationDuty004:
+			modulations.filter((value) => value >= 0.004).length /
+			Math.max(1, modulations.length),
+	};
+}
+
+test("爱错的弱前奏保持克制但肉眼可见的呼吸动作", () => {
+	const analysis = makeWeakPreludeAnalysis("love");
+	const result = simulateWeakPreludeEndToEnd(analysis);
+	const noEvents = simulateWeakPreludeEndToEnd(
+		{
+			...analysis,
+			beats: [],
+			onsets: [],
+		},
+		7_000,
+		analysis.beats,
+	);
+	assert.ok(result.maxBreath >= 0.025 && result.maxBreath <= 0.06);
+	assert.ok(
+		result.medianModulation >= 0.006,
+		`爱错前奏的拍间呼吸变化仍只有 ${result.medianModulation}`,
+	);
+	assert.ok(
+		result.medianModulation >= noEvents.medianModulation + 0.008,
+		"可见变化只是持续呼吸基线而不是可信拍点",
+	);
+	assert.equal(result.maxStrongBeat, 0, "弱前奏被错误升级成强旋转");
+	assert.ok(result.maxBreathStep < 0.002, "弱前奏呼吸出现单帧闪跳");
+	assert.ok(
+		result.maxBreathSecondDifference < 0.0002,
+		"弱前奏呼吸出现高频方向突变",
+	);
+});
+
+test("Shots 前奏多数稳定拍点拥有可见峰谷且不触发额外旋转", () => {
+	const result = simulateWeakPreludeEndToEnd(makeWeakPreludeAnalysis("shots"));
+	assert.ok(result.maxBreath >= 0.025 && result.maxBreath <= 0.09);
+	assert.ok(
+		result.medianModulation >= 0.004 && result.modulationDuty004 >= 0.5,
+		`Shots 前奏可见拍仅 ${result.modulationDuty004}，中位峰谷 ${result.medianModulation}`,
+	);
+	assert.equal(result.maxStrongBeat, 0, "Shots 前奏被错误升级成强旋转");
+	assert.ok(result.maxBreathStep < 0.002, "Shots 前奏呼吸出现单帧闪跳");
+	assert.ok(
+		result.maxBreathSecondDifference < 0.0002,
+		"Shots 前奏呼吸出现高频方向突变",
+	);
+});
+
+test("Shots 前奏后半段的代表性弱拍也保持可见峰谷", () => {
+	const analysis = makeExtendedShotsPreludeAnalysis();
+	const summarizePair = (rows, endMs) =>
+		simulateWeakPreludeEndToEnd(
+			analysis,
+			endMs,
+			rows.map(([timeMs]) => ({ timeMs })),
+		);
+	const firstWindow = summarizePair(SHOTS_LATER_WEAK_ROWS.slice(0, 2), 14_000);
+	const secondWindow = summarizePair(SHOTS_LATER_WEAK_ROWS.slice(2), 39_000);
+	for (const [name, result, minimumModulation] of [
+		["12–24 秒", firstWindow, 0.004],
+		["24–49 秒", secondWindow, 0.0045],
+	]) {
+		assert.ok(
+			result.medianModulation >= minimumModulation &&
+				result.modulationDuty004 === 1,
+			`Shots ${name}的弱拍经过平滑后仍不可见：${result.medianModulation}`,
+		);
+		assert.equal(result.maxStrongBeat, 0, `Shots ${name}错误触发额外旋转`);
+		assert.ok(result.maxBreathStep < 0.002, `Shots ${name}出现单帧闪跳`);
+		assert.ok(
+			result.maxBreathSecondDifference < 0.00015,
+			`Shots ${name}出现高频方向突变`,
+		);
+	}
+});
+
+test("劣等上等的局部快拍经过完整 Mesh 平滑后仍有可见峰谷", () => {
+	const analysis = makeInferioritySuperiorityAnalysis();
+	const probeEvents = INFERIORITY_SUPERIORITY_ONSET_ROWS.slice(0, 5).map(
+		([timeMs]) => ({ timeMs }),
+	);
+	const result = simulateWeakPreludeEndToEnd(analysis, 80_500, probeEvents);
+	const control = simulateWeakPreludeEndToEnd(
+		{
+			...analysis,
+			tempoSegments: [
+				{ startMs: 0, endMs: 90_000, bpm: 63.962917, confidence: 0.6 },
+			],
+		},
+		80_500,
+		probeEvents,
+	);
+	const breathAt = (samples, timeMs) =>
+		samples[Math.round((timeMs * 240) / 1_000)]?.breath ?? 0;
+	const earlyEventDeltas = probeEvents
+		.slice(0, 3)
+		.map(
+			({ timeMs }) =>
+				breathAt(result.samples, timeMs) - breathAt(control.samples, timeMs),
+		);
+	assert.ok(
+		median(earlyEventDeltas) >= 0.002,
+		`局部快拍没有在真实事件时刻产生额外呼吸：${earlyEventDeltas}`,
+	);
+	assert.ok(
+		result.medianModulation >= 0.01 && result.modulationDuty004 >= 0.5,
+		`局部快拍经过两级平滑后仍过弱：${result.medianModulation}, ${result.modulationDuty004}`,
+	);
+	assert.equal(result.maxStrongBeat, 0, "局部补拍被错误升级成强旋转");
+	assert.ok(result.maxBreathStep < 0.002, "局部快拍呼吸出现单帧闪跳");
+	assert.ok(
+		result.maxBreathSecondDifference < 0.0002,
+		"局部快拍呼吸出现高频方向突变",
+	);
+});
 
 test("Faded 的宽频重拍进入 240Hz Mesh 后明显但不会单帧闪跳", () => {
 	const analysis = makeFadedMisphaseAnalysis();
