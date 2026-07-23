@@ -73,7 +73,7 @@ impl Default for CpalCallbackState {
     }
 }
 
-const TARGET_TRACK_LOUDNESS_LUFS: f32 = -16.0;
+const TARGET_TRACK_LOUDNESS_LUFS: f32 = -12.0;
 const MIN_TRACK_GAIN_DB: f32 = -18.0;
 const MAX_TRACK_GAIN_DB: f32 = 6.0;
 const MAX_TRACK_GAIN: f32 = 1.995_262_3;
@@ -849,12 +849,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn loudness_gain_targets_minus_sixteen_lufs_with_safe_bounds() {
+    fn loudness_gain_targets_minus_twelve_lufs_with_safe_bounds() {
         let attenuated = loudness_normalization_gain(true, Some(-10.0), Some(1.0));
+        let unchanged = loudness_normalization_gain(true, Some(-12.0), Some(0.8));
         let boosted = loudness_normalization_gain(true, Some(-24.0), Some(0.2));
         let peak_limited = loudness_normalization_gain(true, Some(-20.0), Some(0.7));
 
-        assert!((attenuated - 10.0_f32.powf(-6.0 / 20.0)).abs() < 1.0e-6);
+        assert!((attenuated - 10.0_f32.powf(-2.0 / 20.0)).abs() < 1.0e-6);
+        assert_eq!(unchanged, 1.0);
         assert!((boosted - 10.0_f32.powf(MAX_TRACK_GAIN_DB / 20.0)).abs() < 1.0e-6);
         assert!((peak_limited * 0.7 - NORMALIZED_PEAK_CEILING).abs() < 1.0e-6);
         assert_eq!(
