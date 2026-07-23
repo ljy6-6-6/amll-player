@@ -92,6 +92,7 @@ export class PlayQueueManager {
 	private desiredPlaying: boolean;
 	private currentPlaybackEnded = false;
 	private audioDispatchChain: Promise<void> = Promise.resolve();
+	private queueRevision = 0;
 	private disposed = false;
 
 	constructor(store: JotaiStore) {
@@ -131,6 +132,7 @@ export class PlayQueueManager {
 			this.persistState();
 		} finally {
 			this.disposed = true;
+			this.queueRevision++;
 			this.playRequestGeneration++;
 			this.playRequestPending = false;
 		}
@@ -164,6 +166,7 @@ export class PlayQueueManager {
 	): Promise<boolean> {
 		if (this.disposed || index < 0 || index >= this.playList.length)
 			return false;
+		this.queueRevision++;
 		const requestGeneration = ++this.playRequestGeneration;
 		const playbackId = crypto.randomUUID();
 		const song = this.playList[index];
@@ -313,7 +316,7 @@ export class PlayQueueManager {
 	 * @param playlistId - 来源播放列表 ID（可选）
 	 */
 	setQueue(songs: Song[], playlistId?: number): void {
-		if (songs.length === 0) return;
+		if (this.disposed || songs.length === 0) return;
 		this.originalList = [...songs];
 		this.playlistId = playlistId ?? null;
 
@@ -330,6 +333,7 @@ export class PlayQueueManager {
 	 * 用单首歌替换整个队列并播放
 	 */
 	replaceQueueAndPlay(song: Song): void {
+		if (this.disposed) return;
 		this.originalList = [song];
 		this.playList = [song];
 		this.playlistId = null;
@@ -340,7 +344,9 @@ export class PlayQueueManager {
 	 * 将歌曲添加到队尾
 	 */
 	addToQueue(song: Song): void {
-		if (this.originalList.some((s) => s.id === song.id)) return;
+		if (this.disposed || this.originalList.some((s) => s.id === song.id))
+			return;
+		this.queueRevision++;
 
 		this.originalList.push(song);
 
@@ -427,6 +433,8 @@ export class PlayQueueManager {
 
 	//#region 模式切换
 	setRepeatMode(mode: RepeatMode): void {
+		if (this.disposed) return;
+		this.queueRevision++;
 		this.repeatMode = mode;
 		this.syncToAtoms();
 		this.syncPlayModeToMediaControls();
@@ -443,6 +451,8 @@ export class PlayQueueManager {
 	}
 
 	toggleShuffle(): void {
+		if (this.disposed) return;
+		this.queueRevision++;
 		const currentSongId =
 			this.currentIndex >= 0 ? this.playList[this.currentIndex]?.id : undefined;
 
@@ -481,8 +491,10 @@ export class PlayQueueManager {
 	 * 从队列中移除一首歌
 	 */
 	removeSong(songId: string): void {
+		if (this.disposed) return;
 		const removeIndex = this.playList.findIndex((s) => s.id === songId);
 		if (removeIndex === -1) return;
+		this.queueRevision++;
 
 		this.originalList = this.originalList.filter((s) => s.id !== songId);
 		this.playList.splice(removeIndex, 1);
@@ -513,6 +525,8 @@ export class PlayQueueManager {
 	 * @returns 恢复结果，包含是否成功及持久化的播放位置（秒）
 	 */
 	async restore(): Promise<{ restored: boolean; position: number }> {
+		if (this.disposed) return { restored: false, position: 0 };
+		const restoreRevision = this.queueRevision;
 		const persisted = this.store.get(persistedQueueStateAtom);
 		if (!persisted || persisted.songIds.length === 0)
 			return { restored: false, position: 0 };
@@ -522,6 +536,9 @@ export class PlayQueueManager {
 				...new Set([...persisted.songIds, ...persisted.originalSongIds]),
 			];
 			const songs = await db.songs.getByIds(allSongIds);
+			if (this.disposed || restoreRevision !== this.queueRevision) {
+				return { restored: false, position: 0 };
+			}
 			const songMap = new Map(songs.map((s) => [s.id, s]));
 
 			// 恢复 playList
