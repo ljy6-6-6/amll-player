@@ -360,6 +360,19 @@
 	padding-left: 12px;
 }
 
+.container[data-orientation="horizontal"]
+	.textPanel[data-content="metadata"]
+	.ghostLine {
+	padding-right: 8px;
+}
+
+.container[data-orientation="horizontal"][data-align="right"]
+	.textPanel[data-content="metadata"]
+	.ghostLine {
+	padding-right: 0;
+	padding-left: 8px;
+}
+
 .animatedLine {
 	grid-area: 1 / 1;
 	width: 100%;
