@@ -37,6 +37,13 @@ const enableMediaControlsInternalAtom = atomWithStorage(
 	true,
 );
 
+export const enableLoudnessNormalizationAtom = atomWithStorage(
+	"amll-player.enableLoudnessNormalization",
+	false,
+	undefined,
+	{ getOnInit: true },
+);
+
 export const enableMediaControlsAtom = atom(
 	(get) => get(enableMediaControlsInternalAtom),
 	(_get, set, enabled: boolean) => {

@@ -49,11 +49,12 @@ import {
 	currentLyricAuthorsAtom,
 	currentRhythmAnalysisAtom,
 	currentSongWritersAtom,
+	enableLoudnessNormalizationAtom,
 	enableMediaControlsAtom,
 	queueManagerAtom,
 	rhythmVisualResetAtom,
 } from "../../states/appAtoms.ts";
-import { db } from "../../utils/db-client.ts";
+import { db, getCurrentTrackLoudness } from "../../utils/db-client.ts";
 import { SyncStatus, syncLyrics } from "../../utils/lyric-db-api.ts";
 import {
 	PlayQueueManager,
@@ -269,6 +270,10 @@ const LyricContext: FC = () => {
 export const LocalMusicContext: FC = () => {
 	const store = useStore();
 	const { t } = useTranslation();
+	const enableLoudnessNormalization = useAtomValue(
+		enableLoudnessNormalizationAtom,
+	);
+	const currentRhythmAnalysis = useAtomValue(currentRhythmAnalysisAtom);
 	const firstPlay = useRef(true);
 	const [musicPlaying, setMusicPlaying] = useAtom(musicPlayingAtom);
 	const lastSyncRef = useRef({
@@ -276,6 +281,10 @@ export const LocalMusicContext: FC = () => {
 		timestamp: performance.now(),
 	});
 	const rhythmGenerationRef = useRef(0);
+	const failedRhythmAnalysisRef = useRef<{
+		musicId: string;
+		generation: number;
+	} | null>(null);
 
 	const beginRhythmGeneration = useCallback(
 		(musicId: string | null): number => {
@@ -290,9 +299,17 @@ export const LocalMusicContext: FC = () => {
 	);
 
 	const requestRhythmAnalysis = useCallback(
-		async (musicId: string, generation: number) => {
+		async (
+			musicId: string,
+			generation: number,
+			requireLoudness = store.get(enableLoudnessNormalizationAtom),
+		) => {
 			try {
-				const analysis = await db.songs.getOrAnalyzeRhythm(musicId, false);
+				const analysis = await db.songs.getOrAnalyzeRhythm(
+					musicId,
+					false,
+					requireLoudness,
+				);
 				const current = store.get(currentRhythmAnalysisAtom);
 				if (
 					generation !== rhythmGenerationRef.current ||
@@ -302,6 +319,7 @@ export const LocalMusicContext: FC = () => {
 				) {
 					return;
 				}
+				failedRhythmAnalysisRef.current = null;
 				store.set(currentRhythmAnalysisAtom, {
 					musicId,
 					generation,
@@ -309,6 +327,7 @@ export const LocalMusicContext: FC = () => {
 				});
 			} catch (error) {
 				if (generation === rhythmGenerationRef.current) {
+					failedRhythmAnalysisRef.current = { musicId, generation };
 					console.warn(
 						"[RhythmAnalysis] Failed to analyze song",
 						musicId,
@@ -319,6 +338,72 @@ export const LocalMusicContext: FC = () => {
 		},
 		[store],
 	);
+
+	useEffect(() => {
+		if (!currentRhythmAnalysis) return;
+		if (!currentRhythmAnalysis.analysis) {
+			if (!enableLoudnessNormalization) {
+				void emitAudioThread("setLoudnessNormalization", {
+					musicId: currentRhythmAnalysis.musicId,
+					enabled: false,
+					integratedLoudnessLufs: null,
+					samplePeak: null,
+				}).catch((error) => {
+					console.warn(
+						"[VolumeBalance] Failed to disable normalization",
+						error,
+					);
+				});
+			} else {
+				const failed = failedRhythmAnalysisRef.current;
+				if (
+					failed?.musicId === currentRhythmAnalysis.musicId &&
+					failed.generation === currentRhythmAnalysis.generation
+				) {
+					failedRhythmAnalysisRef.current = null;
+					void requestRhythmAnalysis(
+						currentRhythmAnalysis.musicId,
+						currentRhythmAnalysis.generation,
+						true,
+					);
+				}
+			}
+			return;
+		}
+
+		const loudness = getCurrentTrackLoudness(currentRhythmAnalysis.analysis);
+		const hasCurrentLoudness = loudness !== null;
+
+		void emitAudioThread("setLoudnessNormalization", {
+			musicId: currentRhythmAnalysis.musicId,
+			enabled: enableLoudnessNormalization,
+			integratedLoudnessLufs: hasCurrentLoudness
+				? (loudness.integratedLoudnessLufs ?? null)
+				: null,
+			samplePeak: hasCurrentLoudness ? loudness.samplePeak : null,
+		}).catch((error) => {
+			console.warn(
+				"[VolumeBalance] Failed to update track normalization",
+				error,
+			);
+		});
+
+		if (
+			enableLoudnessNormalization &&
+			currentRhythmAnalysis.analysis &&
+			!hasCurrentLoudness
+		) {
+			void requestRhythmAnalysis(
+				currentRhythmAnalysis.musicId,
+				currentRhythmAnalysis.generation,
+				true,
+			);
+		}
+	}, [
+		currentRhythmAnalysis,
+		enableLoudnessNormalization,
+		requestRhythmAnalysis,
+	]);
 
 	const syncMusicInfo = async (
 		data: Extract<AudioThreadEvent, { type: "loadAudio" }>["data"],

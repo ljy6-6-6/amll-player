@@ -74,6 +74,7 @@ import {
 	DarkMode,
 	darkModeAtom,
 	enableAlwaysOnTopAtom,
+	enableLoudnessNormalizationAtom,
 	enableMediaControlsAtom,
 	enableTaskbarLyricAtom,
 	languageAtom,
@@ -364,6 +365,14 @@ const GeneralSettings = () => {
 					</Select.Content>
 				</Select.Root>
 			</SettingEntry>
+			<SwitchSettings
+				label={t("page.settings.general.volumeBalance.label", "音量平衡")}
+				description={t(
+					"page.settings.general.volumeBalance.description",
+					"根据每首本地歌曲的感知响度自动调整播放增益，减少切歌时音量忽大忽小的情况。",
+				)}
+				configAtom={enableLoudnessNormalizationAtom}
+			/>
 			{os === "windows" && (
 				<SwitchSettings
 					label={t(

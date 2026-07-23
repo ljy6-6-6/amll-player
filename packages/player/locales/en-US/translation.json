@@ -269,6 +269,10 @@
 					"label": "界面主题",
 					"light": "浅色"
 				},
+				"volumeBalance": {
+					"description": "Automatically adjusts playback gain based on each local track's perceived loudness to reduce volume jumps between songs.",
+					"label": "Volume normalization"
+				},
 				"windowAlwaysOnTop": {
 					"description": "将应用窗口设置为始终置顶",
 					"label": "启用窗口置顶"

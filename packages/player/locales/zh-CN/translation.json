@@ -269,6 +269,10 @@
 					"label": "界面主题",
 					"light": "浅色"
 				},
+				"volumeBalance": {
+					"description": "根据每首本地歌曲的感知响度自动调整播放增益，减少切歌时音量忽大忽小的情况。",
+					"label": "音量平衡"
+				},
 				"windowAlwaysOnTop": {
 					"description": "将应用窗口设置为始终置顶",
 					"label": "启用窗口置顶"

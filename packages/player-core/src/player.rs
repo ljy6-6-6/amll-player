@@ -56,6 +56,7 @@ pub struct AudioPlayer {
 #[derive(Clone, Debug)]
 pub struct CpalCallbackState {
     pub volume_bits: Arc<AtomicU32>,
+    pub loudness_gain_bits: Arc<AtomicU32>,
     pub track_finished: Arc<AtomicBool>,
     pub consumed_frames: Arc<AtomicU64>,
 }
@@ -64,9 +65,99 @@ impl Default for CpalCallbackState {
     fn default() -> Self {
         Self {
             volume_bits: Arc::new(AtomicU32::new(1.0_f32.to_bits())),
+            loudness_gain_bits: Arc::new(AtomicU32::new(1.0_f32.to_bits())),
             track_finished: Arc::new(AtomicBool::new(false)),
             consumed_frames: Arc::new(AtomicU64::new(0)),
         }
+    }
+}
+
+const TARGET_TRACK_LOUDNESS_LUFS: f32 = -16.0;
+const MIN_TRACK_GAIN_DB: f32 = -18.0;
+const MAX_TRACK_GAIN_DB: f32 = 6.0;
+const MAX_TRACK_GAIN: f32 = 1.995_262_3;
+const NORMALIZED_PEAK_CEILING: f32 = 0.891_250_9;
+const TRACK_GAIN_RISE_MS: f32 = 250.0;
+const TRACK_GAIN_FALL_MS: f32 = 50.0;
+
+fn loudness_normalization_gain(
+    enabled: bool,
+    integrated_loudness_lufs: Option<f64>,
+    sample_peak: Option<f64>,
+) -> f32 {
+    if !enabled {
+        return 1.0;
+    }
+
+    let Some(loudness) = integrated_loudness_lufs
+        .map(|value| value as f32)
+        .filter(|value| value.is_finite())
+    else {
+        return 1.0;
+    };
+
+    let gain_db =
+        (TARGET_TRACK_LOUDNESS_LUFS - loudness).clamp(MIN_TRACK_GAIN_DB, MAX_TRACK_GAIN_DB);
+    let loudness_gain = 10.0_f32.powf(gain_db / 20.0);
+    let Some(sample_peak) = sample_peak
+        .map(|value| value as f32)
+        .filter(|value| value.is_finite() && *value >= 0.0)
+    else {
+        return 1.0;
+    };
+    let peak_limited_gain = if sample_peak > 0.0 {
+        NORMALIZED_PEAK_CEILING / sample_peak
+    } else {
+        MAX_TRACK_GAIN
+    };
+
+    loudness_gain.min(peak_limited_gain).max(0.0)
+}
+
+struct OutputGainState {
+    current_track_gain: f32,
+    track_gain_rise_coefficient: f32,
+    track_gain_fall_coefficient: f32,
+}
+
+impl OutputGainState {
+    fn coefficient(time_ms: f32, sample_rate: u32) -> f32 {
+        1.0 - (-1_000.0 / (time_ms * sample_rate.max(1) as f32)).exp()
+    }
+
+    fn sanitize_target_gain(target_track_gain: f32) -> f32 {
+        if target_track_gain.is_finite() {
+            target_track_gain.clamp(0.0, MAX_TRACK_GAIN)
+        } else {
+            1.0
+        }
+    }
+
+    fn new(sample_rate: u32, initial_track_gain: f32) -> Self {
+        Self {
+            current_track_gain: Self::sanitize_target_gain(initial_track_gain),
+            track_gain_rise_coefficient: Self::coefficient(TRACK_GAIN_RISE_MS, sample_rate),
+            track_gain_fall_coefficient: Self::coefficient(TRACK_GAIN_FALL_MS, sample_rate),
+        }
+    }
+
+    fn is_unity(&self, target_track_gain: f32) -> bool {
+        self.current_track_gain == 1.0 && target_track_gain == 1.0
+    }
+
+    fn advance_frame(&mut self, target_track_gain: f32) -> f32 {
+        let target_track_gain = Self::sanitize_target_gain(target_track_gain);
+        let track_coefficient = if target_track_gain < self.current_track_gain {
+            self.track_gain_fall_coefficient
+        } else {
+            self.track_gain_rise_coefficient
+        };
+        self.current_track_gain +=
+            (target_track_gain - self.current_track_gain) * track_coefficient;
+        if (target_track_gain - self.current_track_gain).abs() < 1.0e-6 {
+            self.current_track_gain = target_track_gain;
+        }
+        self.current_track_gain
     }
 }
 
@@ -371,6 +462,9 @@ impl AudioPlayer {
                     }
                 }
                 AudioThreadMessage::PlayAudio { song } => {
+                    self.cpal_state
+                        .loudness_gain_bits
+                        .store(1.0_f32.to_bits(), Ordering::Relaxed);
                     self.current_song = Some(song.clone());
                     self.start_playing_song(true).await?;
                 }
@@ -385,6 +479,27 @@ impl AudioPlayer {
                             volume: self.volume as f64,
                         })
                         .await;
+                }
+                AudioThreadMessage::SetLoudnessNormalization {
+                    music_id,
+                    enabled,
+                    integrated_loudness_lufs,
+                    sample_peak,
+                } => {
+                    let is_current_song = self
+                        .current_song
+                        .as_ref()
+                        .is_some_and(|song| song.get_id() == *music_id);
+                    if is_current_song {
+                        let target_gain = loudness_normalization_gain(
+                            *enabled,
+                            *integrated_loudness_lufs,
+                            *sample_peak,
+                        );
+                        self.cpal_state
+                            .loudness_gain_bits
+                            .store(target_gain.to_bits(), Ordering::Relaxed);
+                    }
                 }
                 AudioThreadMessage::SetFFTRange { from_freq, to_freq } => {
                     let fft_player_clone = self.fft_player.clone();
@@ -508,22 +623,36 @@ impl AudioPlayer {
             .store(self.volume.to_bits(), Ordering::Relaxed);
 
         let channels = target_channels as u64;
+        let channel_count = usize::from(target_channels).max(1);
+        let initial_track_gain =
+            f32::from_bits(cpal_state_clone.loudness_gain_bits.load(Ordering::Relaxed));
+        let mut output_gain_state = OutputGainState::new(target_sample_rate, initial_track_gain);
 
         let stream = self.cpal_device.build_output_stream(
             &self.cpal_config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                 let current_volume =
                     f32::from_bits(cpal_state_clone.volume_bits.load(Ordering::Relaxed));
+                let target_track_gain =
+                    f32::from_bits(cpal_state_clone.loudness_gain_bits.load(Ordering::Relaxed));
                 let mut eof_reached = false;
                 let mut local_consumed_samples = 0;
+                let unity_gain = output_gain_state.is_unity(target_track_gain);
 
-                for sample in data.iter_mut() {
-                    if let Some(s) = audio_iter.next() {
-                        *sample = s * current_volume;
-                        local_consumed_samples += 1;
+                for frame in data.chunks_mut(channel_count) {
+                    let track_gain = if unity_gain {
+                        1.0
                     } else {
-                        *sample = 0.0;
-                        eof_reached = true;
+                        output_gain_state.advance_frame(target_track_gain)
+                    };
+                    for sample in frame {
+                        if let Some(s) = audio_iter.next() {
+                            *sample = s * current_volume * track_gain;
+                            local_consumed_samples += 1;
+                        } else {
+                            *sample = 0.0;
+                            eof_reached = true;
+                        }
                     }
                 }
 
@@ -670,6 +799,56 @@ impl AudioPlayerHandle {
         self.msg_sender
             .send(AudioThreadEventMessage::new("".into(), Some(msg)))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loudness_gain_targets_minus_sixteen_lufs_with_safe_bounds() {
+        let attenuated = loudness_normalization_gain(true, Some(-10.0), Some(1.0));
+        let boosted = loudness_normalization_gain(true, Some(-24.0), Some(0.2));
+        let peak_limited = loudness_normalization_gain(true, Some(-20.0), Some(0.7));
+
+        assert!((attenuated - 10.0_f32.powf(-6.0 / 20.0)).abs() < 1.0e-6);
+        assert!((boosted - 10.0_f32.powf(MAX_TRACK_GAIN_DB / 20.0)).abs() < 1.0e-6);
+        assert!((peak_limited * 0.7 - NORMALIZED_PEAK_CEILING).abs() < 1.0e-6);
+        assert_eq!(
+            loudness_normalization_gain(false, Some(-10.0), Some(1.0)),
+            1.0
+        );
+        assert_eq!(loudness_normalization_gain(true, None, Some(0.0)), 1.0);
+        assert_eq!(loudness_normalization_gain(true, Some(-20.0), None), 1.0);
+        assert_eq!(
+            loudness_normalization_gain(true, Some(f64::NAN), Some(1.0)),
+            1.0
+        );
+    }
+
+    #[test]
+    fn output_gain_converges_smoothly_without_overshooting() {
+        let mut state = OutputGainState::new(48_000, 1.0);
+        let target = 10.0_f32.powf(-6.0 / 20.0);
+        let mut previous = state.current_track_gain;
+
+        for _ in 0..48_000 {
+            let _ = state.advance_frame(target);
+            assert!(state.current_track_gain <= previous);
+            assert!(state.current_track_gain >= target);
+            previous = state.current_track_gain;
+        }
+
+        assert!((state.current_track_gain - target).abs() < 0.01);
+    }
+
+    #[test]
+    fn disabled_normalization_uses_the_unity_fast_path() {
+        let state = OutputGainState::new(48_000, 1.0);
+
+        assert!(state.is_unity(1.0));
+        assert_eq!(1.25_f32 * 0.8 * state.current_track_gain, 1.0);
     }
 }
 

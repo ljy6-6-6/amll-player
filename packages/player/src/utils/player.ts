@@ -44,6 +44,12 @@ export type AudioThreadMessageMap = {
 	setVolume: {
 		volume: number;
 	};
+	setLoudnessNormalization: {
+		musicId: string;
+		enabled: boolean;
+		integratedLoudnessLufs: number | null;
+		samplePeak: number | null;
+	};
 	setVolumeRelative: {
 		volume: number;
 	};

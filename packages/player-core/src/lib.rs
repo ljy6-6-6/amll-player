@@ -57,6 +57,13 @@ pub enum AudioThreadMessage {
     #[serde(rename_all = "camelCase")]
     SetVolume { volume: f64 },
     #[serde(rename_all = "camelCase")]
+    SetLoudnessNormalization {
+        music_id: String,
+        enabled: bool,
+        integrated_loudness_lufs: Option<f64>,
+        sample_peak: Option<f64>,
+    },
+    #[serde(rename_all = "camelCase")]
     SetVolumeRelative { volume: f64 },
     #[serde(rename_all = "camelCase")]
     SetAudioOutput { name: String },

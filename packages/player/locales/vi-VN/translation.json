@@ -269,6 +269,10 @@
 					"label": "界面主题",
 					"light": "浅色"
 				},
+				"volumeBalance": {
+					"description": "Tự động điều chỉnh mức khuếch đại phát lại theo độ lớn cảm nhận của từng bài hát cục bộ để giảm chênh lệch âm lượng khi chuyển bài.",
+					"label": "Cân bằng âm lượng"
+				},
 				"windowAlwaysOnTop": {
 					"description": "将应用窗口设置为始终置顶",
 					"label": "启用窗口置顶"
