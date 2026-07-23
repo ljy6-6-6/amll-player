@@ -476,13 +476,31 @@ impl AudioPlayer {
                         warn!("找不到解码器句柄, 无法执行跳转");
                     }
                 }
-                AudioThreadMessage::PlayAudio { song, playback_id } => {
+                AudioThreadMessage::PlayAudio {
+                    song,
+                    loudness_normalization,
+                    playback_id,
+                    start_paused,
+                } => {
+                    let initial_track_gain =
+                        loudness_normalization
+                            .as_ref()
+                            .map_or(1.0, |normalization| {
+                                loudness_normalization_gain(
+                                    normalization.enabled,
+                                    normalization.integrated_loudness_lufs,
+                                    normalization.sample_peak,
+                                )
+                            });
                     self.cpal_state
                         .loudness_gain_bits
-                        .store(1.0_f32.to_bits(), Ordering::Relaxed);
+                        .store(initial_track_gain.to_bits(), Ordering::Relaxed);
+                    self.cpal_state
+                        .track_finished
+                        .store(false, Ordering::Release);
                     self.current_song = Some(song.clone());
                     self.current_playback_id = playback_id.clone().unwrap_or_default();
-                    self.start_playing_song(true).await?;
+                    self.start_playing_song(true, *start_paused).await?;
                 }
                 AudioThreadMessage::SetVolume { volume } => {
                     self.volume = (*volume as f32).clamp(0.0, 1.0);
@@ -572,7 +590,11 @@ impl AudioPlayer {
         Ok(())
     }
 
-    async fn start_playing_song(&mut self, clear_sink: bool) -> anyhow::Result<()> {
+    async fn start_playing_song(
+        &mut self,
+        clear_sink: bool,
+        start_paused: bool,
+    ) -> anyhow::Result<()> {
         if clear_sink {
             self.current_stream = None;
             self.current_decoder_handle = None;
@@ -689,15 +711,17 @@ impl AudioPlayer {
             None,
         )?;
 
-        stream.play()?;
+        if !start_paused {
+            stream.play()?;
+        }
 
         self.current_stream = Some(stream);
 
         self.spawn_fft_pacemaker(spawned.fft_consumer, target_sample_rate);
 
         self.media_manager.update_metadata(&info);
-        self.media_manager.update_play_state(true);
-        let _ = self.is_playing_tx.send(true);
+        self.media_manager.update_play_state(!start_paused);
+        let _ = self.is_playing_tx.send(!start_paused);
 
         self.emitter()
             .emit(AudioThreadEvent::LoadAudio {
@@ -707,7 +731,9 @@ impl AudioPlayer {
             })
             .await?;
         self.emitter()
-            .emit(AudioThreadEvent::PlayStatus { is_playing: true })
+            .emit(AudioThreadEvent::PlayStatus {
+                is_playing: !start_paused,
+            })
             .await?;
 
         Ok(())
@@ -857,6 +883,15 @@ mod tests {
         }
 
         assert!((state.current_track_gain - target).abs() < 0.01);
+    }
+
+    #[test]
+    fn cached_gain_is_active_from_the_first_frame() {
+        let target = 10.0_f32.powf(-6.0 / 20.0);
+        let mut state = OutputGainState::new(48_000, target);
+
+        assert_eq!(state.current_track_gain, target);
+        assert_eq!(state.advance_frame(target), target);
     }
 
     #[test]

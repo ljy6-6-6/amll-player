@@ -1,13 +1,14 @@
 import {
 	isShuffleActiveAtom,
+	musicPlayingAtom,
 	musicPlayingPositionAtom,
 	RepeatMode,
 	repeatModeAtom,
 } from "@applemusic-like-lyrics/react-full";
 import { atom, type createStore, type PrimitiveAtom } from "jotai";
 import { atomWithStorage } from "jotai/utils";
-import type { Song } from "./db-client.ts";
-import { db } from "./db-client.ts";
+import { enableLoudnessNormalizationAtom } from "../states/appAtoms.ts";
+import { db, type Song, type TrackLoudnessAnalysis } from "./db-client.ts";
 import { emitAudioThread } from "./player.ts";
 
 type JotaiStore = ReturnType<typeof createStore>;
@@ -86,9 +87,15 @@ export class PlayQueueManager {
 	private shuffleActive = false;
 	private playlistId: number | null = null;
 	private currentPlaybackId: string | null = null;
+	private playRequestGeneration = 0;
+	private playRequestPending = false;
+	private desiredPlaying: boolean;
+	private audioDispatchChain: Promise<void> = Promise.resolve();
+	private disposed = false;
 
 	constructor(store: JotaiStore) {
 		this.store = store;
+		this.desiredPlaying = store.get(musicPlayingAtom);
 	}
 
 	//#region 辅助方法
@@ -119,7 +126,13 @@ export class PlayQueueManager {
 
 	/** 组件卸载时调用，把最新状态写入 localStorage */
 	dispose(): void {
-		this.persistState();
+		try {
+			this.persistState();
+		} finally {
+			this.disposed = true;
+			this.playRequestGeneration++;
+			this.playRequestPending = false;
+		}
 	}
 
 	private syncPlayModeToMediaControls(): void {
@@ -135,20 +148,119 @@ export class PlayQueueManager {
 		});
 	}
 
-	private playSongAt(index: number): void {
-		if (index < 0 || index >= this.playList.length) return;
-		this.currentIndex = index;
-		this.syncToAtoms();
-		const song = this.playList[index];
-		const playbackId = crypto.randomUUID();
-		this.currentPlaybackId = playbackId;
-		emitAudioThread("playAudio", {
-			song: {
-				songId: song.id,
-				filePath: song.filePath,
-			},
-			playbackId,
+	private queueAudioDispatch(task: () => Promise<void>): Promise<void> {
+		const dispatch = this.audioDispatchChain.then(async () => {
+			if (this.disposed) return;
+			await task();
 		});
+		this.audioDispatchChain = dispatch.catch(() => {});
+		return dispatch;
+	}
+
+	private async playSongAt(
+		index: number,
+		startPaused = false,
+	): Promise<boolean> {
+		if (this.disposed || index < 0 || index >= this.playList.length)
+			return false;
+		const requestGeneration = ++this.playRequestGeneration;
+		const playbackId = crypto.randomUUID();
+		const song = this.playList[index];
+		this.desiredPlaying = !startPaused;
+		this.playRequestPending = true;
+
+		try {
+			this.currentIndex = index;
+			this.syncToAtoms();
+
+			let loudness: TrackLoudnessAnalysis | null = null;
+			if (this.store.get(enableLoudnessNormalizationAtom)) {
+				try {
+					loudness = await db.songs.getCachedLoudness(song.id);
+				} catch (error) {
+					console.warn(
+						"[VolumeBalance] Failed to read cached track loudness",
+						song.id,
+						error,
+					);
+				}
+			}
+
+			if (this.disposed || requestGeneration !== this.playRequestGeneration)
+				return false;
+
+			const resolvedIndex = this.findInPlayList(song.id);
+			if (resolvedIndex < 0) return false;
+			if (this.currentIndex !== resolvedIndex) {
+				this.currentIndex = resolvedIndex;
+				this.syncToAtoms();
+			}
+
+			let started = false;
+			const dispatch = this.queueAudioDispatch(async () => {
+				if (this.disposed || requestGeneration !== this.playRequestGeneration)
+					return;
+				const enabled = this.store.get(enableLoudnessNormalizationAtom);
+				const shouldStartPaused = !this.desiredPlaying;
+				this.currentPlaybackId = playbackId;
+
+				await emitAudioThread("playAudio", {
+					song: {
+						songId: song.id,
+						filePath: song.filePath,
+					},
+					loudnessNormalization: {
+						enabled,
+						integratedLoudnessLufs:
+							enabled && loudness
+								? (loudness.integratedLoudnessLufs ?? null)
+								: null,
+						samplePeak: enabled && loudness ? loudness.samplePeak : null,
+					},
+					playbackId,
+					startPaused: shouldStartPaused,
+				});
+				if (requestGeneration !== this.playRequestGeneration) return;
+				started = true;
+			});
+			await dispatch;
+			return started;
+		} catch (error) {
+			console.warn(
+				"[PlayQueueManager] Failed to prepare or start song",
+				song.id,
+				error,
+			);
+			return false;
+		} finally {
+			if (requestGeneration === this.playRequestGeneration) {
+				this.playRequestPending = false;
+			}
+		}
+	}
+
+	async playCurrentForRestore(): Promise<boolean> {
+		return this.playSongAt(this.currentIndex, !this.desiredPlaying);
+	}
+
+	togglePlayback(): void {
+		this.setPlaybackState(!this.desiredPlaying);
+	}
+
+	setPlaybackState(shouldPlay: boolean): void {
+		this.desiredPlaying = shouldPlay;
+		void this.queueAudioDispatch(async () => {
+			await emitAudioThread(shouldPlay ? "resumeAudio" : "pauseAudio");
+		}).catch((error) => {
+			console.warn(
+				`[PlayQueueManager] Failed to ${shouldPlay ? "resume" : "pause"} playback`,
+				error,
+			);
+		});
+	}
+
+	setExternalPlaybackState(shouldPlay: boolean): void {
+		this.setPlaybackState(shouldPlay);
 	}
 
 	/** 在 playList 中查找 songId 的索引 */
@@ -174,7 +286,7 @@ export class PlayQueueManager {
 			this.playList = [...songs];
 		}
 
-		this.playSongAt(0);
+		void this.playSongAt(0);
 	}
 
 	/**
@@ -184,7 +296,7 @@ export class PlayQueueManager {
 		this.originalList = [song];
 		this.playList = [song];
 		this.playlistId = null;
-		this.playSongAt(0);
+		void this.playSongAt(0);
 	}
 
 	/**
@@ -210,14 +322,14 @@ export class PlayQueueManager {
 	//#region 播放控制
 	/** 跳转到指定索引播放 */
 	playAt(index: number): void {
-		this.playSongAt(index);
+		void this.playSongAt(index);
 	}
 
 	/** 用户手动点击下一首（无视单曲循环） */
 	advanceForUser(): void {
 		if (this.playList.length === 0) return;
 		const nextIndex = (this.currentIndex + 1) % this.playList.length;
-		this.playSongAt(nextIndex);
+		void this.playSongAt(nextIndex);
 	}
 
 	/** 用户手动点击下一首（无视单曲循环） */
@@ -227,7 +339,7 @@ export class PlayQueueManager {
 			this.currentIndex - 1 < 0
 				? this.playList.length - 1
 				: this.currentIndex - 1;
-		this.playSongAt(prevIndex);
+		void this.playSongAt(prevIndex);
 	}
 
 	/**
@@ -237,12 +349,12 @@ export class PlayQueueManager {
 	 * - 列表播放完毕（非循环）：停止
 	 */
 	advanceForAutoEnd(endedSongId: string, endedPlaybackId: string): void {
-		if (this.playList.length === 0) return;
+		if (this.playList.length === 0 || this.playRequestPending) return;
 		if (this.getCurrentSong()?.id !== endedSongId) return;
 		if (this.currentPlaybackId !== endedPlaybackId) return;
 
 		if (this.repeatMode === RepeatMode.One) {
-			this.playSongAt(this.currentIndex);
+			void this.playSongAt(this.currentIndex);
 			return;
 		}
 
@@ -250,7 +362,7 @@ export class PlayQueueManager {
 		if (nextIndex >= this.playList.length) {
 			if (this.repeatMode === RepeatMode.All) {
 				// 列表循环：回到第一首
-				this.playSongAt(0);
+				void this.playSongAt(0);
 				return;
 			}
 
@@ -259,7 +371,7 @@ export class PlayQueueManager {
 			return;
 		}
 
-		this.playSongAt(nextIndex);
+		void this.playSongAt(nextIndex);
 	}
 	//#endregion
 
@@ -334,7 +446,7 @@ export class PlayQueueManager {
 				this.currentIndex = 0;
 			}
 			if (this.currentIndex >= 0) {
-				this.playSongAt(this.currentIndex);
+				void this.playSongAt(this.currentIndex);
 				return;
 			}
 		}

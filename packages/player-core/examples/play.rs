@@ -89,7 +89,9 @@ async fn main() -> anyhow::Result<()> {
                 file_path,
                 song_id: None,
             },
+            loudness_normalization: None,
             playback_id: None,
+            start_paused: false,
         })
         .await?;
 

@@ -40,7 +40,13 @@ export type AudioThreadMessageMap = {
 	};
 	playAudio: {
 		song: SongData;
+		loudnessNormalization?: {
+			enabled: boolean;
+			integratedLoudnessLufs: number | null;
+			samplePeak: number | null;
+		};
 		playbackId?: string;
+		startPaused?: boolean;
 	};
 	setVolume: {
 		volume: number;

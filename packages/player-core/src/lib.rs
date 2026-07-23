@@ -21,6 +21,14 @@ pub struct SongData {
     pub song_id: Option<String>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+pub struct LoudnessNormalizationData {
+    pub enabled: bool,
+    pub integrated_loudness_lufs: Option<f64>,
+    pub sample_peak: Option<f64>,
+}
+
 impl SongData {
     fn get_id(&self) -> String {
         self.song_id
@@ -56,7 +64,11 @@ pub enum AudioThreadMessage {
     PlayAudio {
         song: SongData,
         #[serde(default)]
+        loudness_normalization: Option<LoudnessNormalizationData>,
+        #[serde(default)]
         playback_id: Option<String>,
+        #[serde(default)]
+        start_paused: bool,
     },
     #[serde(rename_all = "camelCase")]
     SetVolume { volume: f64 },

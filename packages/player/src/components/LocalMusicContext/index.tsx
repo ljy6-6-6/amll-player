@@ -538,30 +538,30 @@ export const LocalMusicContext: FC = () => {
 		store.set(queueManagerAtom, queueManager);
 
 		// 恢复上次的队列信息
-		queueManager.restore().then(({ restored, position }) => {
-			if (restored) {
-				const currentSong = queueManager.getCurrentSong();
-				if (currentSong) {
-					// 恢复播放进度
-					emitAudioThread("playAudio", {
-						song: {
-							songId: currentSong.id,
-							filePath: currentSong.filePath,
-						},
-					});
-					emitAudioThread("pauseAudio");
+		void queueManager
+			.restore()
+			.then(async ({ restored, position }) => {
+				if (restored) {
+					const currentSong = queueManager.getCurrentSong();
+					if (currentSong) {
+						// 恢复播放进度
+						const started = await queueManager.playCurrentForRestore();
+						if (!started) return;
 
-					if (position > 0) {
-						lastSyncRef.current = {
-							position,
-							timestamp: performance.now(),
-						};
-						store.set(musicPlayingPositionAtom, (position * 1000) | 0);
-						emitAudioThread("seekAudio", { position });
+						if (position > 0) {
+							lastSyncRef.current = {
+								position,
+								timestamp: performance.now(),
+							};
+							store.set(musicPlayingPositionAtom, (position * 1000) | 0);
+							await emitAudioThread("seekAudio", { position });
+						}
 					}
 				}
-			}
-		});
+			})
+			.catch((error) => {
+				console.error("[PlayQueueManager] Failed to restore queue", error);
+			});
 
 		const onBeforeUnload = () => {
 			queueManager.dispose();
@@ -578,7 +578,7 @@ export const LocalMusicContext: FC = () => {
 		store.set(
 			onPlayOrResumeAtom,
 			toEmit(() => {
-				emitAudioThread("resumeOrPauseAudio");
+				queueManager.togglePlayback();
 			}),
 		);
 
@@ -733,7 +733,11 @@ export const LocalMusicContext: FC = () => {
 				}
 
 				case "hardwareMediaCommand": {
-					if (evtData.data.command === "next") {
+					if (evtData.data.command === "play") {
+						queueManager.setExternalPlaybackState(true);
+					} else if (evtData.data.command === "pause") {
+						queueManager.setExternalPlaybackState(false);
+					} else if (evtData.data.command === "next") {
 						queueManager.advanceForUser();
 					} else if (evtData.data.command === "prev") {
 						queueManager.retreatForUser();
