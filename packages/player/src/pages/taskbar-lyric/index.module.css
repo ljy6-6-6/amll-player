@@ -272,6 +272,11 @@
 	mask-composite: intersect;
 }
 
+.textPanel[data-content="metadata"] {
+	-webkit-mask-image: none;
+	mask-image: none;
+}
+
 .container[data-orientation="vertical"] .textPanel {
 	display: grid;
 	width: 100%;

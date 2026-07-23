@@ -722,7 +722,10 @@ export const TaskbarLyricApp = () => {
 					)}
 				</AnimatePresence>
 
-				<div className={styles.textPanel}>
+				<div
+					className={styles.textPanel}
+					data-content={displayAsMetadata ? "metadata" : "lyrics"}
+				>
 					{isHoverLayoutLocked && (
 						<div
 							className={`${styles.ghostPanel} ${styles.hoverSizer}`}
