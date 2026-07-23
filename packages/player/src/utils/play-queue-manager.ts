@@ -90,6 +90,7 @@ export class PlayQueueManager {
 	private playRequestGeneration = 0;
 	private playRequestPending = false;
 	private desiredPlaying: boolean;
+	private currentPlaybackEnded = false;
 	private audioDispatchChain: Promise<void> = Promise.resolve();
 	private disposed = false;
 
@@ -167,6 +168,7 @@ export class PlayQueueManager {
 		const playbackId = crypto.randomUUID();
 		const song = this.playList[index];
 		this.desiredPlaying = !startPaused;
+		this.currentPlaybackEnded = false;
 		this.playRequestPending = true;
 
 		try {
@@ -249,6 +251,11 @@ export class PlayQueueManager {
 
 	setPlaybackState(shouldPlay: boolean): void {
 		this.desiredPlaying = shouldPlay;
+		if (shouldPlay && this.currentPlaybackEnded) {
+			this.currentPlaybackEnded = false;
+			void this.playSongAt(this.currentIndex);
+			return;
+		}
 		void this.queueAudioDispatch(async () => {
 			await emitAudioThread(shouldPlay ? "resumeAudio" : "pauseAudio");
 		}).catch((error) => {
@@ -260,7 +267,37 @@ export class PlayQueueManager {
 	}
 
 	setExternalPlaybackState(shouldPlay: boolean): void {
-		this.setPlaybackState(shouldPlay);
+		this.desiredPlaying = shouldPlay;
+		if (shouldPlay && this.currentPlaybackEnded) {
+			this.currentPlaybackEnded = false;
+			void this.playSongAt(this.currentIndex);
+			return;
+		}
+		void this.queueAudioDispatch(async () => {
+			await emitAudioThread(shouldPlay ? "resumeAudio" : "pauseAudio");
+		}).catch((error) => {
+			console.warn(
+				`[PlayQueueManager] Failed to confirm external ${
+					shouldPlay ? "resume" : "pause"
+				} state`,
+				error,
+			);
+		});
+	}
+
+	setExternalStopped(): void {
+		this.desiredPlaying = false;
+		this.currentPlaybackEnded = this.currentIndex >= 0;
+		this.playRequestGeneration++;
+		this.playRequestPending = false;
+		void this.queueAudioDispatch(async () => {
+			await emitAudioThread("stopAudio");
+		}).catch((error) => {
+			console.warn(
+				"[PlayQueueManager] Failed to confirm external stop state",
+				error,
+			);
+		});
 	}
 
 	/** 在 playList 中查找 songId 的索引 */
@@ -352,6 +389,10 @@ export class PlayQueueManager {
 		if (this.playList.length === 0 || this.playRequestPending) return;
 		if (this.getCurrentSong()?.id !== endedSongId) return;
 		if (this.currentPlaybackId !== endedPlaybackId) return;
+		if (!this.desiredPlaying) {
+			this.currentPlaybackEnded = true;
+			return;
+		}
 
 		if (this.repeatMode === RepeatMode.One) {
 			void this.playSongAt(this.currentIndex);
@@ -367,7 +408,16 @@ export class PlayQueueManager {
 			}
 
 			// RepeatMode.Off
-			emitAudioThread("pauseAudio");
+			this.desiredPlaying = false;
+			this.currentPlaybackEnded = true;
+			void this.queueAudioDispatch(async () => {
+				await emitAudioThread("pauseAudio");
+			}).catch((error) => {
+				console.warn(
+					"[PlayQueueManager] Failed to finalize completed queue",
+					error,
+				);
+			});
 			return;
 		}
 

@@ -737,6 +737,8 @@ export const LocalMusicContext: FC = () => {
 						queueManager.setExternalPlaybackState(true);
 					} else if (evtData.data.command === "pause") {
 						queueManager.setExternalPlaybackState(false);
+					} else if (evtData.data.command === "stop") {
+						queueManager.setExternalStopped();
 					} else if (evtData.data.command === "next") {
 						queueManager.advanceForUser();
 					} else if (evtData.data.command === "prev") {

@@ -177,11 +177,10 @@ impl SystemMediaManager {
                     Ok(())
                 }
             }
-            SystemMediaEventType::Stop => {
-                player_handler
-                    .send_anonymous(AudioThreadMessage::StopAudio)
-                    .await
-            }
+            SystemMediaEventType::Stop => player_handler
+                .send_anonymous(AudioThreadMessage::StopAudio)
+                .await
+                .and_then(|_| emit_frontend_command("stop")),
             SystemMediaEventType::ToggleShuffle => {
                 player_handler
                     .send_anonymous(AudioThreadMessage::ToggleShuffle)

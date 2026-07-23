@@ -34,6 +34,7 @@ export interface SongData {
 export type AudioThreadMessageMap = {
 	resumeAudio: undefined;
 	pauseAudio: undefined;
+	stopAudio: undefined;
 	resumeOrPauseAudio: undefined;
 	seekAudio: {
 		position: number;
