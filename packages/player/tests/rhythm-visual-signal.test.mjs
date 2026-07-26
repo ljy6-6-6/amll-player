@@ -2625,8 +2625,13 @@ test("安装后的 Mesh 会分离呼吸与非负的极重拍冲量", () => {
 	assert.ok(heavy.maxKick <= 0.18, `极重拍前冲越界到 ${heavy.maxKick}rad`);
 	assert.ok(heavy.minKick >= 0, `极重拍冲量反向越界：${heavy.minKick}rad`);
 	assert.ok(
-		heavy.maxBreath >= 0.09,
-		`重拍呼吸缩放仍不明显：${heavy.maxBreath}`,
+		ordinary.maxBreath >= 0.09,
+		`无重拍时呼吸缩放不明显：${ordinary.maxBreath}`,
+	);
+	// 极重拍期间呼吸主动避让旋转:幅度压低但不清零。
+	assert.ok(
+		heavy.maxBreath >= 0.045 && heavy.maxBreath <= ordinary.maxBreath * 0.8,
+		`重拍避让后的呼吸幅度异常：${heavy.maxBreath} / ${ordinary.maxBreath}`,
 	);
 	assert.ok(heavy.maxBreath <= 0.12, "呼吸幅度越界");
 	assert.ok(
@@ -2867,7 +2872,8 @@ test("Shots 真实片段的呼吸与极重拍冲量都能进入 Mesh", () => {
 		result.strongRotationFraction >= 0.5,
 		`Shots 重低音段高于 5° 的时长仅 ${result.strongRotationFraction}`,
 	);
-	assert.ok(result.maxBreath >= 0.09, `完整链路呼吸仅 ${result.maxBreath}`);
+	// 重低音段呼吸对旋转避让后仍需保持可见(不清零)。
+	assert.ok(result.maxBreath >= 0.05, `完整链路呼吸仅 ${result.maxBreath}`);
 	assert.ok(
 		result.maxFrameStep < 0.012,
 		`单帧旋转跳变 ${result.maxFrameStep}rad`,
