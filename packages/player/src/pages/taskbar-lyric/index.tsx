@@ -647,6 +647,16 @@ export const TaskbarLyricApp = () => {
 
 		const handleWindowMouseOut = (event: MouseEvent) => {
 			if (event.relatedTarget !== null) return;
+
+			const pointer = { x: event.clientX, y: event.clientY };
+			latestPointerRef.current = pointer;
+			const isAtViewportEdge =
+				pointer.x <= 0 ||
+				pointer.x >= window.innerWidth - 1 ||
+				pointer.y <= 0 ||
+				pointer.y >= window.innerHeight - 1;
+			if (!isAtViewportEdge) return;
+
 			hoverArmedRef.current = true;
 			hoverExitPointerRef.current = null;
 		};
