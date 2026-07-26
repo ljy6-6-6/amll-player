@@ -179,20 +179,17 @@ const RhythmPrecacheProgressContext: FC = () => {
 			const finished = progress.done + progress.failed;
 			if (progress.active) {
 				const render = progress.currentSongName
-					? t(
-							"rhythmPrecache.progressWithSong",
-							"正在预建节奏缓存 {{finished}}/{{total}}:{{song}}",
-							{
-								finished,
-								total: progress.total,
-								song: progress.currentSongName,
-							},
-						)
-					: t(
-							"rhythmPrecache.progress",
-							"正在预建节奏缓存 {{finished}}/{{total}}",
-							{ finished, total: progress.total },
-						);
+					? t("rhythmPrecache.progressWithSong", {
+							defaultValue: "正在预建节奏缓存 {{finished}}/{{total}}：{{song}}",
+							finished,
+							total: progress.total,
+							song: progress.currentSongName,
+						})
+					: t("rhythmPrecache.progress", {
+							defaultValue: "正在预建节奏缓存 {{finished}}/{{total}}",
+							finished,
+							total: progress.total,
+						});
 				if (toast.isActive(RHYTHM_PRECACHE_TOAST_ID)) {
 					toast.update(RHYTHM_PRECACHE_TOAST_ID, { render });
 				} else {
@@ -205,12 +202,13 @@ const RhythmPrecacheProgressContext: FC = () => {
 			} else if (toast.isActive(RHYTHM_PRECACHE_TOAST_ID)) {
 				const render =
 					progress.failed > 0
-						? t(
-								"rhythmPrecache.doneWithFailures",
-								"节奏缓存完成:成功 {{done}} 首,失败 {{failed}} 首",
-								{ done: progress.done, failed: progress.failed },
-							)
-						: t("rhythmPrecache.done", "节奏缓存已就绪({{done}} 首)", {
+						? t("rhythmPrecache.doneWithFailures", {
+								defaultValue: "节奏缓存完成：成功 {{done}} 首，失败 {{failed}} 首",
+								done: progress.done,
+								failed: progress.failed,
+							})
+						: t("rhythmPrecache.done", {
+								defaultValue: "节奏缓存已就绪（{{done}} 首）",
 								done: progress.done,
 							});
 				toast.update(RHYTHM_PRECACHE_TOAST_ID, {
