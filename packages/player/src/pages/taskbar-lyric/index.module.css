@@ -63,6 +63,14 @@
 	bottom: 3px;
 }
 
+.layoutProbeLayer {
+	position: absolute;
+	inset: 3px;
+	z-index: -1;
+	visibility: hidden;
+	pointer-events: none;
+}
+
 .container {
 	--text-primary: #ffffff;
 	--text-secondary: rgba(255, 255, 255, 0.7);
@@ -100,6 +108,7 @@
 	transition:
 		background 0.18s ease,
 		opacity 0.15s ease;
+	will-change: width, height;
 
 	pointer-events: auto;
 
@@ -118,6 +127,27 @@
 
 .container[data-align="right"] {
 	flex-direction: row-reverse;
+}
+
+.layoutProbe {
+	position: absolute;
+	top: 0;
+	left: 0;
+	z-index: -1;
+	background: transparent;
+	overflow: visible;
+	pointer-events: none;
+	transition: none;
+}
+
+.layoutProbe[data-orientation="horizontal"] {
+	width: max-content;
+	height: 100%;
+}
+
+.layoutProbe[data-orientation="vertical"] {
+	width: 100%;
+	height: max-content;
 }
 
 .wrapper[data-hovered="true"] .container {
@@ -180,6 +210,11 @@
 	align-items: center;
 	justify-content: center;
 	flex-shrink: 0;
+	pointer-events: none;
+}
+
+.controlsWrapper[data-visible="true"] {
+	pointer-events: auto;
 }
 
 .container[data-orientation="vertical"] .controlsWrapper {
@@ -235,46 +270,6 @@
 	margin: -2px;
 
 	position: relative;
-
-	-webkit-mask-image:
-		linear-gradient(
-			to bottom,
-			transparent 0px,
-			black 4px,
-			black calc(100% - 4px),
-			transparent 100%
-		),
-		linear-gradient(
-			to right,
-			transparent 0px,
-			black 4px,
-			black calc(100% - 4px),
-			transparent 100%
-		);
-
-	-webkit-mask-composite: source-in;
-
-	mask-image:
-		linear-gradient(
-			to bottom,
-			transparent 0px,
-			black 4px,
-			black calc(100% - 4px),
-			transparent 100%
-		),
-		linear-gradient(
-			to right,
-			transparent 0px,
-			black 4px,
-			black calc(100% - 4px),
-			transparent 100%
-		);
-	mask-composite: intersect;
-}
-
-.textPanel[data-content="metadata"] {
-	-webkit-mask-image: none;
-	mask-image: none;
 }
 
 .container[data-orientation="vertical"] .textPanel {
@@ -301,20 +296,74 @@
 	display: grid;
 }
 
-.container[data-hover-layout-locked="true"] .groupContainer {
-	position: absolute;
-	inset: 0;
+.groupContainer[data-group-content="lyrics"] {
+	--lyric-edge-mask: linear-gradient(
+		to right,
+		black 0,
+		black calc(100% - 6px),
+		transparent 100%
+	);
+
+	-webkit-mask-image: var(--lyric-edge-mask);
+	mask-image: var(--lyric-edge-mask);
+}
+
+.container[data-align="right"] .groupContainer[data-group-content="lyrics"] {
+	--lyric-edge-mask: linear-gradient(
+		to right,
+		transparent 0,
+		black 6px,
+		black 100%
+	);
+}
+
+.container[data-orientation="vertical"]
+	.groupContainer[data-group-content="lyrics"] {
+	--lyric-edge-mask: linear-gradient(
+		to bottom,
+		black 0,
+		black calc(100% - 6px),
+		transparent 100%
+	);
+}
+
+.container[data-orientation="vertical"][data-align="right"]
+	.groupContainer[data-group-content="lyrics"] {
+	--lyric-edge-mask: linear-gradient(
+		to bottom,
+		transparent 0,
+		black 6px,
+		black 100%
+	);
+}
+
+.container.layoutProbe .textPanel {
+	width: max-content;
+	flex: 0 0 auto;
+}
+
+.container.layoutProbe .groupContainer {
+	width: max-content;
+	height: max-content;
+}
+
+.container.layoutProbe .controlsWrapper {
+	width: auto;
+	height: auto;
+	margin: 0;
+	opacity: 1;
+	overflow: visible;
+}
+
+.container.layoutProbe[data-orientation="vertical"] .textPanel,
+.container.layoutProbe[data-orientation="vertical"] .controlsWrapper {
 	width: 100%;
-	height: 100%;
-	min-height: 0;
+	height: max-content;
 }
 
-.wrapper[data-hovered="true"] .groupContainer[data-group-content="lyrics"] {
-	visibility: hidden;
-}
-
-.hoverSizer {
-	position: relative;
+.container.layoutProbe[data-orientation="vertical"] .groupContainer {
+	width: max-content;
+	height: max-content;
 }
 
 .ghostPanel {

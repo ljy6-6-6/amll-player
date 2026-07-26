@@ -56,6 +56,65 @@ type PointerPosition = {
 	y: number;
 };
 
+type LayoutExtents = {
+	orientation: "horizontal" | "vertical";
+	collapsed: number;
+	expanded: number;
+	controls: number;
+};
+
+type PlaybackControlsProps = {
+	isPlaying: boolean;
+	enabled?: boolean;
+	panelRef?: React.Ref<HTMLDivElement>;
+	onPrev?: (event: React.MouseEvent) => void;
+	onTogglePlay?: (event: React.MouseEvent) => void;
+	onNext?: (event: React.MouseEvent) => void;
+};
+
+const PlaybackControls = ({
+	isPlaying,
+	enabled = true,
+	panelRef,
+	onPrev,
+	onTogglePlay,
+	onNext,
+}: PlaybackControlsProps) => {
+	const isInteractive = Boolean(enabled && onPrev && onTogglePlay && onNext);
+	return (
+		<div ref={panelRef} className={styles.controlsPanel}>
+			<MediaButton
+				className={styles.controlBtn}
+				disabled={!isInteractive}
+				onClick={onPrev}
+				tabIndex={isInteractive ? undefined : -1}
+			>
+				<IconRewind className={styles.controlBtnIcon} />
+			</MediaButton>
+			<MediaButton
+				className={`${styles.controlBtn} ${styles.controlBtnPlay}`}
+				disabled={!isInteractive}
+				onClick={onTogglePlay}
+				tabIndex={isInteractive ? undefined : -1}
+			>
+				{isPlaying ? (
+					<IconPause className={styles.controlBtnIconPlay} />
+				) : (
+					<IconPlay className={styles.controlBtnIconPlay} />
+				)}
+			</MediaButton>
+			<MediaButton
+				className={styles.controlBtn}
+				disabled={!isInteractive}
+				onClick={onNext}
+				tabIndex={isInteractive ? undefined : -1}
+			>
+				<IconForward className={styles.controlBtnIcon} />
+			</MediaButton>
+		</div>
+	);
+};
+
 function isPointerOutsideRect(
 	pointer: PointerPosition,
 	rect: DOMRect,
@@ -225,13 +284,18 @@ export const TaskbarLyricApp = () => {
 	const hoverArmedRef = useRef(true);
 	const hoverExitPointerRef = useRef<PointerPosition | null>(null);
 	const latestPointerRef = useRef<PointerPosition | null>(null);
+	const clickInterceptionRef = useRef<boolean | null>(null);
 	const hoverUnlockTimerRef = useRef<number | null>(null);
 	const hoverSurfaceRef = useRef<HTMLDivElement>(null);
-	const prevHoverRef = useRef(isHovered);
-	const isHoverEvent = prevHoverRef.current !== isHovered;
-	useEffect(() => {
-		prevHoverRef.current = isHovered;
-	}, [isHovered]);
+	const layoutProbeLayerRef = useRef<HTMLDivElement>(null);
+	const collapsedProbeRef = useRef<HTMLDivElement>(null);
+	const expandedProbeRef = useRef<HTMLDivElement>(null);
+	const controlsProbeRef = useRef<HTMLDivElement>(null);
+	const [layoutExtents, setLayoutExtents] = useState<LayoutExtents | null>(
+		null,
+	);
+	const hoverTransitionRef = useRef(false);
+	const isHoverEvent = hoverTransitionRef.current;
 	const positionRef = useRef(0);
 	const anchorRef = useRef({ position: 0, time: performance.now() });
 
@@ -277,13 +341,18 @@ export const TaskbarLyricApp = () => {
 		}
 	};
 
-	const setClickInterception = (intercept: boolean) => {
+	const setClickInterception = useCallback((intercept: boolean) => {
+		if (clickInterceptionRef.current === intercept) return;
+		clickInterceptionRef.current = intercept;
 		invoke(CMD_SET_CLICK_INTERCEPTION, {
 			intercept,
 		}).catch((err) => {
+			if (clickInterceptionRef.current === intercept) {
+				clickInterceptionRef.current = null;
+			}
 			console.error(`设置鼠标拦截状态 ${intercept} 失败:`, err);
 		});
-	};
+	}, []);
 
 	useEffect(() => {
 		const handleResize = () => {
@@ -469,10 +538,12 @@ export const TaskbarLyricApp = () => {
 	const isSingleLineMode =
 		modeSetting === "auto" ? systemMode === "single" : modeSetting === "single";
 	const isVert = orientation === "vertical";
+	const measuredControlsExtent =
+		layoutExtents?.orientation === orientation ? layoutExtents.controls : 0;
 	const controlsEnterAnimation = {
 		...(isVert
-			? { height: "auto", marginTop: 0 }
-			: { width: "auto", marginLeft: 0 }),
+			? { height: measuredControlsExtent, marginTop: 0 }
+			: { width: measuredControlsExtent, marginLeft: 0 }),
 		opacity: 1,
 		transition: {
 			type: "spring" as const,
@@ -481,14 +552,10 @@ export const TaskbarLyricApp = () => {
 		},
 	};
 	const controlsExitAnimation = {
-		...(isVert
-			? { height: 0, marginTop: -12 }
-			: { width: 0, marginLeft: -12 }),
+		...(isVert ? { height: 0, marginTop: -12 } : { width: 0, marginLeft: -12 }),
 		opacity: 0,
 		transition: { type: "spring" as const, stiffness: 400, damping: 35 },
 	};
-	const isHoverLayoutLocked = hoverGuardExtent !== null;
-
 	const currentLine =
 		currentLyricIndex >= 0 ? lyricLines[currentLyricIndex] : null;
 	const subLyricText = currentLine
@@ -503,7 +570,6 @@ export const TaskbarLyricApp = () => {
 			: `lyrics-${musicName}-${jumpState.jumpId}`;
 
 	const lyricItems: LyricItem[] = useMemo(() => {
-		if (displayAsMetadata) return [];
 		const items: LyricItem[] = [];
 		if (currentLyricIndex >= 0 && currentLine) {
 			const nextLine =
@@ -552,12 +618,87 @@ export const TaskbarLyricApp = () => {
 		}
 		return items;
 	}, [
-		displayAsMetadata,
 		currentLyricIndex,
 		lyricLines,
 		currentLine,
 		hasSubLyric,
+		isSingleLineMode,
 		subLyricText,
+	]);
+
+	useLayoutEffect(() => {
+		const probeLayer = layoutProbeLayerRef.current;
+		const collapsedProbe = collapsedProbeRef.current;
+		const expandedProbe = expandedProbeRef.current;
+		const controlsProbe = controlsProbeRef.current;
+		if (!probeLayer || !collapsedProbe || !expandedProbe || !controlsProbe) {
+			return;
+		}
+
+		let cancelled = false;
+		const measure = () => {
+			if (cancelled) return;
+
+			const availableRect = probeLayer.getBoundingClientRect();
+			const collapsedRect = collapsedProbe.getBoundingClientRect();
+			const expandedRect = expandedProbe.getBoundingClientRect();
+			const controlsRect = controlsProbe.getBoundingClientRect();
+			const availableExtent = isVert
+				? availableRect.height
+				: availableRect.width;
+			const next: LayoutExtents = {
+				orientation,
+				collapsed: Math.min(
+					isVert ? collapsedRect.height : collapsedRect.width,
+					availableExtent,
+				),
+				expanded: Math.min(
+					isVert ? expandedRect.height : expandedRect.width,
+					availableExtent,
+				),
+				controls: isVert ? controlsRect.height : controlsRect.width,
+			};
+			if (
+				![next.collapsed, next.expanded, next.controls].every(
+					(value) => Number.isFinite(value) && value > 0,
+				)
+			) {
+				return;
+			}
+
+			setLayoutExtents((previous) => {
+				if (
+					previous?.orientation === next.orientation &&
+					Math.abs(previous.collapsed - next.collapsed) < 0.25 &&
+					Math.abs(previous.expanded - next.expanded) < 0.25 &&
+					Math.abs(previous.controls - next.controls) < 0.25
+				) {
+					return previous;
+				}
+				return next;
+			});
+		};
+
+		measure();
+		const observer = new ResizeObserver(measure);
+		observer.observe(probeLayer);
+		observer.observe(collapsedProbe);
+		observer.observe(expandedProbe);
+		observer.observe(controlsProbe);
+		void document.fonts.ready.then(measure);
+
+		return () => {
+			cancelled = true;
+			observer.disconnect();
+		};
+	}, [
+		orientation,
+		isVert,
+		isMetadataMode,
+		isSingleLineMode,
+		musicName,
+		musicArtists,
+		lyricItems,
 	]);
 
 	const clearHoverUnlockTimer = useCallback(() => {
@@ -571,14 +712,24 @@ export const TaskbarLyricApp = () => {
 		if (!hoverArmedRef.current) return;
 
 		isHoveredRef.current = true;
+		hoverTransitionRef.current = true;
 		hoverExitPointerRef.current = null;
 		clearHoverUnlockTimer();
 
 		const surfaceRect = hoverSurfaceRef.current?.getBoundingClientRect();
 		if (surfaceRect) {
+			const surfaceExtent = isVert ? surfaceRect.height : surfaceRect.width;
+			const measuredLayout =
+				layoutExtents?.orientation === orientation ? layoutExtents : null;
 			setHoverGuardExtent({
 				orientation,
-				value: isVert ? surfaceRect.height : surfaceRect.width,
+				value: measuredLayout
+					? Math.max(
+							surfaceExtent,
+							measuredLayout.collapsed,
+							measuredLayout.expanded,
+						)
+					: surfaceExtent,
 			});
 		}
 
@@ -604,6 +755,7 @@ export const TaskbarLyricApp = () => {
 		}
 
 		isHoveredRef.current = false;
+		hoverTransitionRef.current = true;
 		hoverArmedRef.current = false;
 		hoverExitPointerRef.current = pointer;
 		setIsHovered(false);
@@ -641,7 +793,26 @@ export const TaskbarLyricApp = () => {
 
 	useEffect(() => {
 		setClickInterception(false);
-	}, []);
+	}, [setClickInterception]);
+
+	useLayoutEffect(() => {
+		const hoverSurface = hoverSurfaceRef.current;
+		if (!hoverSurface) return;
+
+		const releaseInterceptionOutsideSurface = () => {
+			const pointer = latestPointerRef.current;
+			if (
+				pointer &&
+				isPointerOutsideRect(pointer, hoverSurface.getBoundingClientRect(), 0)
+			) {
+				setClickInterception(false);
+			}
+		};
+
+		const observer = new ResizeObserver(releaseInterceptionOutsideSurface);
+		observer.observe(hoverSurface);
+		return () => observer.disconnect();
+	}, [setClickInterception]);
 
 	useEffect(() => {
 		const handlePointerMove = (event: MouseEvent) => {
@@ -694,41 +865,6 @@ export const TaskbarLyricApp = () => {
 		[clearHoverUnlockTimer],
 	);
 
-	useLayoutEffect(() => {
-		if (!isHoverLayoutLocked || !isHovered) return;
-
-		const hoverSurface = hoverSurfaceRef.current;
-		if (!hoverSurface) return;
-
-		const preserveLargestExtent = () => {
-			if (!isHoveredRef.current) return;
-
-			const surfaceRect = hoverSurface.getBoundingClientRect();
-			const measuredExtent =
-				orientation === "vertical" ? surfaceRect.height : surfaceRect.width;
-			if (!Number.isFinite(measuredExtent) || measuredExtent <= 0) return;
-
-			const pointer = latestPointerRef.current;
-			if (pointer && isPointerOutsideRect(pointer, surfaceRect, 0)) {
-				setClickInterception(false);
-			}
-
-			setHoverGuardExtent((previous) => {
-				if (!previous) return previous;
-				if (previous.orientation !== orientation) {
-					return { orientation, value: measuredExtent };
-				}
-				if (measuredExtent <= previous.value + 0.5) return previous;
-				return { orientation, value: measuredExtent };
-			});
-		};
-
-		preserveLargestExtent();
-		const observer = new ResizeObserver(preserveLargestExtent);
-		observer.observe(hoverSurface);
-		return () => observer.disconnect();
-	}, [isHoverLayoutLocked, isHovered, orientation]);
-
 	const handlePrev = (e: React.MouseEvent) => {
 		e.stopPropagation();
 		emit(CTRL_PREV_EVENT).catch(console.error);
@@ -763,6 +899,80 @@ export const TaskbarLyricApp = () => {
 				? { minHeight: hoverGuardExtent.value }
 				: { minWidth: hoverGuardExtent.value }
 			: undefined;
+	const measuredLayout =
+		layoutExtents?.orientation === orientation ? layoutExtents : null;
+	const targetContainerExtent = measuredLayout
+		? isHovered
+			? measuredLayout.expanded
+			: measuredLayout.collapsed
+		: null;
+	const containerSizeAnimation = isVert
+		? {
+				width: "100%",
+				...(targetContainerExtent === null
+					? {}
+					: { height: targetContainerExtent }),
+			}
+		: {
+				height: "100%",
+				...(targetContainerExtent === null
+					? {}
+					: { width: targetContainerExtent }),
+			};
+	const renderGhostLines = (metadata: boolean) =>
+		metadata ? (
+			<>
+				<div className={styles.ghostLine}>{musicName}</div>
+				{!isSingleLineMode && (
+					<div className={styles.ghostLine}>{musicArtists}</div>
+				)}
+			</>
+		) : (
+			lyricItems.map((item) => (
+				<div key={item.key} className={styles.ghostLine}>
+					{item.text}
+				</div>
+			))
+		);
+	const renderLayoutProbe = (
+		expanded: boolean,
+		probeRef: React.Ref<HTMLDivElement>,
+	) => {
+		const metadata = expanded || isMetadataMode;
+		return (
+			<div
+				ref={probeRef}
+				className={`${styles.container} ${styles.layoutProbe}`}
+				data-theme={theme}
+				data-align={align}
+				data-orientation={orientation}
+				data-single-line={isSingleLineMode}
+			>
+				<div className={styles.coverWrapper} />
+				{expanded && (
+					<div className={styles.controlsWrapper}>
+						<PlaybackControls
+							isPlaying={state.musicPlaying}
+							panelRef={controlsProbeRef}
+						/>
+					</div>
+				)}
+				<div
+					className={styles.textPanel}
+					data-content={metadata ? "metadata" : "lyrics"}
+				>
+					<div
+						className={styles.groupContainer}
+						data-group-content={metadata ? "metadata" : "lyrics"}
+					>
+						<div className={styles.ghostPanel}>
+							{renderGhostLines(metadata)}
+						</div>
+					</div>
+				</div>
+			</div>
+		);
+	};
 
 	return (
 		<div
@@ -781,14 +991,20 @@ export const TaskbarLyricApp = () => {
 				style={lockedHoverGuardStyle}
 				aria-hidden="true"
 			/>
-			<div
+			<motion.div
 				ref={hoverSurfaceRef}
 				className={styles.container}
 				data-theme={theme}
 				data-align={align}
 				data-orientation={orientation}
 				data-single-line={isSingleLineMode}
-				data-hover-layout-locked={isHoverLayoutLocked}
+				initial={false}
+				animate={containerSizeAnimation}
+				transition={{
+					type: "tween",
+					duration: 0.24,
+					ease: [0.22, 1, 0.36, 1],
+				}}
 				onMouseEnter={() => {
 					if (!hoverArmedRef.current && !isHoveredRef.current) return;
 					setClickInterception(true);
@@ -837,77 +1053,37 @@ export const TaskbarLyricApp = () => {
 					</AnimatePresence>
 				</div>
 
-				<AnimatePresence
+				<motion.div
+					key={orientation}
+					className={styles.controlsWrapper}
+					data-visible={isHovered}
+					aria-hidden={!isHovered}
+					inert={isHovered ? undefined : true}
 					initial={false}
-					onExitComplete={handleControlsExitComplete}
+					animate={isHovered ? controlsEnterAnimation : controlsExitAnimation}
+					onAnimationComplete={() => {
+						hoverTransitionRef.current = false;
+						if (!isHoveredRef.current) handleControlsExitComplete();
+					}}
 				>
-					{isHovered && (
-						<motion.div
-							key={orientation}
-							className={styles.controlsWrapper}
-							initial={
-								isVert
-									? { height: 0, opacity: 0, marginTop: -12 }
-									: { width: 0, opacity: 0, marginLeft: -12 }
-							}
-							animate={controlsEnterAnimation}
-							exit={controlsExitAnimation}
-						>
-							<div className={styles.controlsPanel}>
-								<MediaButton className={styles.controlBtn} onClick={handlePrev}>
-									<IconRewind className={styles.controlBtnIcon} />
-								</MediaButton>
-								<MediaButton
-									className={`${styles.controlBtn} ${styles.controlBtnPlay}`}
-									onClick={handleTogglePlay}
-								>
-									{state.musicPlaying ? (
-										<IconPause className={styles.controlBtnIconPlay} />
-									) : (
-										<IconPlay className={styles.controlBtnIconPlay} />
-									)}
-								</MediaButton>
-								<MediaButton className={styles.controlBtn} onClick={handleNext}>
-									<IconForward className={styles.controlBtnIcon} />
-								</MediaButton>
-							</div>
-						</motion.div>
-					)}
-				</AnimatePresence>
+					<PlaybackControls
+						isPlaying={state.musicPlaying}
+						enabled={isHovered}
+						onPrev={handlePrev}
+						onTogglePlay={handleTogglePlay}
+						onNext={handleNext}
+					/>
+				</motion.div>
 
 				<div
 					className={styles.textPanel}
 					data-content={displayAsMetadata ? "metadata" : "lyrics"}
 				>
-					{isHoverLayoutLocked && (
-						<div
-							className={`${styles.ghostPanel} ${styles.hoverSizer}`}
-							aria-hidden="true"
-						>
-							{displayAsMetadata ? (
-								<>
-									<div className={styles.ghostLine}>{musicName}</div>
-									{!isSingleLineMode && (
-										<div className={styles.ghostLine}>{musicArtists}</div>
-									)}
-								</>
-							) : (
-								lyricItems.map((item) => (
-									<div key={item.key} className={styles.ghostLine}>
-										{item.text}
-									</div>
-								))
-							)}
-						</div>
-					)}
-
 					<AnimatePresence custom={isHoverEvent}>
 						<motion.div
 							key={groupKey}
 							className={styles.groupContainer}
-							data-group-content={
-								displayAsMetadata ? "metadata" : "lyrics"
-							}
+							data-group-content={displayAsMetadata ? "metadata" : "lyrics"}
 							custom={isHoverEvent}
 							variants={{
 								initial: (isHoverFade: boolean) => ({
@@ -1067,6 +1243,15 @@ export const TaskbarLyricApp = () => {
 						</motion.div>
 					</AnimatePresence>
 				</div>
+			</motion.div>
+
+			<div
+				ref={layoutProbeLayerRef}
+				className={styles.layoutProbeLayer}
+				aria-hidden="true"
+			>
+				{renderLayoutProbe(false, collapsedProbeRef)}
+				{renderLayoutProbe(true, expandedProbeRef)}
 			</div>
 		</div>
 	);
