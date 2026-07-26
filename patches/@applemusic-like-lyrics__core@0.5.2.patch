@@ -1,40 +1,84 @@
 diff --git a/dist/amll-core.cjs b/dist/amll-core.cjs
-index 819b12c..9d23b3c 100644
+index 819b12c2307970f3b2dc160b47c90bc9a560887d..a618a97275723af5c3249adc5b4b7c6d17a4cf60 100644
 --- a/dist/amll-core.cjs
 +++ b/dist/amll-core.cjs
-@@ -568,0 +568 @@ var mesh_frag_default = "precision mediump float;\n\nvarying vec3 v_color;\nvary
+@@ -565,6 +565,7 @@ function generateControlPoints(width, height, variationFraction = randomRange(.4
+ //#endregion
+ //#region \0raw:/home/runner/work/applemusic-like-lyrics/applemusic-like-lyrics/packages/core/src/bg-render/mesh-renderer/mesh.frag.glsl
+ var mesh_frag_default = "precision mediump float;\n\nvarying vec3 v_color;\nvarying vec2 v_uv;\nuniform sampler2D u_texture;\nuniform float u_volume;\nuniform float u_alpha;\nuniform float u_sinAngle;\nuniform float u_cosAngle;\n\n// 预计算常量\nconst float INV_255 = 1.0 / 255.0;\nconst float HALF_INV_255 = 0.5 / 255.0;\nconst float GRADIENT_NOISE_A = 52.9829189;\nconst vec2 GRADIENT_NOISE_B = vec2(0.06711056, 0.00583715);\n\nfloat gradientNoise(in vec2 uv) {\n    return fract(GRADIENT_NOISE_A * fract(dot(uv, GRADIENT_NOISE_B)));\n}\n\nvoid main() {\n    float volumeEffect = u_volume * 2.0;\n\n    float dither = INV_255 * gradientNoise(gl_FragCoord.xy) - HALF_INV_255;\n\n    vec2 centeredUV = v_uv - vec2(0.2);\n\n    vec2 rotatedUV = vec2(\n        u_cosAngle * centeredUV.x - u_sinAngle * centeredUV.y,\n        u_sinAngle * centeredUV.x + u_cosAngle * centeredUV.y\n    );\n\n    vec2 finalUV = rotatedUV * max(0.001, 1.0 - volumeEffect) + vec2(0.5);\n    \n    vec4 result = texture2D(u_texture, finalUV);\n    \n    float alphaVolumeFactor = u_alpha * max(0.5, 1.0 - u_volume * 0.5);\n    result.rgb *= v_color * alphaVolumeFactor;\n    result.a *= alphaVolumeFactor;\n    \n    result.rgb += vec3(dither);\n    \n    float dist = distance(v_uv, vec2(0.5));\n    float vignette = smoothstep(0.8, 0.3, dist);\n    float mask = 0.6 + vignette * 0.4;\n    result.rgb *= mask;\n    \n    gl_FragColor = result;\n}\n";
 +mesh_frag_default = mesh_frag_default.replace("vec2 centeredUV = v_uv - vec2(0.2);", "vec2 centeredUV = v_uv - vec2(0.5);");
-@@ -1139,0 +1140,6 @@ var MeshGradientRenderer = class extends BaseRenderer {
+ //#endregion
+ //#region \0raw:/home/runner/work/applemusic-like-lyrics/applemusic-like-lyrics/packages/core/src/bg-render/mesh-renderer/mesh.vert.glsl
+ var mesh_vert_default = "precision mediump float;\n\nattribute vec2 a_pos;\nattribute vec3 a_color;\nattribute vec2 a_uv;\nvarying vec3 v_color;\nvarying vec2 v_uv;\n\nuniform float u_aspect;\n\nvoid main() {\n    v_color = a_color;\n    v_uv = a_uv;\n    vec2 pos = a_pos;\n    if (u_aspect > 1.0) {\n        pos.y *= u_aspect;\n    } else {\n        pos.x /= u_aspect;\n    }\n    gl_Position = vec4(pos, 0.0, 1.0);\n}\n";
+@@ -1136,11 +1137,21 @@ function createOffscreenCanvas(width, height) {
+ 	return canvas;
+ }
+ var MeshGradientRenderer = class extends BaseRenderer {
 +	static rhythmVisualVolume = 0;
 +	static strongBeat = 0;
 +	static setRhythmVisualSignal(breath, heavyBeat) {
 +		MeshGradientRenderer.rhythmVisualVolume = Number.isFinite(breath) ? Math.min(.4, Math.max(0, breath)) : 0;
 +		MeshGradientRenderer.strongBeat = Number.isFinite(heavyBeat) ? Math.min(1, Math.max(0, heavyBeat)) : 0;
 +	}
-@@ -1144,0 +1151,2 @@ var MeshGradientRenderer = class extends BaseRenderer {
+ 	gl;
+ 	lastFrameTime = 0;
+ 	frameTime = 0;
+ 	lastTickTime = 0;
+ 	smoothedVolume = 0;
 +	rhythmKick = 0;
++	kickVelocity = 0;
++	lastKickDrive = 0;
 +	rhythmBreath = 0;
-@@ -1195,2 +1204,4 @@ var MeshGradientRenderer = class extends BaseRenderer {
+ 	volume = 0;
+ 	tickHandle = 0;
+ 	maxFPS = 60;
+@@ -1192,8 +1203,10 @@ var MeshGradientRenderer = class extends BaseRenderer {
+ 		const frameDelta = tickTime - this.lastFrameTime;
+ 		this.lastFrameTime = tickTime;
+ 		this.lastTickTime = tickTime - delta % interval;
 -		this.frameTime += frameDelta * this.flowSpeed;
 -		if (!(this.onRedraw(this.frameTime, frameDelta) && this.staticMode)) this.requestTick();
 +		const maxFrameDelta = Math.max(50, (Number.isFinite(this.maxFPS) && this.maxFPS > 0 ? 1e3 / this.maxFPS : 0) * 1.5);
 +		const safeFrameDelta = Number.isFinite(frameDelta) ? Math.min(maxFrameDelta, Math.max(0, frameDelta)) : 0;
 +		this.frameTime += safeFrameDelta * this.flowSpeed;
 +		if (!(this.onRedraw(this.frameTime, safeFrameDelta) && this.staticMode)) this.requestTick();
-@@ -1231 +1242,3 @@ var MeshGradientRenderer = class extends BaseRenderer {
+ 		else if (this.staticMode) this.lastFrameTime = NaN;
+ 	}
+ 	checkIfResize() {
+@@ -1228,7 +1241,9 @@ var MeshGradientRenderer = class extends BaseRenderer {
+ 	onRedraw(tickTime, delta) {
+ 		const latestMeshState = this.meshStates[this.meshStates.length - 1];
+ 		let canBeStatic = false;
 -		const deltaFactor = delta / 500;
 +		const maxFrameDelta = Math.max(50, (Number.isFinite(this.maxFPS) && this.maxFPS > 0 ? 1e3 / this.maxFPS : 0) * 1.5);
 +		const safeDelta = Number.isFinite(delta) ? Math.min(maxFrameDelta, Math.max(0, delta)) : 0;
 +		const deltaFactor = safeDelta / 500;
-@@ -1266 +1279 @@ var MeshGradientRenderer = class extends BaseRenderer {
+ 		if (latestMeshState) {
+ 			latestMeshState.mesh.bind();
+ 			if (this.manualControl) latestMeshState.mesh.updateMesh();
+@@ -1263,8 +1278,32 @@ var MeshGradientRenderer = class extends BaseRenderer {
+ 		gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+ 		gl.clearColor(0, 0, 0, 0);
+ 		gl.clear(gl.COLOR_BUFFER_BIT);
 -		const lerpFactor = Math.min(1, delta / 100);
 +		const lerpFactor = Math.min(1, safeDelta / 100);
-@@ -1268,0 +1281,13 @@ var MeshGradientRenderer = class extends BaseRenderer {
+ 		this.smoothedVolume += (this.volume - this.smoothedVolume) * lerpFactor;
 +		const signal = Math.min(1, Math.max(0, MeshGradientRenderer.rhythmVisualVolume * 2.5));
-+		const targetKick = MeshGradientRenderer.strongBeat * .18;
-+		const kickMs = targetKick > this.rhythmKick ? 55 : 540;
-+		const kickFactor = 1 - Math.exp(-safeDelta / kickMs);
-+		this.rhythmKick += (targetKick - this.rhythmKick) * kickFactor;
++		const kickDrive = MeshGradientRenderer.strongBeat;
++		this.kickVelocity += 2.6 * Math.max(0, kickDrive - this.lastKickDrive);
++		this.lastKickDrive = kickDrive;
++		let kickRemainingMs = safeDelta;
++		while (kickRemainingMs > 0) {
++			const kickStepMs = Math.min(2.5, kickRemainingMs);
++			const kickStepS = kickStepMs / 1e3;
++			this.kickVelocity -= (42 * this.rhythmKick + 16 * this.kickVelocity) * kickStepS;
++			this.rhythmKick += this.kickVelocity * kickStepS;
++			kickRemainingMs -= kickStepMs;
++		}
++		if (this.rhythmKick < 0) {
++			this.rhythmKick = 0;
++			if (this.kickVelocity < 0) this.kickVelocity = 0;
++		}
 +		const targetBreath = Math.min(.12, signal * .16);
 +		const breathMs = targetBreath > this.rhythmBreath ? 110 : 380;
 +		const breathFactor = 1 - Math.exp(-safeDelta / breathMs);
@@ -43,69 +87,146 @@ index 819b12c..9d23b3c 100644
 +		const breathKnee = Math.min(1, Math.max(0, (combinedBreath - .16) / .06));
 +		const breathVolume = combinedBreath <= .16 ? combinedBreath : .16 + .06 * breathKnee - .02 * breathKnee * breathKnee * breathKnee;
 +		const compensatedAlpha = 1 / Math.max(.5, 1 - breathVolume * .5);
-@@ -1278,3 +1304,3 @@ var MeshGradientRenderer = class extends BaseRenderer {
+ 		for (const state of this.meshStates) {
+ 			gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
+ 			gl.disable(gl.BLEND);
+@@ -1275,9 +1314,9 @@ var MeshGradientRenderer = class extends BaseRenderer {
+ 			const uTime = tickTime / 1e4;
+ 			this.mainProgram.setUniform1f("u_aspect", this.manualControl ? 1 : this.canvas.width / this.canvas.height);
+ 			this.mainProgram.setUniform1i("u_texture", 0);
 -			this.mainProgram.setUniform1f("u_volume", this.volume);
 -			this.mainProgram.setUniform1f("u_alpha", 1);
 -			const angle = (uTime + this.volume) * 2;
 +			this.mainProgram.setUniform1f("u_volume", breathVolume);
 +			this.mainProgram.setUniform1f("u_alpha", compensatedAlpha);
 +			const angle = (uTime + this.volume) * 2 + this.rhythmKick;
-@@ -1366,0 +1392,3 @@ var MeshGradientRenderer = class extends BaseRenderer {
+ 			this.mainProgram.setUniform1f("u_sinAngle", Math.sin(angle));
+ 			this.mainProgram.setUniform1f("u_cosAngle", Math.cos(angle));
+ 			state.texture.bind();
+@@ -1363,6 +1402,9 @@ var MeshGradientRenderer = class extends BaseRenderer {
+ 	}
+ 	resume() {
+ 		this.paused = false;
 +		const now = performance.now();
 +		this.lastFrameTime = now;
 +		this.lastTickTime = now;
-@@ -1474 +1503 @@ var MeshGradientRenderer = class extends BaseRenderer {
+ 		this.requestTick();
+ 	}
+ 	async setAlbum(albumSource, isVideo) {
+@@ -1471,7 +1513,7 @@ var MeshGradientRenderer = class extends BaseRenderer {
+ 		this.requestTick();
+ 	}
+ 	setLowFreqVolume(volume) {
 -		this.volume = volume / 10;
 +		this.volume = Number.isFinite(volume) ? volume / 10 : 0;
+ 	}
+ 	setHasLyric(_hasLyric) {}
+ 	dispose() {
 diff --git a/dist/amll-core.d.cts b/dist/amll-core.d.cts
-index ff58a0f..21da3f3 100644
+index ff58a0fe7d74f2e68010566f6249133241ac3d25..21da3f35218eced33fb0e877166cc77f43be4b81 100644
 --- a/dist/amll-core.d.cts
 +++ b/dist/amll-core.d.cts
-@@ -246,0 +246 @@ declare class MeshGradientRenderer extends BaseRenderer {
+@@ -243,6 +243,7 @@ declare class ControlPoint {
+   private updateVTangent;
+ }
+ declare class MeshGradientRenderer extends BaseRenderer {
 +  static setRhythmVisualSignal(breath: number, heavyBeat: number): void;
+   private gl;
+   private lastFrameTime;
+   private frameTime;
 diff --git a/dist/amll-core.d.mts b/dist/amll-core.d.mts
-index 1d57d76..6db5e91 100644
+index 1d57d766316b1812de4ee13e5044ec24b32e7773..6db5e91e77e1ee8a44794fb5d56c5257986a99fe 100644
 --- a/dist/amll-core.d.mts
 +++ b/dist/amll-core.d.mts
-@@ -246,0 +246 @@ declare class MeshGradientRenderer extends BaseRenderer {
+@@ -243,6 +243,7 @@ declare class ControlPoint {
+   private updateVTangent;
+ }
+ declare class MeshGradientRenderer extends BaseRenderer {
 +  static setRhythmVisualSignal(breath: number, heavyBeat: number): void;
+   private gl;
+   private lastFrameTime;
+   private frameTime;
 diff --git a/dist/amll-core.mjs b/dist/amll-core.mjs
-index 37bd987..d8ab770 100644
+index 37bd9873e58044f0900c04c2ab80da5a6d29f16a..8001b55b438c1d35acd7fdfc7c41581834eb66fc 100644
 --- a/dist/amll-core.mjs
 +++ b/dist/amll-core.mjs
-@@ -543,0 +543 @@ var mesh_frag_default = "precision mediump float;\n\nvarying vec3 v_color;\nvary
+@@ -540,6 +540,7 @@ function generateControlPoints(width, height, variationFraction = randomRange(.4
+ //#endregion
+ //#region \0raw:/home/runner/work/applemusic-like-lyrics/applemusic-like-lyrics/packages/core/src/bg-render/mesh-renderer/mesh.frag.glsl
+ var mesh_frag_default = "precision mediump float;\n\nvarying vec3 v_color;\nvarying vec2 v_uv;\nuniform sampler2D u_texture;\nuniform float u_volume;\nuniform float u_alpha;\nuniform float u_sinAngle;\nuniform float u_cosAngle;\n\n// 预计算常量\nconst float INV_255 = 1.0 / 255.0;\nconst float HALF_INV_255 = 0.5 / 255.0;\nconst float GRADIENT_NOISE_A = 52.9829189;\nconst vec2 GRADIENT_NOISE_B = vec2(0.06711056, 0.00583715);\n\nfloat gradientNoise(in vec2 uv) {\n    return fract(GRADIENT_NOISE_A * fract(dot(uv, GRADIENT_NOISE_B)));\n}\n\nvoid main() {\n    float volumeEffect = u_volume * 2.0;\n\n    float dither = INV_255 * gradientNoise(gl_FragCoord.xy) - HALF_INV_255;\n\n    vec2 centeredUV = v_uv - vec2(0.2);\n\n    vec2 rotatedUV = vec2(\n        u_cosAngle * centeredUV.x - u_sinAngle * centeredUV.y,\n        u_sinAngle * centeredUV.x + u_cosAngle * centeredUV.y\n    );\n\n    vec2 finalUV = rotatedUV * max(0.001, 1.0 - volumeEffect) + vec2(0.5);\n    \n    vec4 result = texture2D(u_texture, finalUV);\n    \n    float alphaVolumeFactor = u_alpha * max(0.5, 1.0 - u_volume * 0.5);\n    result.rgb *= v_color * alphaVolumeFactor;\n    result.a *= alphaVolumeFactor;\n    \n    result.rgb += vec3(dither);\n    \n    float dist = distance(v_uv, vec2(0.5));\n    float vignette = smoothstep(0.8, 0.3, dist);\n    float mask = 0.6 + vignette * 0.4;\n    result.rgb *= mask;\n    \n    gl_FragColor = result;\n}\n";
 +mesh_frag_default = mesh_frag_default.replace("vec2 centeredUV = v_uv - vec2(0.2);", "vec2 centeredUV = v_uv - vec2(0.5);");
-@@ -1114,0 +1115,6 @@ var MeshGradientRenderer = class extends BaseRenderer {
+ //#endregion
+ //#region \0raw:/home/runner/work/applemusic-like-lyrics/applemusic-like-lyrics/packages/core/src/bg-render/mesh-renderer/mesh.vert.glsl
+ var mesh_vert_default = "precision mediump float;\n\nattribute vec2 a_pos;\nattribute vec3 a_color;\nattribute vec2 a_uv;\nvarying vec3 v_color;\nvarying vec2 v_uv;\n\nuniform float u_aspect;\n\nvoid main() {\n    v_color = a_color;\n    v_uv = a_uv;\n    vec2 pos = a_pos;\n    if (u_aspect > 1.0) {\n        pos.y *= u_aspect;\n    } else {\n        pos.x /= u_aspect;\n    }\n    gl_Position = vec4(pos, 0.0, 1.0);\n}\n";
+@@ -1111,11 +1112,21 @@ function createOffscreenCanvas(width, height) {
+ 	return canvas;
+ }
+ var MeshGradientRenderer = class extends BaseRenderer {
 +	static rhythmVisualVolume = 0;
 +	static strongBeat = 0;
 +	static setRhythmVisualSignal(breath, heavyBeat) {
 +		MeshGradientRenderer.rhythmVisualVolume = Number.isFinite(breath) ? Math.min(.4, Math.max(0, breath)) : 0;
 +		MeshGradientRenderer.strongBeat = Number.isFinite(heavyBeat) ? Math.min(1, Math.max(0, heavyBeat)) : 0;
 +	}
-@@ -1119,0 +1126,2 @@ var MeshGradientRenderer = class extends BaseRenderer {
+ 	gl;
+ 	lastFrameTime = 0;
+ 	frameTime = 0;
+ 	lastTickTime = 0;
+ 	smoothedVolume = 0;
 +	rhythmKick = 0;
++	kickVelocity = 0;
++	lastKickDrive = 0;
 +	rhythmBreath = 0;
-@@ -1170,2 +1179,4 @@ var MeshGradientRenderer = class extends BaseRenderer {
+ 	volume = 0;
+ 	tickHandle = 0;
+ 	maxFPS = 60;
+@@ -1167,8 +1178,10 @@ var MeshGradientRenderer = class extends BaseRenderer {
+ 		const frameDelta = tickTime - this.lastFrameTime;
+ 		this.lastFrameTime = tickTime;
+ 		this.lastTickTime = tickTime - delta % interval;
 -		this.frameTime += frameDelta * this.flowSpeed;
 -		if (!(this.onRedraw(this.frameTime, frameDelta) && this.staticMode)) this.requestTick();
 +		const maxFrameDelta = Math.max(50, (Number.isFinite(this.maxFPS) && this.maxFPS > 0 ? 1e3 / this.maxFPS : 0) * 1.5);
 +		const safeFrameDelta = Number.isFinite(frameDelta) ? Math.min(maxFrameDelta, Math.max(0, frameDelta)) : 0;
 +		this.frameTime += safeFrameDelta * this.flowSpeed;
 +		if (!(this.onRedraw(this.frameTime, safeFrameDelta) && this.staticMode)) this.requestTick();
-@@ -1206 +1217,3 @@ var MeshGradientRenderer = class extends BaseRenderer {
+ 		else if (this.staticMode) this.lastFrameTime = NaN;
+ 	}
+ 	checkIfResize() {
+@@ -1203,7 +1216,9 @@ var MeshGradientRenderer = class extends BaseRenderer {
+ 	onRedraw(tickTime, delta) {
+ 		const latestMeshState = this.meshStates[this.meshStates.length - 1];
+ 		let canBeStatic = false;
 -		const deltaFactor = delta / 500;
 +		const maxFrameDelta = Math.max(50, (Number.isFinite(this.maxFPS) && this.maxFPS > 0 ? 1e3 / this.maxFPS : 0) * 1.5);
 +		const safeDelta = Number.isFinite(delta) ? Math.min(maxFrameDelta, Math.max(0, delta)) : 0;
 +		const deltaFactor = safeDelta / 500;
-@@ -1241 +1254 @@ var MeshGradientRenderer = class extends BaseRenderer {
+ 		if (latestMeshState) {
+ 			latestMeshState.mesh.bind();
+ 			if (this.manualControl) latestMeshState.mesh.updateMesh();
+@@ -1238,8 +1253,32 @@ var MeshGradientRenderer = class extends BaseRenderer {
+ 		gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+ 		gl.clearColor(0, 0, 0, 0);
+ 		gl.clear(gl.COLOR_BUFFER_BIT);
 -		const lerpFactor = Math.min(1, delta / 100);
 +		const lerpFactor = Math.min(1, safeDelta / 100);
-@@ -1243,0 +1256,13 @@ var MeshGradientRenderer = class extends BaseRenderer {
+ 		this.smoothedVolume += (this.volume - this.smoothedVolume) * lerpFactor;
 +		const signal = Math.min(1, Math.max(0, MeshGradientRenderer.rhythmVisualVolume * 2.5));
-+		const targetKick = MeshGradientRenderer.strongBeat * .18;
-+		const kickMs = targetKick > this.rhythmKick ? 55 : 540;
-+		const kickFactor = 1 - Math.exp(-safeDelta / kickMs);
-+		this.rhythmKick += (targetKick - this.rhythmKick) * kickFactor;
++		const kickDrive = MeshGradientRenderer.strongBeat;
++		this.kickVelocity += 2.6 * Math.max(0, kickDrive - this.lastKickDrive);
++		this.lastKickDrive = kickDrive;
++		let kickRemainingMs = safeDelta;
++		while (kickRemainingMs > 0) {
++			const kickStepMs = Math.min(2.5, kickRemainingMs);
++			const kickStepS = kickStepMs / 1e3;
++			this.kickVelocity -= (42 * this.rhythmKick + 16 * this.kickVelocity) * kickStepS;
++			this.rhythmKick += this.kickVelocity * kickStepS;
++			kickRemainingMs -= kickStepMs;
++		}
++		if (this.rhythmKick < 0) {
++			this.rhythmKick = 0;
++			if (this.kickVelocity < 0) this.kickVelocity = 0;
++		}
 +		const targetBreath = Math.min(.12, signal * .16);
 +		const breathMs = targetBreath > this.rhythmBreath ? 110 : 380;
 +		const breathFactor = 1 - Math.exp(-safeDelta / breathMs);
@@ -114,27 +235,54 @@ index 37bd987..d8ab770 100644
 +		const breathKnee = Math.min(1, Math.max(0, (combinedBreath - .16) / .06));
 +		const breathVolume = combinedBreath <= .16 ? combinedBreath : .16 + .06 * breathKnee - .02 * breathKnee * breathKnee * breathKnee;
 +		const compensatedAlpha = 1 / Math.max(.5, 1 - breathVolume * .5);
-@@ -1253,3 +1279,3 @@ var MeshGradientRenderer = class extends BaseRenderer {
+ 		for (const state of this.meshStates) {
+ 			gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
+ 			gl.disable(gl.BLEND);
+@@ -1250,9 +1289,9 @@ var MeshGradientRenderer = class extends BaseRenderer {
+ 			const uTime = tickTime / 1e4;
+ 			this.mainProgram.setUniform1f("u_aspect", this.manualControl ? 1 : this.canvas.width / this.canvas.height);
+ 			this.mainProgram.setUniform1i("u_texture", 0);
 -			this.mainProgram.setUniform1f("u_volume", this.volume);
 -			this.mainProgram.setUniform1f("u_alpha", 1);
 -			const angle = (uTime + this.volume) * 2;
 +			this.mainProgram.setUniform1f("u_volume", breathVolume);
 +			this.mainProgram.setUniform1f("u_alpha", compensatedAlpha);
 +			const angle = (uTime + this.volume) * 2 + this.rhythmKick;
-@@ -1341,0 +1367,3 @@ var MeshGradientRenderer = class extends BaseRenderer {
+ 			this.mainProgram.setUniform1f("u_sinAngle", Math.sin(angle));
+ 			this.mainProgram.setUniform1f("u_cosAngle", Math.cos(angle));
+ 			state.texture.bind();
+@@ -1338,6 +1377,9 @@ var MeshGradientRenderer = class extends BaseRenderer {
+ 	}
+ 	resume() {
+ 		this.paused = false;
 +		const now = performance.now();
 +		this.lastFrameTime = now;
 +		this.lastTickTime = now;
-@@ -1449 +1478 @@ var MeshGradientRenderer = class extends BaseRenderer {
+ 		this.requestTick();
+ 	}
+ 	async setAlbum(albumSource, isVideo) {
+@@ -1446,7 +1488,7 @@ var MeshGradientRenderer = class extends BaseRenderer {
+ 		this.requestTick();
+ 	}
+ 	setLowFreqVolume(volume) {
 -		this.volume = volume / 10;
 +		this.volume = Number.isFinite(volume) ? volume / 10 : 0;
+ 	}
+ 	setHasLyric(_hasLyric) {}
+ 	dispose() {
 diff --git a/dist/style.css b/dist/style.css
+index 70b5c0350240b7d82347f0f527659683f7b0b9e9..fd9d9f95d25ed275ad5e4568b02e33354a469aa9 100644
 --- a/dist/style.css
 +++ b/dist/style.css
-@@ -143 +143,6 @@
+@@ -140,6 +140,11 @@
+   }
+ }
+ 
 +.FmKaba_lyricMainLine span.FmKaba_emphasizeWrapper > span:not(.FmKaba_emphasize) {
 +  margin: -.1em;
 +  padding: .1em;
 +}
 +
  .FmKaba_lyricBgLine {
+   opacity: .4;
+   font-size: max(calc(1em * var(--amll-lp-bg-line-scale, .7)), 10px);

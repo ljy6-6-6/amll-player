@@ -2229,6 +2229,8 @@ function createMeshHarness() {
 		},
 		rhythmBreath: 0,
 		rhythmKick: 0,
+		kickVelocity: 0,
+		lastKickDrive: 0,
 		maxFPS: 240,
 		smoothedVolume: 0,
 		volume: 0,
@@ -2523,7 +2525,9 @@ test("Faded 的宽频重拍进入 240Hz Mesh 后明显但不会单帧闪跳", ()
 		samples.filter((sample) => sample.kick >= (5 * Math.PI) / 180).length /
 		samples.length;
 
-	const expectedPeakTimes = [59_443, 60_116, 60_778, 61_452, 62_113];
+	// 冲量-弹簧物理下,冲击同步点是速度峰值(落在拍上),位移顶点比拍点
+	// 晚约 100ms——这是"推出去漂到顶"的物理过程,不是延迟缺陷。
+	const expectedPeakTimes = [59_550, 60_212, 60_875, 61_550, 62_208];
 	assert.equal(kickPeaks.length, expectedPeakTimes.length);
 	for (let index = 0; index < expectedPeakTimes.length; index++) {
 		assert.ok(
@@ -2534,11 +2538,11 @@ test("Faded 的宽频重拍进入 240Hz Mesh 后明显但不会单帧闪跳", ()
 		);
 	}
 	assert.ok(
-		maxKick >= (5 * Math.PI) / 180 && maxKick <= 0.092,
+		maxKick >= (5 * Math.PI) / 180 && maxKick <= 0.1,
 		`Faded 宽频重拍实际前冲为 ${maxKick}rad`,
 	);
 	assert.ok(
-		strongRotationFraction >= 0.01 && strongRotationFraction <= 0.08,
+		strongRotationFraction >= 0.02 && strongRotationFraction <= 0.12,
 		`Faded 高于 5° 的时长占比为 ${strongRotationFraction}`,
 	);
 	assert.ok(
@@ -2660,9 +2664,11 @@ test("极重拍会快速单向推开、慢速部分回落，下一拍在未回�
 		sample.kick > best.kick ? sample : best,
 	);
 	const beforeNextBeat = nearestSample(result.samples, beatTime + 430).kick;
-	const attackRate = (peak.kick - before) / (peak.timeMs - (beatTime - 65));
-	const releaseRate =
-		(peak.kick - beforeNextBeat) / (beatTime + 430 - peak.timeMs);
+	const signedSteps = result.samples
+		.slice(1)
+		.map((sample, index) => sample.kick - (result.samples[index]?.kick ?? 0));
+	const maxRiseStep = Math.max(...signedSteps);
+	const maxFallStep = Math.max(...signedSteps.map((step) => -step));
 	const nextPeak = Math.max(
 		...result.samples
 			.filter(
@@ -2681,9 +2687,10 @@ test("极重拍会快速单向推开、慢速部分回落，下一拍在未回�
 		beforeNextBeat >= peak.kick * 0.4 && beforeNextBeat <= peak.kick * 0.6,
 		`下一拍前回落比例为 ${beforeNextBeat / peak.kick}`,
 	);
+	// 回程速度轮廓是钟形(顶点零速缓启),用瞬时峰值速度比较推出与回程。
 	assert.ok(
-		attackRate >= releaseRate * 3,
-		`前冲与回落速度过于对称：${attackRate} / ${releaseRate}`,
+		maxRiseStep >= maxFallStep * 2.5,
+		`回程峰值速度未明显低于推出：${maxRiseStep} / ${maxFallStep}`,
 	);
 	assert.ok(beforeNextBeat > 0, "反作用力把旋转强制拉回了原点");
 	assert.ok(
@@ -2852,7 +2859,7 @@ test("Shots 真实片段的呼吸与极重拍冲量都能进入 Mesh", () => {
 		`完整呼吸链路输出仅 ${result.maxSmoothedVolume}`,
 	);
 	assert.ok(
-		result.maxKick >= 0.13 && result.maxKick <= 0.15,
+		result.maxKick >= 0.14 && result.maxKick <= 0.185,
 		`完整极重拍链路峰值为 ${result.maxKick}rad`,
 	);
 	assert.ok(result.minKick >= 0, `完整链路出现反向冲量 ${result.minKick}rad`);
@@ -3024,15 +3031,15 @@ test("安装后的 Mesh 补丁使用低频、呼吸、极重拍三通道和亮�
 		);
 		assert.match(
 			source,
-			/const targetKick = MeshGradientRenderer\.strongBeat \* \.18/,
+			/this\.kickVelocity \+= 2\.6 \* Math\.max\(0, kickDrive - this\.lastKickDrive\)/,
 		);
 		assert.match(
 			source,
-			/const kickMs = targetKick > this\.rhythmKick \? 55 : 540/,
+			/this\.kickVelocity -= \(42 \* this\.rhythmKick \+ 16 \* this\.kickVelocity\) \* kickStepS/,
 		);
 		assert.match(
 			source,
-			/this\.rhythmKick \+= \(targetKick - this\.rhythmKick\) \* kickFactor/,
+			/this\.rhythmKick \+= this\.kickVelocity \* kickStepS/,
 		);
 		assert.match(source, /mesh_frag_default\.replace\(.*vec2\(0\.5\)/);
 		assert.ok(

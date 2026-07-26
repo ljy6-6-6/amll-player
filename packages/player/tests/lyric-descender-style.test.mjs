@@ -34,7 +34,8 @@ function assertDescenderSafetyRule(source, linePrefix = "") {
 test("Core 补丁仅为非强调逐词元素保留下行字母绘制余量", () => {
 	const patch = readFileSync(patchPath, "utf8");
 
-	assert.match(patch, /@@ -143 \+143,6 @@/);
+	// hunk 头的行号/上下文格式随 pnpm patch 重生成而变化,只锚定文件段。
+	assert.match(patch, /diff --git a\/dist\/style\.css b\/dist\/style\.css/);
 	assertDescenderSafetyRule(patch, "+");
 });
 
