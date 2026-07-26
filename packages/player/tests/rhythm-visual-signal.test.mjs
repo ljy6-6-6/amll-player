@@ -910,6 +910,90 @@ test("强旋转通道尊重绝对响度：安静曲目的相对满格拍不再�
 	);
 });
 
+function makeBandLevelFallbackAnalysis(withLevels) {
+	return {
+		analyzerVersion: withLevels ? 3 : 2,
+		durationMs: 6_000,
+		globalBpm: null,
+		confidence: 0,
+		beats: [],
+		onsets: [
+			{
+				timeMs: 2_000,
+				strength: 0.9,
+				bands: [1, 0.2, 0, 0, 0],
+				...(withLevels ? { bandLevels: [0.4, 0.02, 0, 0, 0] } : {}),
+			},
+			{
+				timeMs: 4_000,
+				strength: 0.9,
+				bands: [0, 0, 0, 0.2, 1],
+				...(withLevels ? { bandLevels: [0, 0, 0, 0.004, 0.02] } : {}),
+			},
+		],
+		tempoSegments: [],
+		energyEnvelope: [
+			{ timeMs: 0, value: 0.5 },
+			{ timeMs: 6_000, value: 0.5 },
+		],
+		energyScale: 0.5,
+	};
+}
+
+test("v3 频带绝对电平决定幅度：响频段的敲击强于轻频段", () => {
+	const analysis = makeBandLevelFallbackAnalysis(true);
+	const breath = sampleAnalysisTarget(analysis, 3_000);
+	const loudAccent = sampleAnalysisTarget(analysis, 2_000) - breath;
+	const quietAccent = sampleAnalysisTarget(analysis, 4_000) - breath;
+	assert.ok(
+		loudAccent >= quietAccent * 3,
+		`轻频段敲击仍与响频段同幅：${loudAccent} / ${quietAccent}`,
+	);
+
+	// 旧缓存(无 bandLevels)保持两者等幅的原行为。
+	const legacy = makeBandLevelFallbackAnalysis(false);
+	const legacyBreath = sampleAnalysisTarget(legacy, 3_000);
+	const legacyLoud = sampleAnalysisTarget(legacy, 2_000) - legacyBreath;
+	const legacyQuiet = sampleAnalysisTarget(legacy, 4_000) - legacyBreath;
+	assert.ok(
+		Math.abs(legacyLoud - legacyQuiet) < 1e-9,
+		`旧缓存的幅度被频带电平改变：${legacyLoud} / ${legacyQuiet}`,
+	);
+});
+
+test("v3 合并进拍点的 onset 幅度也按频带电平加权", () => {
+	const makeMergedAnalysis = (bandLevels) => ({
+		...makeAnalysis({ beatStrength: 0, onsetTime: 1_000 }),
+		analyzerVersion: 3,
+		energyScale: 0.5,
+		onsets: [
+			{
+				timeMs: 1_000,
+				strength: 1,
+				bands: [0.1, 0.3, 0.7, 0.9, 1],
+				...(bandLevels ? { bandLevels } : {}),
+			},
+		],
+	});
+	const loud = sampleAnalysisTarget(
+		makeMergedAnalysis([0, 0, 0, 0.3, 0.45]),
+		1_000,
+	);
+	const quiet = sampleAnalysisTarget(
+		makeMergedAnalysis([0, 0, 0, 0.002, 0.01]),
+		1_000,
+	);
+	const legacy = sampleAnalysisTarget(makeMergedAnalysis(null), 1_000);
+	assert.ok(
+		quiet < loud * 0.7,
+		`轻频段 onset 合并后未被压低：${quiet} / ${loud}`,
+	);
+	assert.ok(
+		Math.abs(legacy - loud) < 1e-9,
+		`响频段命中或旧缓存的合并幅度被改变：${legacy} / ${loud}`,
+	);
+});
+
 // 来自本机实际缓存的纯数值摘要，不包含音频、路径或歌曲元数据。
 // 第一段保留 2:05 附近的“三声—停—三声”：
 // [onsetTime, novelty, five bands, ±90ms RMS peak]

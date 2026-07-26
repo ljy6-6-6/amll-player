@@ -11,7 +11,7 @@ use ffmpeg_audio::{AudioError, AudioReader, ResampleOptions};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-pub const RHYTHM_ANALYZER_VERSION: u32 = 2;
+pub const RHYTHM_ANALYZER_VERSION: u32 = 3;
 pub const LOUDNESS_ANALYZER_VERSION: u32 = 1;
 
 const TARGET_SAMPLE_RATE: u32 = 22_050;
@@ -23,6 +23,9 @@ const BAND_EDGES_HZ: [f32; BAND_COUNT + 1] = [30.0, 150.0, 400.0, 1_200.0, 3_500
 const MIN_TEMPO_BPM: f32 = 55.0;
 const MAX_TEMPO_BPM: f32 = 210.0;
 const MAX_RECOVERABLE_DECODE_ERRORS: usize = 8;
+/// Calibrates `sqrt(sum of squared Hann-windowed bin magnitudes)` back to an
+/// approximate PCM RMS scale so `band_levels` is comparable with `energy_scale`.
+const BAND_LEVEL_SCALE: f32 = 2.828_427;
 
 fn can_skip_decode_error(error: &AudioError, skipped_errors: usize) -> bool {
     skipped_errors < MAX_RECOVERABLE_DECODE_ERRORS
@@ -46,6 +49,12 @@ pub struct RhythmOnsetPoint {
     pub time_ms: u64,
     pub strength: f32,
     pub bands: [f32; BAND_COUNT],
+    /// Absolute per-band linear level (approximate PCM RMS units) around the
+    /// onset. `bands` is per-band normalized novelty and deliberately loudness
+    /// invariant, so it cannot tell a loud kick from a quiet shaker; this field
+    /// restores that cross-band loudness ranking for visual amplitude mapping.
+    #[serde(default)]
+    pub band_levels: [f32; BAND_COUNT],
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -305,6 +314,7 @@ fn analyze_mono_pcm_with_loudness(
     let frame_count = samples.len().div_ceil(HOP_SIZE);
     let mut previous_spectrum = vec![0.0_f32; FFT_SIZE / 2 + 1];
     let mut raw_flux = vec![[0.0_f32; BAND_COUNT]; frame_count];
+    let mut band_linear = vec![[0.0_f32; BAND_COUNT]; frame_count];
     let mut rms = vec![0.0_f32; frame_count];
     let bin_bands = frequency_bin_bands(sample_rate);
     let window = hann_window();
@@ -329,10 +339,17 @@ fn analyze_mono_pcm_with_loudness(
 
         fft_in_place(&mut real, &mut imaginary);
         let mut band_bin_counts = [0_usize; BAND_COUNT];
+        let mut band_energy = [0.0_f32; BAND_COUNT];
         for bin in 1..=FFT_SIZE / 2 {
             let magnitude =
                 (real[bin] * real[bin] + imaginary[bin] * imaginary[bin]).sqrt() / FFT_SIZE as f32;
             current_spectrum[bin] = (1.0 + magnitude * 64.0).ln();
+            if let Some(band) = bin_bands[bin] {
+                band_energy[band] += magnitude * magnitude;
+            }
+        }
+        for band in 0..BAND_COUNT {
+            band_linear[frame_index][band] = band_energy[band].sqrt() * BAND_LEVEL_SCALE;
         }
         for bin in 1..=FFT_SIZE / 2 {
             if let Some(band) = bin_bands[bin] {
@@ -363,6 +380,7 @@ fn analyze_mono_pcm_with_loudness(
             time_ms: frame_to_ms(frame as f64, sample_rate).min(duration_ms),
             strength: unit(novelty[frame]),
             bands: normalized_bands[frame].map(unit),
+            band_levels: onset_band_levels(&band_linear, frame),
         })
         .collect::<Vec<_>>();
     let (energy_envelope, energy_scale) = make_energy_envelope(&rms, sample_rate, duration_ms);
@@ -538,6 +556,24 @@ fn combine_band_novelty(bands: &[[f32; BAND_COUNT]]) -> Vec<f32> {
             unit(strongest * 0.68 + average * 0.32)
         })
         .collect()
+}
+
+/// Peak linear band level inside the same ±3 frame neighbourhood used for
+/// onset peak picking, so the reported level still captures the transient when
+/// the spectral-flux peak leads or trails the energy peak by a frame or two.
+fn onset_band_levels(band_linear: &[[f32; BAND_COUNT]], frame: usize) -> [f32; BAND_COUNT] {
+    if band_linear.is_empty() {
+        return [0.0; BAND_COUNT];
+    }
+    let start = frame.saturating_sub(3);
+    let end = (frame + 3).min(band_linear.len() - 1);
+    let mut levels = [0.0_f32; BAND_COUNT];
+    for frame_levels in &band_linear[start..=end] {
+        for band in 0..BAND_COUNT {
+            levels[band] = levels[band].max(frame_levels[band]);
+        }
+    }
+    levels.map(|value| if value.is_finite() { value.max(0.0) } else { 0.0 })
 }
 
 fn pick_onset_frames(novelty: &[f32]) -> Vec<usize> {
@@ -979,6 +1015,89 @@ mod tests {
                 "expected about {expected_bpm} BPM, detected {bpm} BPM"
             );
         }
+    }
+
+    fn dual_band_track(seconds: f32) -> Vec<f32> {
+        let mut pcm = vec![0.0_f32; (TARGET_SAMPLE_RATE as f32 * seconds) as usize];
+        let mut write_burst = |start_s: f32, freq: f32, amp: f32, length_s: f32| {
+            let start = (TARGET_SAMPLE_RATE as f32 * start_s) as usize;
+            let burst_length = (TARGET_SAMPLE_RATE as f32 * length_s) as usize;
+            for offset in 0..burst_length.min(pcm.len().saturating_sub(start)) {
+                let decay = 1.0 - offset as f32 / burst_length as f32;
+                pcm[start + offset] +=
+                    (2.0 * PI * freq * offset as f32 / TARGET_SAMPLE_RATE as f32).sin()
+                        * decay
+                        * amp;
+            }
+        };
+        let mut cursor = 0.25_f32;
+        while cursor + 0.5 < seconds {
+            // 响亮的低频鼓与安静的高频 tick 交替出现。
+            write_burst(cursor, 80.0, 0.7, 0.04);
+            write_burst(cursor + 0.25, 6_500.0, 0.06, 0.012);
+            cursor += 0.5;
+        }
+        pcm
+    }
+
+    #[test]
+    fn band_levels_capture_absolute_band_loudness() {
+        let pcm = dual_band_track(12.0);
+        let analysis = analyze_mono_pcm(&pcm, TARGET_SAMPLE_RATE).unwrap();
+
+        let mut kick_low_levels = Vec::new();
+        let mut tick_high_levels = Vec::new();
+        for onset in &analysis.onsets {
+            // kick 落在 mod 500 ≈ 250 处,tick 落在 mod 500 ≈ 0 处;
+            // frame_to_ms 的窗中心偏移约 +23ms,±40ms 容差足够覆盖。
+            let phase_ms = onset.time_ms % 500;
+            let near_kick = phase_ms.abs_diff(250) <= 40;
+            let near_tick =
+                onset.time_ms >= 400 && phase_ms.min(500 - phase_ms) <= 40;
+            if near_kick {
+                kick_low_levels.push(onset.band_levels[0]);
+            } else if near_tick {
+                tick_high_levels.push(onset.band_levels[4]);
+            }
+        }
+
+        assert!(
+            kick_low_levels.len() >= 8,
+            "too few kick onsets: {}",
+            kick_low_levels.len()
+        );
+        assert!(
+            tick_high_levels.len() >= 8,
+            "too few tick onsets: {}",
+            tick_high_levels.len()
+        );
+        let kick_low = percentile(kick_low_levels.iter().copied(), 0.5);
+        let tick_high = percentile(tick_high_levels.iter().copied(), 0.5);
+        assert!(kick_low >= 0.05, "kick band level too small: {kick_low}");
+        assert!(tick_high > 0.0, "tick band level missing: {tick_high}");
+        assert!(
+            kick_low >= tick_high * 4.0,
+            "absolute band loudness ranking lost: kick={kick_low} tick={tick_high}"
+        );
+
+        let value = serde_json::to_value(&analysis).unwrap();
+        let first_onset = value["onsets"][0]
+            .as_object()
+            .expect("onset should serialize as object");
+        assert!(first_onset.contains_key("bandLevels"));
+        assert!(first_onset.get("band_levels").is_none());
+
+        let mut legacy_value = serde_json::to_value(&analysis).unwrap();
+        for onset in legacy_value["onsets"].as_array_mut().unwrap() {
+            onset.as_object_mut().unwrap().remove("bandLevels");
+        }
+        let restored: RhythmAnalysis = serde_json::from_value(legacy_value).unwrap();
+        assert!(
+            restored
+                .onsets
+                .iter()
+                .all(|onset| onset.band_levels == [0.0; BAND_COUNT])
+        );
     }
 
     #[test]

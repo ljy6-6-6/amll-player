@@ -35,6 +35,12 @@ export interface RhythmOnsetPoint {
 	timeMs: number;
 	strength: number;
 	bands: [number, number, number, number, number];
+	/**
+	 * v3 分析新增：各频带的绝对线性电平(近似 PCM RMS 标尺)。bands 是各频带
+	 * 内部归一化的 novelty,天然响度无关;该字段用于恢复跨频带的响度排序。
+	 * 旧缓存没有此字段。
+	 */
+	bandLevels?: [number, number, number, number, number];
 }
 
 export interface RhythmTempoSegment {

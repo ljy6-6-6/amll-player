@@ -71,6 +71,8 @@ const UNDERSAMPLED_TEMPO_MIN_CONFIDENCE = 0.45;
 const UNDERSAMPLED_TEMPO_MIN_DURATION_MS = 8_000;
 const UNDERSAMPLED_TEMPO_MIN_BEAT_GAPS = 6;
 const UNDERSAMPLED_TEMPO_MIN_PERIOD_RATIO = 1.6;
+const ONSET_LEVEL_GAIN_FLOOR = 0.25;
+const ONSET_LEVEL_FULL_HIT_RATIO = 0.45;
 
 interface BeatStrengthProfile {
 	lower: number;
@@ -85,6 +87,7 @@ interface PercussiveAccentPoint {
 	onsetIndex: number;
 	coverageCorrection: number;
 	localCorrection: number;
+	levelGain: number;
 }
 
 interface PercussiveAccentCandidate extends PercussiveAccentPoint {
@@ -314,6 +317,34 @@ function perceptibleAccent(
 	return Math.max(
 		energyScaled,
 		Math.min(accent, MIN_PERCEPTIBLE_ACCENT) * audibility,
+	);
+}
+
+/**
+ * bands 只回答“哪个频带发生了变化”，不回答“它响不响”。v3 分析为每个
+ * onset 附带各频带的绝对线性电平；把命中频带的电平除以全曲能量标尺，
+ * 得到这次敲击在全曲响度语境下的真实占比，作为幅度增益。这样持续响亮
+ * 却被自适应基线压低的鼓点不再输给“相对自身很新颖”的轻声部。旧缓存
+ * (无 bandLevels)保持原幅度。
+ */
+function onsetLevelGain(
+	analysis: RhythmAnalysis,
+	onset: RhythmOnsetPoint,
+): number {
+	const levels = onset.bandLevels;
+	const scale = analysis.energyScale;
+	if (!levels || !Number.isFinite(scale) || scale <= Number.EPSILON) return 1;
+	let hit = 0;
+	for (let band = 0; band < levels.length; band++) {
+		const level = levels[band] ?? 0;
+		if (!Number.isFinite(level) || level <= 0) continue;
+		const novelty = clamp01(onset.bands?.[band] ?? 0);
+		hit = Math.max(hit, novelty * (level / scale));
+	}
+	return (
+		ONSET_LEVEL_GAIN_FLOOR +
+		(1 - ONSET_LEVEL_GAIN_FLOOR) *
+			smootherStep01(hit / ONSET_LEVEL_FULL_HIT_RATIO)
 	);
 }
 
@@ -763,6 +794,7 @@ function percussiveAccentProfile(
 				usesFastLocalRecovery || undersampledTempo ? localCorrection : 0,
 			),
 			localCorrection,
+			levelGain: onsetLevelGain(analysis, onset),
 			coveredByGrid: coveredByGrid[onsetIndex] === 1,
 			bandBreadth,
 			peakEnergy,
@@ -846,6 +878,7 @@ function percussiveAccentProfile(
 				onsetIndex: candidate.onsetIndex,
 				coverageCorrection: correction,
 				localCorrection: candidate.localCorrection,
+				levelGain: candidate.levelGain,
 			});
 		}
 	}
@@ -853,6 +886,9 @@ function percussiveAccentProfile(
 	// 一次线性归并记录 onset 原先会被哪个拍点吸收；随后把局部失准的
 	// 脉冲搬到真实 onset 时间，而不是在旧拍点旁再叠一个短 residual。
 	const assignedOnsetStrengths = new Float64Array(analysis.beats.length);
+	const assignedOnsetLevelGains = new Float64Array(analysis.beats.length).fill(
+		1,
+	);
 	const assignedBeatByOnset = new Int32Array(analysis.onsets.length);
 	assignedBeatByOnset.fill(-1);
 	let nearestBeatIndex = 0;
@@ -877,10 +913,14 @@ function percussiveAccentProfile(
 			continue;
 		}
 		assignedBeatByOnset[onsetIndex] = nearestBeatIndex;
-		assignedOnsetStrengths[nearestBeatIndex] = Math.max(
-			assignedOnsetStrengths[nearestBeatIndex] ?? 0,
-			clamp01(onset.strength),
-		);
+		const onsetStrength = clamp01(onset.strength);
+		if (onsetStrength > (assignedOnsetStrengths[nearestBeatIndex] ?? 0)) {
+			assignedOnsetStrengths[nearestBeatIndex] = onsetStrength;
+			assignedOnsetLevelGains[nearestBeatIndex] = onsetLevelGain(
+				analysis,
+				onset,
+			);
+		}
 	}
 
 	const reroutePointByBeat = new Int32Array(analysis.beats.length);
@@ -925,6 +965,7 @@ function percussiveAccentProfile(
 				1 - smootherStep01(clamp01(beat.strength) / 0.06);
 			const onsetValue =
 				Math.sqrt(assignedOnsetStrengths[beatIndex] ?? 0) *
+				(assignedOnsetLevelGains[beatIndex] ?? 1) *
 				(0.76 + placeholderBlend * 0.12);
 			let value = Math.max(beatValue, onsetValue);
 			let peakEnergy = beatPeakEnergies[beatIndex] ?? 0;
@@ -937,7 +978,7 @@ function percussiveAccentProfile(
 						PERCUSSIVE_ACCENT_RETIME_MIN_OFFSET_MS)
 			) {
 				timeMs += (point.timeMs - beat.timeMs) * point.coverageCorrection;
-				value = Math.max(value, point.strength * 0.88);
+				value = Math.max(value, point.strength * 0.88 * point.levelGain);
 				peakEnergy = Math.max(peakEnergy, point.peakEnergy);
 				consumedOnsets.add(point.onsetIndex);
 			} else if (
@@ -1331,7 +1372,9 @@ export function sampleAnalysisTarget(
 				(point) =>
 					perceptibleAccent(
 						analysis,
-						Math.sqrt(clamp01(point.strength)) * 0.3,
+						Math.sqrt(clamp01(point.strength)) *
+							0.3 *
+							onsetLevelGain(analysis, point),
 						sampleEnergy(analysis.energyEnvelope, point.timeMs),
 					),
 			);
@@ -1343,14 +1386,18 @@ export function sampleAnalysisTarget(
 		(point) =>
 			point.structured
 				? 0
-				: perceptibleAccent(analysis, point.strength * 0.72, point.peakEnergy),
+				: perceptibleAccent(
+						analysis,
+						point.strength * 0.72 * point.levelGain,
+						point.peakEnergy,
+					),
 	);
 	const structuredPercussiveAccent = sampleTimedPulses(
 		accentProfile?.points ?? [],
 		timeMs,
 		PERCUSSIVE_ACCENT_PRE_ROLL_MS,
 		PERCUSSIVE_ACCENT_RELEASE_MS,
-		(point) => (point.structured ? point.strength : 0),
+		(point) => (point.structured ? point.strength * point.levelGain : 0),
 	);
 	const structuredPresence = sampleTimedPulses(
 		accentProfile?.points ?? [],
