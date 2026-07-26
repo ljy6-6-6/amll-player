@@ -26,6 +26,13 @@ const MAX_RECOVERABLE_DECODE_ERRORS: usize = 8;
 /// Calibrates `sqrt(sum of squared Hann-windowed bin magnitudes)` back to an
 /// approximate PCM RMS scale so `band_levels` is comparable with `energy_scale`.
 const BAND_LEVEL_SCALE: f32 = 2.828_427;
+/// A tempo segment only gets its own beat-grid period when it is long and
+/// confident enough, and clearly deviates from the global tempo. Everything
+/// else keeps the global grid so constant-tempo tracks behave exactly as
+/// before.
+const SEGMENT_GRID_MIN_CONFIDENCE: f32 = 0.35;
+const SEGMENT_GRID_MIN_DURATION_MS: u64 = 12_000;
+const SEGMENT_GRID_MIN_BPM_DEVIATION: f32 = 0.06;
 
 fn can_skip_decode_error(error: &AudioError, skipped_errors: usize) -> bool {
     skipped_errors < MAX_RECOVERABLE_DECODE_ERRORS
@@ -394,11 +401,12 @@ fn analyze_mono_pcm_with_loudness(
     let global_tempo = estimate_tempo(&tempo_envelope, sample_rate);
     let (global_bpm, confidence, beats, tempo_segments) = match global_tempo {
         Some(tempo) => {
-            let beats = build_beat_grid(&tempo_envelope, tempo, sample_rate, duration_ms);
-            let coverage = beat_coverage(&beats);
-            let confidence = unit(tempo.confidence * (0.75 + 0.25 * coverage));
             let segments =
                 estimate_tempo_segments(&tempo_envelope, sample_rate, duration_ms, tempo);
+            let beats =
+                build_beat_grid(&tempo_envelope, tempo, &segments, sample_rate, duration_ms);
+            let coverage = beat_coverage(&beats);
+            let confidence = unit(tempo.confidence * (0.75 + 0.25 * coverage));
             (Some(tempo.bpm), confidence, beats, segments)
         }
         None => (None, 0.0, Vec::new(), Vec::new()),
@@ -740,24 +748,86 @@ fn estimate_tempo(envelope: &[f32], sample_rate: u32) -> Option<TempoEstimate> {
     }
 }
 
-fn build_beat_grid(
-    envelope: &[f32],
-    tempo: TempoEstimate,
+struct GridSpan {
+    start_frame: f32,
+    end_frame: f32,
+    period_frames: f32,
+    confidence: f32,
+}
+
+fn ms_to_frame(time_ms: u64, sample_rate: u32) -> f32 {
+    time_ms as f32 * (sample_rate as f32 / HOP_SIZE as f32) / 1_000.0
+}
+
+/// tempo segments 是局部估计;只有足够长、足够可信、且明显偏离全局速度的
+/// 分段才获得自己的拍格周期。其余区间沿用全局周期,因此恒速曲目的拍格与
+/// 分段化之前完全一致。
+fn build_grid_spans(
+    envelope_len: usize,
+    segments: &[RhythmTempoSegment],
+    global: TempoEstimate,
     sample_rate: u32,
-    duration_ms: u64,
-) -> Vec<RhythmBeatPoint> {
-    if envelope.is_empty() || tempo.period_frames < 1.0 {
-        return Vec::new();
+) -> Vec<GridSpan> {
+    let frames_per_second = sample_rate as f32 / HOP_SIZE as f32;
+    let mut spans: Vec<GridSpan> = Vec::new();
+    for segment in segments {
+        let duration = segment.end_ms.saturating_sub(segment.start_ms);
+        let deviation = (segment.bpm - global.bpm).abs() / global.bpm.max(1.0);
+        let qualified = segment.bpm > 0.0
+            && segment.confidence >= SEGMENT_GRID_MIN_CONFIDENCE
+            && duration >= SEGMENT_GRID_MIN_DURATION_MS
+            && deviation >= SEGMENT_GRID_MIN_BPM_DEVIATION;
+        let period_frames = if qualified {
+            frames_per_second * 60.0 / segment.bpm
+        } else {
+            global.period_frames
+        };
+        let confidence = if qualified {
+            segment.confidence
+        } else {
+            global.confidence
+        };
+        let end_frame = ms_to_frame(segment.end_ms, sample_rate).min(envelope_len as f32);
+        if let Some(last) = spans.last_mut()
+            && (last.period_frames - period_frames).abs() <= f32::EPSILON
+        {
+            last.end_frame = last.end_frame.max(end_frame);
+            last.confidence = last.confidence.max(confidence);
+            continue;
+        }
+        spans.push(GridSpan {
+            start_frame: ms_to_frame(segment.start_ms, sample_rate),
+            end_frame,
+            period_frames,
+            confidence,
+        });
     }
-    let phase_steps = (tempo.period_frames * 4.0).ceil() as usize;
-    let mut best_phase = 0.0_f32;
+    match spans.first_mut() {
+        Some(first) => first.start_frame = 0.0,
+        None => spans.push(GridSpan {
+            start_frame: 0.0,
+            end_frame: envelope_len as f32,
+            period_frames: global.period_frames,
+            confidence: global.confidence,
+        }),
+    }
+    if let Some(last) = spans.last_mut() {
+        last.end_frame = last.end_frame.max(envelope_len as f32);
+    }
+    spans.retain(|span| span.end_frame > span.start_frame && span.period_frames >= 1.0);
+    spans
+}
+
+fn best_grid_phase(envelope: &[f32], span: &GridSpan) -> f32 {
+    let phase_steps = (span.period_frames * 4.0).ceil() as usize;
+    let mut best_phase = span.start_frame;
     let mut best_phase_score = f32::NEG_INFINITY;
     for step in 0..phase_steps {
-        let phase = step as f32 / 4.0;
+        let phase = span.start_frame + step as f32 / 4.0;
         let mut position = phase;
         let mut score = 0.0_f32;
         let mut count = 0_usize;
-        while position < envelope.len() as f32 {
+        while position < span.end_frame {
             let center = position.round() as usize;
             let start = center.saturating_sub(2);
             let end = (center + 2).min(envelope.len() - 1);
@@ -766,50 +836,72 @@ fn build_beat_grid(
                 .copied()
                 .fold(0.0_f32, f32::max);
             count += 1;
-            position += tempo.period_frames;
+            position += span.period_frames;
         }
-        let normalized = score / count.max(1) as f32;
+        if count == 0 {
+            continue;
+        }
+        let normalized = score / count as f32;
         if normalized > best_phase_score {
             best_phase_score = normalized;
             best_phase = phase;
         }
     }
+    best_phase
+}
 
-    let search_radius = (tempo.period_frames * 0.16).round().clamp(2.0, 8.0) as usize;
-    let mut beats = Vec::new();
-    let mut expected = best_phase;
-    while expected < envelope.len() as f32 {
-        let center = expected.round() as usize;
-        let start = center.saturating_sub(search_radius);
-        let end = (center + search_radius).min(envelope.len() - 1);
-        let mut selected = center.min(envelope.len() - 1);
-        let mut selected_score = 0.0_f32;
-        for candidate in start..=end {
-            let timing_penalty = (candidate as f32 - expected).abs() / search_radius as f32 * 0.18;
-            let score = envelope[candidate] - timing_penalty;
-            if score > selected_score {
-                selected = candidate;
-                selected_score = score;
+fn build_beat_grid(
+    envelope: &[f32],
+    tempo: TempoEstimate,
+    segments: &[RhythmTempoSegment],
+    sample_rate: u32,
+    duration_ms: u64,
+) -> Vec<RhythmBeatPoint> {
+    if envelope.is_empty() || tempo.period_frames < 1.0 {
+        return Vec::new();
+    }
+    let frame_duration_ms = HOP_SIZE as f32 * 1_000.0 / sample_rate as f32;
+    let spans = build_grid_spans(envelope.len(), segments, tempo, sample_rate);
+    let mut beats: Vec<RhythmBeatPoint> = Vec::new();
+    for span in &spans {
+        let search_radius = (span.period_frames * 0.16).round().clamp(2.0, 8.0) as usize;
+        // 跨段衔接:新段首拍与上一段末拍至少间隔 0.45 个周期,
+        // 避免相位重搜在边界处挤出双拍。
+        let min_gap_ms = (span.period_frames * 0.45 * frame_duration_ms) as u64;
+        let mut expected = best_grid_phase(envelope, span);
+        while expected < span.end_frame {
+            let center = expected.round() as usize;
+            let start = center.saturating_sub(search_radius);
+            let end = (center + search_radius).min(envelope.len() - 1);
+            let mut selected = center.min(envelope.len() - 1);
+            let mut selected_score = 0.0_f32;
+            for candidate in start..=end {
+                let timing_penalty =
+                    (candidate as f32 - expected).abs() / search_radius as f32 * 0.18;
+                let score = envelope[candidate] - timing_penalty;
+                if score > selected_score {
+                    selected = candidate;
+                    selected_score = score;
+                }
             }
+            let local_strength = unit(envelope[selected] * 2.2);
+            let selected_frame = if local_strength >= 0.06 {
+                selected as f64
+            } else {
+                expected as f64
+            };
+            let time_ms = frame_to_ms(selected_frame, sample_rate).min(duration_ms);
+            if beats.last().is_none_or(|previous: &RhythmBeatPoint| {
+                previous.time_ms < time_ms && time_ms - previous.time_ms >= min_gap_ms
+            }) {
+                beats.push(RhythmBeatPoint {
+                    time_ms,
+                    strength: local_strength,
+                    confidence: unit(span.confidence * (0.32 + local_strength * 0.68)),
+                });
+            }
+            expected += span.period_frames;
         }
-        let local_strength = unit(envelope[selected] * 2.2);
-        let selected_frame = if local_strength >= 0.06 {
-            selected as f64
-        } else {
-            expected as f64
-        };
-        let time_ms = frame_to_ms(selected_frame, sample_rate).min(duration_ms);
-        if beats
-            .last()
-            .is_none_or(|previous: &RhythmBeatPoint| previous.time_ms < time_ms)
-        {
-            beats.push(RhythmBeatPoint {
-                time_ms,
-                strength: local_strength,
-                confidence: unit(tempo.confidence * (0.32 + local_strength * 0.68)),
-            });
-        }
-        expected += tempo.period_frames;
     }
     beats
 }
@@ -1192,6 +1284,121 @@ mod tests {
                 .iter()
                 .all(|onset| onset.band_levels == [0.0; BAND_COUNT])
         );
+    }
+
+    fn add_click(pcm: &mut [f32], time_s: f32, amp: f32) {
+        let start = (TARGET_SAMPLE_RATE as f32 * time_s) as usize;
+        let length = (TARGET_SAMPLE_RATE as f32 * 0.012) as usize;
+        for offset in 0..length.min(pcm.len().saturating_sub(start)) {
+            let decay = 1.0 - offset as f32 / length as f32;
+            pcm[start + offset] +=
+                (2.0 * PI * 3_000.0 * offset as f32 / TARGET_SAMPLE_RATE as f32).sin()
+                    * decay
+                    * amp;
+        }
+    }
+
+    fn misaligned_clicks(
+        clicks: &[f32],
+        beats: &[RhythmBeatPoint],
+        tolerance_ms: f32,
+    ) -> usize {
+        clicks
+            .iter()
+            .filter(|&&click| {
+                let click_ms = click * 1_000.0 + 23.2;
+                !beats.iter().any(|beat| {
+                    beat.strength >= 0.06
+                        && (beat.time_ms as f32 - click_ms).abs() <= tolerance_ms
+                })
+            })
+            .count()
+    }
+
+    #[test]
+    fn beat_grid_follows_local_tempo_segments() {
+        // 前 22 秒 80 BPM,后 22 秒 132 BPM。旧实现用全局单一 BPM 铺满
+        // 全曲,慢速半段最多有过半点击对不上拍。
+        let seconds = 44.0_f32;
+        let mut pcm = vec![0.0_f32; (TARGET_SAMPLE_RATE as f32 * seconds) as usize];
+        let mut slow_clicks = Vec::new();
+        let mut fast_clicks = Vec::new();
+        let mut cursor = 0.25_f32;
+        while cursor < 22.0 {
+            slow_clicks.push(cursor);
+            add_click(&mut pcm, cursor, 0.7);
+            cursor += 60.0 / 80.0;
+        }
+        let mut cursor = 22.0 + 60.0 / 132.0;
+        while cursor < seconds - 0.05 {
+            fast_clicks.push(cursor);
+            add_click(&mut pcm, cursor, 0.7);
+            cursor += 60.0 / 132.0;
+        }
+
+        let analysis = analyze_mono_pcm(&pcm, TARGET_SAMPLE_RATE).unwrap();
+        // 18 秒窗口的分段边界有 ±4 秒的不确定性;只考察远离边界的点击。
+        let stable_slow: Vec<f32> = slow_clicks
+            .iter()
+            .copied()
+            .filter(|&click| click < 17.0)
+            .collect();
+        let stable_fast: Vec<f32> = fast_clicks
+            .iter()
+            .copied()
+            .filter(|&click| click > 23.0)
+            .collect();
+        assert!(stable_slow.len() >= 20 && stable_fast.len() >= 40);
+        let slow_misses = misaligned_clicks(&stable_slow, &analysis.beats, 70.0);
+        let fast_misses = misaligned_clicks(&stable_fast, &analysis.beats, 70.0);
+        assert_eq!(
+            slow_misses, 0,
+            "slow half still misaligned: {slow_misses}/{} clicks",
+            stable_slow.len()
+        );
+        assert_eq!(
+            fast_misses, 0,
+            "fast half still misaligned: {fast_misses}/{} clicks",
+            stable_fast.len()
+        );
+
+        // 慢速半段的真实拍距应该贴住 750ms,而不是全局 454ms 网格。
+        let slow_beats: Vec<u64> = analysis
+            .beats
+            .iter()
+            .filter(|beat| beat.strength >= 0.06 && beat.time_ms < 17_000)
+            .map(|beat| beat.time_ms)
+            .collect();
+        let mut gaps: Vec<f32> = slow_beats
+            .windows(2)
+            .map(|pair| (pair[1] - pair[0]) as f32)
+            .collect();
+        gaps.sort_by(f32::total_cmp);
+        let median_gap = gaps.get(gaps.len() / 2).copied().unwrap_or(0.0);
+        assert!(
+            (median_gap - 750.0).abs() <= 40.0,
+            "slow half median beat gap {median_gap}ms"
+        );
+    }
+
+    #[test]
+    fn beat_grid_absorbs_mild_rubato() {
+        // ±2.5% 的正弦速度摆动(8 秒一个来回)模拟轻音乐的弹性节拍。
+        let seconds = 40.0_f32;
+        let mut clicks = Vec::new();
+        let mut cursor = 0.25_f32;
+        while cursor < seconds - 0.05 {
+            clicks.push(cursor);
+            let inst_bpm = 72.0 * (1.0 + 0.025 * (2.0 * PI * cursor / 8.0).sin());
+            cursor += 60.0 / inst_bpm;
+        }
+        let mut pcm = vec![0.0_f32; (TARGET_SAMPLE_RATE as f32 * seconds) as usize];
+        for &click in &clicks {
+            add_click(&mut pcm, click, 0.7);
+        }
+        let analysis = analyze_mono_pcm(&pcm, TARGET_SAMPLE_RATE).unwrap();
+        let misses = misaligned_clicks(&clicks, &analysis.beats, 70.0);
+        assert_eq!(misses, 0, "rubato clicks lost: {misses}/{}", clicks.len());
     }
 
     #[test]
