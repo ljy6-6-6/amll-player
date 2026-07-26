@@ -857,6 +857,59 @@ test("Shots 真实片段只将前 26 个极重拍送入额外旋转通道", () =
 	);
 });
 
+function makeStrongKickAnalysis(energyScale) {
+	const beats = [1_000, 1_500, 2_000].map((timeMs) => ({
+		timeMs,
+		strength: 0.9,
+		confidence: 0.8,
+	}));
+	return {
+		analyzerVersion: energyScale === undefined ? 1 : 2,
+		durationMs: 4_000,
+		globalBpm: 120,
+		confidence: 0.7,
+		beats,
+		onsets: [],
+		tempoSegments: [],
+		energyEnvelope: [
+			{ timeMs: 0, value: 0.15 },
+			...beats.flatMap(({ timeMs }) => [
+				{ timeMs: timeMs - 200, value: 0.15 },
+				{ timeMs: timeMs - 40, value: 0.15 },
+				{ timeMs, value: 1 },
+				{ timeMs: timeMs + 40, value: 0.15 },
+				{ timeMs: timeMs + 200, value: 0.15 },
+			]),
+			{ timeMs: 4_000, value: 0.15 },
+		],
+		...(energyScale === undefined ? {} : { energyScale }),
+	};
+}
+
+test("强旋转通道尊重绝对响度：安静曲目的相对满格拍不再满力旋转", () => {
+	const legacyStrong = sampleStrongBeatTarget(makeStrongKickAnalysis(), 1_000);
+	const loudStrong = sampleStrongBeatTarget(
+		makeStrongKickAnalysis(0.55),
+		1_000,
+	);
+	const quietAnalysis = makeStrongKickAnalysis(0.12);
+	const quietStrong = sampleStrongBeatTarget(quietAnalysis, 1_000);
+
+	assert.ok(legacyStrong >= 0.99, `旧缓存的极重拍被误削弱：${legacyStrong}`);
+	assert.ok(loudStrong >= 0.99, `响亮曲目的极重拍被误削弱：${loudStrong}`);
+	assert.ok(
+		quietStrong <= 0.15,
+		`安静曲目的相对满格拍仍触发强旋转：${quietStrong}`,
+	);
+
+	// 呼吸与普通拍通道不受强拍门控影响，安静歌曲仍保留可见的拍点动态。
+	const quietVisual = sampleAnalysisTarget(quietAnalysis, 1_000);
+	assert.ok(
+		quietVisual >= 0.25,
+		`安静曲目的普通拍呼吸被强拍门控误伤：${quietVisual}`,
+	);
+});
+
 // 来自本机实际缓存的纯数值摘要，不包含音频、路径或歌曲元数据。
 // 第一段保留 2:05 附近的“三声—停—三声”：
 // [onsetTime, novelty, five bands, ±90ms RMS peak]
@@ -2554,6 +2607,48 @@ test("极重拍会快速单向推开、慢速部分回落，下一拍在未回�
 		"下一拍未能在残留角度上再次推进",
 	);
 	assert.ok(result.minKick >= 0, "慢速回落期间出现了反向角度");
+});
+
+test("弱强拍冲量用更长预滚缓慢起势，极重拍保持锐利前冲", () => {
+	const heavy = makeStrongKickAnalysis();
+	const quiet = makeStrongKickAnalysis(0.12);
+	const beatTime = 1_000;
+
+	// 满强度冲量的预滚仍是 65ms，80ms 前完全为零。
+	assert.equal(
+		sampleStrongBeatTarget(heavy, beatTime - 80),
+		0,
+		"极重拍的预滚被误拉长",
+	);
+	// 门控后的弱冲量提前约 145ms 就开始缓慢起势。
+	assert.ok(
+		sampleStrongBeatTarget(quiet, beatTime - 100) > 0,
+		"弱冲量没有获得更长的预滚",
+	);
+	// 峰值时刻的数值不因预滚变化而改变。
+	const quietPeak = sampleStrongBeatTarget(quiet, beatTime);
+	assert.ok(
+		quietPeak > 0.08 && quietPeak <= 0.15,
+		`弱冲量峰值漂移：${quietPeak}`,
+	);
+
+	const normalizedRiseSlope = (analysis, peak) => {
+		const deltaMs = 1_000 / 240;
+		let maxStep = 0;
+		for (let timeMs = beatTime - 200; timeMs < beatTime; timeMs += deltaMs) {
+			const step =
+				sampleStrongBeatTarget(analysis, timeMs + deltaMs) -
+				sampleStrongBeatTarget(analysis, timeMs);
+			maxStep = Math.max(maxStep, step);
+		}
+		return maxStep / peak;
+	};
+	const heavyPeak = sampleStrongBeatTarget(heavy, beatTime);
+	assert.ok(
+		normalizedRiseSlope(quiet, quietPeak) <=
+			normalizedRiseSlope(heavy, heavyPeak) * 0.6,
+		"弱冲量的归一化上升斜率没有明显放缓",
+	);
 });
 
 test("原作者低频旋转保持原公式，并与呼吸、极重拍冲量独立叠加", () => {

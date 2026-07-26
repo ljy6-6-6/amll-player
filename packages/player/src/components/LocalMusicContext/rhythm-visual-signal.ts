@@ -18,6 +18,10 @@ const STRONG_BEAT_PRE_ROLL_MS = 65;
 const STRONG_BEAT_RELEASE_MS = 130;
 const STRONG_BEAT_IMPACT_START = 0.96;
 const STRONG_BEAT_IMPACT_FULL = 0.995;
+const STRONG_BEAT_ABSOLUTE_RMS_FLOOR = 0.06;
+const STRONG_BEAT_ABSOLUTE_RMS_FULL = 0.3;
+const STRONG_BEAT_WEAK_EXTRA_PRE_ROLL_MS = 85;
+const STRONG_BEAT_FULL_ATTACK_STRENGTH = 0.5;
 const PERCUSSIVE_ACCENT_PRE_ROLL_MS = 55;
 const PERCUSSIVE_ACCENT_RELEASE_MS = 170;
 const PERCUSSIVE_ACCENT_GRID_TOLERANCE_RATIO = 0.32;
@@ -121,10 +125,15 @@ interface PercussiveAccentProfile {
 	strongPoints: StrongAccentPoint[];
 }
 
+interface BeatEnergyEvidence {
+	impact: number;
+	peak: number;
+}
+
 const beatStrengthProfiles = new WeakMap<RhythmAnalysis, BeatStrengthProfile>();
-const beatEnergyImpacts = new WeakMap<
+const beatEnergyEvidences = new WeakMap<
 	RhythmAnalysis,
-	Map<RhythmBeatPoint, number>
+	Map<RhythmBeatPoint, BeatEnergyEvidence>
 >();
 const usableBeatGridCache = new WeakMap<RhythmAnalysis, boolean>();
 const percussiveAccentProfiles = new WeakMap<
@@ -406,13 +415,13 @@ function beatStrengthProfile(analysis: RhythmAnalysis): BeatStrengthProfile {
  * 因频谱形态相似而得到忽高忽低的 strength。用拍点附近 RMS 峰值相对
  * 局部底噪的抬升作为正交证据，持续响亮的铺底不会把每一拍都推成重拍。
  */
-function beatEnergyImpact(
+function beatEnergyEvidence(
 	analysis: RhythmAnalysis,
 	beat: RhythmBeatPoint,
-): number {
-	let cached = beatEnergyImpacts.get(analysis);
+): BeatEnergyEvidence {
+	let cached = beatEnergyEvidences.get(analysis);
 	if (!cached) {
-		cached = new Map<RhythmBeatPoint, number>();
+		cached = new Map<RhythmBeatPoint, BeatEnergyEvidence>();
 		const energy = analysis.energyEnvelope;
 		for (const point of analysis.beats) {
 			let energyIndex = lowerBound(
@@ -442,11 +451,39 @@ function beatEnergyImpact(
 			const baseline = quantile(localBaselineValues, 0.2);
 			const absoluteImpact = smootherStep01((peak - 0.35) / 0.55);
 			const transientImpact = smootherStep01((peak - baseline - 0.1) / 0.45);
-			cached.set(point, absoluteImpact * (0.2 + transientImpact * 0.8));
+			cached.set(point, {
+				impact: absoluteImpact * (0.2 + transientImpact * 0.8),
+				peak,
+			});
 		}
-		beatEnergyImpacts.set(analysis, cached);
+		beatEnergyEvidences.set(analysis, cached);
 	}
-	return cached.get(beat) ?? 0;
+	return cached.get(beat) ?? { impact: 0, peak: 0 };
+}
+
+function beatEnergyImpact(
+	analysis: RhythmAnalysis,
+	beat: RhythmBeatPoint,
+): number {
+	return beatEnergyEvidence(analysis, beat).impact;
+}
+
+/**
+ * 包络里的 peak 只是曲内相对高度；安静曲目自己最响的一拍同样能到 1。
+ * 强旋转必须由真实声压支撑，因此再乘一条绝对 RMS 门控，避免轻音乐的
+ * “相对满格”拍点获得与高响度电音相同的旋转力度。旧缓存没有绝对标尺
+ * 时保持原行为。
+ */
+function strongBeatAbsoluteGate(
+	analysis: RhythmAnalysis,
+	relativeEnergy: number,
+): number {
+	const absoluteRms = approximateAbsoluteRms(analysis, relativeEnergy);
+	if (absoluteRms === null) return 1;
+	return smootherStep01(
+		(absoluteRms - STRONG_BEAT_ABSOLUTE_RMS_FLOOR) /
+			(STRONG_BEAT_ABSOLUTE_RMS_FULL - STRONG_BEAT_ABSOLUTE_RMS_FLOOR),
+	);
 }
 
 function approximatePercussiveSalientThreshold(
@@ -933,10 +970,11 @@ function percussiveAccentProfile(
 			? [
 					{
 						timeMs: point.timeMs,
-						strength: Math.max(
-							0.22,
-							smootherStep01((point.strength - 0.45) / 0.45) * 0.35,
-						),
+						strength:
+							Math.max(
+								0.22,
+								smootherStep01((point.strength - 0.45) / 0.45) * 0.35,
+							) * strongBeatAbsoluteGate(analysis, point.peakEnergy),
 					},
 				]
 			: [],
@@ -961,7 +999,8 @@ function percussiveAccentProfile(
 		const strength =
 			smootherStep01((candidate.strength - 0.82) / 0.18) *
 			PERCUSSIVE_ACCENT_STRONG_MAX *
-			point.coverageCorrection;
+			point.coverageCorrection *
+			strongBeatAbsoluteGate(analysis, point.peakEnergy);
 		return strength >= 0.04
 			? [
 					{
@@ -1044,7 +1083,8 @@ function percussiveAccentProfile(
 				}
 				strength =
 					smootherStep01((candidate.strength - 0.82) / 0.18) *
-					recoverableStrengthCeiling;
+					recoverableStrengthCeiling *
+					strongBeatAbsoluteGate(analysis, candidate.peakEnergy);
 				lastRecoveryEvidenceTimeMs = candidate.timeMs;
 				if (strength < 0.04 || !candidate.coveredByGrid) {
 					// 离网格的严格敲击只用于证明声学链路仍连续，不能直接升级为
@@ -1337,31 +1377,91 @@ export function sampleAnalysisTarget(
 }
 
 /**
+ * 强拍脉冲的预滚随强度自适应：不足 0.5 的冲量用更长的起势时间，把
+ * “不算重音却快速抽动一小段”变成缓慢的推挤；0.5 以上的极重拍保持原有
+ * 65ms 的锐利前冲。只改事件前的爬坡形状，峰值时刻的数值完全不变。
+ */
+function strongBeatPreRollMs(strength: number): number {
+	return (
+		STRONG_BEAT_PRE_ROLL_MS +
+		(1 - smootherStep01(strength / STRONG_BEAT_FULL_ATTACK_STRENGTH)) *
+			STRONG_BEAT_WEAK_EXTRA_PRE_ROLL_MS
+	);
+}
+
+function sampleStrongPulses<T extends { timeMs: number }>(
+	values: readonly T[],
+	timeMs: number,
+	getStrength: (point: T) => number,
+): number {
+	if (values.length === 0) return 0;
+	const nextIndex = lowerBound(values, timeMs);
+	let result = 0;
+
+	const maxPreRollMs =
+		STRONG_BEAT_PRE_ROLL_MS + STRONG_BEAT_WEAK_EXTRA_PRE_ROLL_MS;
+	for (let index = nextIndex; index < values.length; index++) {
+		const point = values[index];
+		if (!point || point.timeMs - timeMs > maxPreRollMs) break;
+		const strength = clamp01(getStrength(point));
+		if (strength <= 0) continue;
+		result = Math.max(
+			result,
+			strength *
+				sampleSmoothPulse(
+					timeMs,
+					point.timeMs,
+					strongBeatPreRollMs(strength),
+					STRONG_BEAT_RELEASE_MS,
+				),
+		);
+	}
+
+	for (let index = nextIndex - 1; index >= 0; index--) {
+		const point = values[index];
+		if (!point) break;
+		if (timeMs - point.timeMs > STRONG_BEAT_RELEASE_MS) break;
+		const strength = clamp01(getStrength(point));
+		if (strength <= 0) continue;
+		result = Math.max(
+			result,
+			strength *
+				sampleSmoothPulse(
+					timeMs,
+					point.timeMs,
+					strongBeatPreRollMs(strength),
+					STRONG_BEAT_RELEASE_MS,
+				),
+		);
+	}
+	return clamp01(result);
+}
+
+/**
  * 额外旋转只响应有明确能量冲击的极强拍点。它与连续呼吸信号分离，
  * 短脉冲结束后由 Mesh 内的物理包络慢慢卸力，使下一拍能在尚未回零时
  * 再次把画面推开，而不是生成等速、对称的正反摆动。
+ *
+ * 两条通道都会再经过绝对 RMS 门控：相对包络只能证明“这拍在曲内最响”，
+ * 不能证明它真的响。
  */
 export function sampleStrongBeatTarget(
 	analysis: RhythmAnalysis,
 	timeMs: number,
 ): number {
 	if (!Number.isFinite(timeMs) || !hasUsableBeatGrid(analysis)) return 0;
-	const lowFrequencyImpact = sampleTimedPulses(
-		analysis.beats,
-		timeMs,
-		STRONG_BEAT_PRE_ROLL_MS,
-		STRONG_BEAT_RELEASE_MS,
-		(point) =>
+	const lowFrequencyImpact = sampleStrongPulses(analysis.beats, timeMs, (point) => {
+		const evidence = beatEnergyEvidence(analysis, point);
+		return (
 			smootherStep01(
-				(beatEnergyImpact(analysis, point) - STRONG_BEAT_IMPACT_START) /
+				(evidence.impact - STRONG_BEAT_IMPACT_START) /
 					(STRONG_BEAT_IMPACT_FULL - STRONG_BEAT_IMPACT_START),
-			),
-	);
-	const percussiveImpact = sampleTimedPulses(
+			) * strongBeatAbsoluteGate(analysis, evidence.peak)
+		);
+	});
+	const percussiveImpact = sampleStrongPulses(
 		percussiveAccentProfile(analysis).strongPoints,
 		timeMs,
-		STRONG_BEAT_PRE_ROLL_MS,
-		STRONG_BEAT_RELEASE_MS,
 		(point) => point.strength,
 	);
 	return Math.max(lowFrequencyImpact, percussiveImpact);
