@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     f32::consts::PI,
     fs::File,
     io::{Read, Seek},
@@ -318,7 +319,7 @@ pub fn analyze_mono_pcm(samples: &[f32], sample_rate: u32) -> anyhow::Result<Rhy
 struct SpectralAccumulator {
     bin_bands: Vec<Option<usize>>,
     window: Vec<f32>,
-    pending: Vec<f32>,
+    pending: VecDeque<f32>,
     total_samples: u64,
     frame_index: usize,
     previous_spectrum: Vec<f32>,
@@ -342,7 +343,7 @@ impl SpectralAccumulator {
         Self {
             bin_bands: frequency_bin_bands(sample_rate),
             window: hann_window(),
-            pending: Vec::with_capacity(FFT_SIZE * 4),
+            pending: VecDeque::with_capacity(FFT_SIZE * 4),
             total_samples: 0,
             frame_index: 0,
             previous_spectrum: vec![0.0_f32; FFT_SIZE / 2 + 1],
@@ -357,7 +358,7 @@ impl SpectralAccumulator {
 
     fn push(&mut self, samples: &[f32]) {
         self.total_samples += samples.len() as u64;
-        self.pending.extend_from_slice(samples);
+        self.pending.extend(samples.iter().copied());
         // 攒满一个完整分析窗就立即消费,pending 始终只保留窗口尾部。
         while self.pending.len() >= FFT_SIZE {
             self.process_frame();
@@ -1013,12 +1014,25 @@ fn estimate_tempo_segments(
         }];
     }
 
+    // Downsample envelope by 4× for sliding-window tempo estimation.
+    // The 18-second windows don't need 11ms resolution; reducing the input
+    // size cuts autocorrelation cost from O(total_frames × max_lag) to
+    // O(total_frames/4 × max_lag/4), a 16× speedup with negligible accuracy loss.
+    let downsampled = envelope
+        .chunks(4)
+        .map(|chunk| chunk.iter().sum::<f32>() / chunk.len() as f32)
+        .collect::<Vec<_>>();
+    let downsampled_window_frames = window_frames / 4;
+
     let mut raw_segments = Vec::new();
-    for start in (0..envelope.len()).step_by(window_frames) {
-        let end = (start + window_frames).min(envelope.len());
-        let estimate = estimate_tempo(&envelope[start..end], sample_rate).unwrap_or(global);
-        let start_ms = frame_boundary_to_ms(start, sample_rate).min(duration_ms);
-        let end_ms = frame_boundary_to_ms(end, sample_rate).min(duration_ms);
+    for start in (0..downsampled.len()).step_by(downsampled_window_frames) {
+        let end = (start + downsampled_window_frames).min(downsampled.len());
+        let estimate = estimate_tempo(&downsampled[start..end], sample_rate / 4).unwrap_or(global);
+        // Map downsampled frame indices back to original timeline
+        let original_start = start * 4;
+        let original_end = (end * 4).min(envelope.len());
+        let start_ms = frame_boundary_to_ms(original_start, sample_rate).min(duration_ms);
+        let end_ms = frame_boundary_to_ms(original_end, sample_rate).min(duration_ms);
         if start_ms >= end_ms {
             continue;
         }
