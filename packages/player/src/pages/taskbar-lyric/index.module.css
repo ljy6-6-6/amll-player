@@ -363,14 +363,14 @@
 .container[data-orientation="horizontal"]
 	.textPanel[data-content="metadata"]
 	.ghostLine {
-	padding-right: 8px;
+	padding-right: 4px;
 }
 
 .container[data-orientation="horizontal"][data-align="right"]
 	.textPanel[data-content="metadata"]
 	.ghostLine {
 	padding-right: 0;
-	padding-left: 8px;
+	padding-left: 4px;
 }
 
 .animatedLine {
