@@ -124,10 +124,6 @@
 	background: var(--container-bg);
 }
 
-.wrapper[data-hovered="true"][data-hover-source="lyrics"] .container {
-	transition-delay: 0.15s, 0s;
-}
-
 .container:active:not(:has(.controlsWrapper:active)) {
 	opacity: 0.8;
 }

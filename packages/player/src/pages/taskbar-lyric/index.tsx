@@ -478,7 +478,6 @@ export const TaskbarLyricApp = () => {
 			type: "spring" as const,
 			stiffness: 400,
 			damping: 35,
-			delay: isMetadataMode ? 0 : 0.15,
 		},
 	};
 	const controlsExitAnimation = {
@@ -770,7 +769,6 @@ export const TaskbarLyricApp = () => {
 			className={styles.wrapper}
 			data-align={align}
 			data-hovered={isHovered}
-			data-hover-source={isMetadataMode ? "metadata" : "lyrics"}
 			data-orientation={orientation}
 			data-visible={isVisible}
 			onMouseEnter={handleMouseEnter}
