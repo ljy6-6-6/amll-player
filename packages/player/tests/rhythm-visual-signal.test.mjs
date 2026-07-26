@@ -2538,11 +2538,13 @@ test("Faded 的宽频重拍进入 240Hz Mesh 后明显但不会单帧闪跳", ()
 		);
 	}
 	assert.ok(
-		maxKick >= (5 * Math.PI) / 180 && maxKick <= 0.1,
+		maxKick >= (5 * Math.PI) / 180 && maxKick <= 0.115,
 		`Faded 宽频重拍实际前冲为 ${maxKick}rad`,
 	);
+	// 慢回程弹簧下,密集重拍段会保持"被推出"的姿态更久;上限只防
+	// 失控累积,不再限制正常的持续倾斜。
 	assert.ok(
-		strongRotationFraction >= 0.02 && strongRotationFraction <= 0.12,
+		strongRotationFraction >= 0.05 && strongRotationFraction <= 0.35,
 		`Faded 高于 5° 的时长占比为 ${strongRotationFraction}`,
 	);
 	assert.ok(
@@ -2621,7 +2623,7 @@ test("安装后的 Mesh 会分离呼吸与非负的极重拍冲量", () => {
 	const heavy = simulateMeshPulse(240);
 
 	assert.equal(ordinary.maxKick, 0, "普通呼吸信号泄漏到额外旋转通道");
-	assert.ok(heavy.maxKick >= 0.12, `极重拍前冲仅 ${heavy.maxKick}rad`);
+	assert.ok(heavy.maxKick >= 0.11, `极重拍前冲仅 ${heavy.maxKick}rad`);
 	assert.ok(heavy.maxKick <= 0.18, `极重拍前冲越界到 ${heavy.maxKick}rad`);
 	assert.ok(heavy.minKick >= 0, `极重拍冲量反向越界：${heavy.minKick}rad`);
 	assert.ok(
@@ -2683,8 +2685,9 @@ test("极重拍会快速单向推开、慢速部分回落，下一拍在未回�
 			.map((sample) => sample.kick),
 	);
 
+	// 冲量-弹簧物理:速度峰值在拍点,位移顶点随惯性滑出,延迟属预期。
 	assert.ok(
-		peak.timeMs - beatTime <= 90,
+		peak.timeMs - beatTime <= 130,
 		`前冲峰值延迟 ${peak.timeMs - beatTime}ms`,
 	);
 	assert.ok(peak.kick - before >= 0.06, `前冲增量仅 ${peak.kick - before}rad`);
@@ -2864,7 +2867,7 @@ test("Shots 真实片段的呼吸与极重拍冲量都能进入 Mesh", () => {
 		`完整呼吸链路输出仅 ${result.maxSmoothedVolume}`,
 	);
 	assert.ok(
-		result.maxKick >= 0.14 && result.maxKick <= 0.185,
+		result.maxKick >= 0.14 && result.maxKick <= 0.21,
 		`完整极重拍链路峰值为 ${result.maxKick}rad`,
 	);
 	assert.ok(result.minKick >= 0, `完整链路出现反向冲量 ${result.minKick}rad`);
@@ -3037,11 +3040,11 @@ test("安装后的 Mesh 补丁使用低频、呼吸、极重拍三通道和亮�
 		);
 		assert.match(
 			source,
-			/this\.kickVelocity \+= 2\.6 \* Math\.max\(0, kickDrive - this\.lastKickDrive\)/,
+			/this\.kickVelocity \+= 2\.4 \* Math\.max\(0, kickDrive - this\.lastKickDrive\)/,
 		);
 		assert.match(
 			source,
-			/this\.kickVelocity -= \(42 \* this\.rhythmKick \+ 16 \* this\.kickVelocity\) \* kickStepS/,
+			/this\.kickVelocity -= \(30 \* this\.rhythmKick \+ 16 \* this\.kickVelocity\) \* kickStepS/,
 		);
 		assert.match(
 			source,
