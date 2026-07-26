@@ -32,6 +32,7 @@ import {
 	onToggleShuffleAtom,
 } from "@applemusic-like-lyrics/react-full";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import chalk from "chalk";
 import { useAtom, useAtomValue, useSetAtom, useStore } from "jotai";
 import {
@@ -54,7 +55,13 @@ import {
 	queueManagerAtom,
 	rhythmVisualResetAtom,
 } from "../../states/appAtoms.ts";
-import { db, getCurrentTrackLoudness } from "../../utils/db-client.ts";
+import {
+	db,
+	getCurrentTrackLoudness,
+	getRhythmPrecacheProgress,
+	type RhythmPrecacheProgress,
+	startRhythmPrecache,
+} from "../../utils/db-client.ts";
 import { SyncStatus, syncLyrics } from "../../utils/lyric-db-api.ts";
 import {
 	PlayQueueManager,
@@ -151,6 +158,85 @@ export const FFTToLowPassContext: FC = () => {
 		};
 	}, [store]);
 	// }, [store, isLyricPageOpened]);
+
+	return null;
+};
+
+const RHYTHM_PRECACHE_TOAST_ID = "rhythm-precache-progress";
+
+/**
+ * 后台预建节奏缓存的全局进度提示。挂载时先补拉一次快照,再订阅后端的
+ * 进度事件,并触发一次启动扫描——分析器版本升级后的全库重建也由这次
+ * 扫描自动完成。
+ */
+const RhythmPrecacheProgressContext: FC = () => {
+	const { t } = useTranslation();
+
+	useEffect(() => {
+		let disposed = false;
+		const apply = (progress: RhythmPrecacheProgress | null | undefined) => {
+			if (disposed || !progress || progress.total === 0) return;
+			const finished = progress.done + progress.failed;
+			if (progress.active) {
+				const render = progress.currentSongName
+					? t(
+							"rhythmPrecache.progressWithSong",
+							"正在预建节奏缓存 {{finished}}/{{total}}:{{song}}",
+							{
+								finished,
+								total: progress.total,
+								song: progress.currentSongName,
+							},
+						)
+					: t(
+							"rhythmPrecache.progress",
+							"正在预建节奏缓存 {{finished}}/{{total}}",
+							{ finished, total: progress.total },
+						);
+				if (toast.isActive(RHYTHM_PRECACHE_TOAST_ID)) {
+					toast.update(RHYTHM_PRECACHE_TOAST_ID, { render });
+				} else {
+					toast.info(render, {
+						toastId: RHYTHM_PRECACHE_TOAST_ID,
+						autoClose: false,
+						closeOnClick: false,
+					});
+				}
+			} else if (toast.isActive(RHYTHM_PRECACHE_TOAST_ID)) {
+				const render =
+					progress.failed > 0
+						? t(
+								"rhythmPrecache.doneWithFailures",
+								"节奏缓存完成:成功 {{done}} 首,失败 {{failed}} 首",
+								{ done: progress.done, failed: progress.failed },
+							)
+						: t("rhythmPrecache.done", "节奏缓存已就绪({{done}} 首)", {
+								done: progress.done,
+							});
+				toast.update(RHYTHM_PRECACHE_TOAST_ID, {
+					render,
+					type: progress.failed > 0 ? "warning" : "success",
+					autoClose: 6000,
+				});
+			}
+		};
+
+		void getRhythmPrecacheProgress()
+			.then(apply)
+			.catch(() => {});
+		const unlistenPromise = listen<RhythmPrecacheProgress>(
+			"rhythm-precache-progress",
+			(event) => apply(event.payload),
+		);
+		void startRhythmPrecache().catch((error) => {
+			console.warn("[RhythmPrecache] Failed to start precache sweep", error);
+		});
+
+		return () => {
+			disposed = true;
+			void unlistenPromise.then((unlisten) => unlisten());
+		};
+	}, [t]);
 
 	return null;
 };
@@ -815,6 +901,7 @@ export const LocalMusicContext: FC = () => {
 			<LyricContext />
 			<FFTToLowPassContext />
 			<LocalRhythmVisualContext />
+			<RhythmPrecacheProgressContext />
 			<MusicQualityTagText />
 		</>
 	);

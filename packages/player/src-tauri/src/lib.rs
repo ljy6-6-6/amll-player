@@ -105,6 +105,7 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .expect("Failed to initialize database");
     app.manage(db_conn);
     app.manage(db::rhythm::RhythmAnalysisState::default());
+    app.manage(db::rhythm_precache::RhythmPrecacheState::default());
 
     {
         let db_ref = app.state::<db::DbConnection>().inner().clone();
@@ -279,6 +280,8 @@ pub fn run() {
             db::rhythm::get_cached_song_rhythm,
             db::rhythm::get_cached_song_loudness,
             db::rhythm::delete_song_rhythm,
+            db::rhythm_precache::start_rhythm_precache,
+            db::rhythm_precache::get_rhythm_precache_progress,
             db::migrate::migrate_songs_batch,
             db::migrate::migrate_playlists_batch,
             db::cleanup::cleanup_orphaned_covers,

@@ -5,6 +5,7 @@ pub mod migrate;
 pub mod migration;
 pub mod refresh;
 pub mod rhythm;
+pub mod rhythm_precache;
 pub mod scanner;
 pub mod utils;
 

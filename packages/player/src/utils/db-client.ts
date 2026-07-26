@@ -94,6 +94,26 @@ export function getCurrentTrackLoudness(
 	return loudness;
 }
 
+export interface RhythmPrecacheProgress {
+	active: boolean;
+	total: number;
+	done: number;
+	failed: number;
+	currentSongName?: string | null;
+}
+
+/**
+ * 触发一次曲库预扫:缓存缺失、分析器版本过期或源文件已变化的歌曲会被
+ * 加入后台分析队列;进度经 rhythm-precache-progress 事件推送。
+ */
+export function startRhythmPrecache(): Promise<RhythmPrecacheProgress> {
+	return invoke("start_rhythm_precache");
+}
+
+export function getRhythmPrecacheProgress(): Promise<RhythmPrecacheProgress> {
+	return invoke("get_rhythm_precache_progress");
+}
+
 interface UpdatePlaylistPayload {
 	name?: string;
 	playTime?: number;
@@ -176,10 +196,13 @@ class PlaylistsClient {
 		folderPath: string,
 		playlistName?: string,
 	): Promise<ScanFolderResult> {
-		return invoke("scan_and_create_playlist", {
+		const result = await invoke<ScanFolderResult>("scan_and_create_playlist", {
 			folderPath,
 			playlistName: playlistName ?? null,
 		});
+		// 导入完成立即预建节奏缓存,进度由全局提示组件展示。
+		void startRhythmPrecache().catch(() => {});
+		return result;
 	}
 
 	async getFolders(playlistId: number): Promise<string[]> {
@@ -190,7 +213,12 @@ class PlaylistsClient {
 		playlistId: number,
 		folderPath: string,
 	): Promise<ScanFolderResult> {
-		return invoke("link_playlist_folder", { playlistId, folderPath });
+		const result = await invoke<ScanFolderResult>("link_playlist_folder", {
+			playlistId,
+			folderPath,
+		});
+		void startRhythmPrecache().catch(() => {});
+		return result;
 	}
 
 	async unlinkFolder(playlistId: number, folderPath: string): Promise<void> {
@@ -198,7 +226,11 @@ class PlaylistsClient {
 	}
 
 	async refresh(playlistId: number): Promise<RefreshResult> {
-		return invoke("refresh_playlist", { playlistId });
+		const result = await invoke<RefreshResult>("refresh_playlist", {
+			playlistId,
+		});
+		void startRhythmPrecache().catch(() => {});
+		return result;
 	}
 }
 

@@ -24,9 +24,9 @@ use crate::{
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct SourceSignature {
-    modified_at: i64,
-    file_size: i64,
+pub(crate) struct SourceSignature {
+    pub(crate) modified_at: i64,
+    pub(crate) file_size: i64,
 }
 
 pub struct RhythmAnalysisState {
@@ -75,7 +75,7 @@ impl Drop for ForegroundGuard {
     }
 }
 
-fn source_signature(path: &Path) -> Result<SourceSignature, String> {
+pub(crate) fn source_signature(path: &Path) -> Result<SourceSignature, String> {
     let metadata = std::fs::metadata(path)
         .map_err(|e| format!("Failed to read audio file metadata {}: {e}", path.display()))?;
     let modified_at = metadata
@@ -110,7 +110,7 @@ async fn remove_cached_row(db: &DbConnection, song_id: &str) -> Result<(), Strin
     Ok(())
 }
 
-async fn load_valid_cached_analysis(
+pub(crate) async fn load_valid_cached_analysis(
     db: &DbConnection,
     song_id: &str,
     require_loudness: bool,
@@ -294,8 +294,17 @@ pub async fn get_or_analyze_song_rhythm(
         }
     }
 
-    let song = song::Entity::find_by_id(&song_id)
-        .one(&*db)
+    analyze_and_store(&db, &song_id).await
+}
+
+/// 解码整轨、校验源文件签名并写入缓存。调用方需自行持有分析信号量,
+/// 播放路径命令与后台预缓存 worker 共用这段流程。
+pub(crate) async fn analyze_and_store(
+    db: &DbConnection,
+    song_id: &str,
+) -> Result<RhythmAnalysis, String> {
+    let song = song::Entity::find_by_id(song_id.to_owned())
+        .one(db)
         .await
         .map_err(|e| format!("Failed to get song for rhythm analysis: {e}"))?
         .ok_or_else(|| format!("Song {song_id} not found"))?;
@@ -310,7 +319,7 @@ pub async fn get_or_analyze_song_rhythm(
     let signature_after = source_signature(&path)?;
 
     if signature_before != signature_after {
-        remove_cached_row(&*db, &song_id).await?;
+        remove_cached_row(db, song_id).await?;
         return Err(format!(
             "Audio file changed while rhythm analysis was running: {}",
             path.display()
@@ -324,8 +333,8 @@ pub async fn get_or_analyze_song_rhythm(
     }
 
     // Do not recreate an orphan or cache data for a path changed during analysis.
-    let song_after = song::Entity::find_by_id(&song_id)
-        .one(&*db)
+    let song_after = song::Entity::find_by_id(song_id.to_owned())
+        .one(db)
         .await
         .map_err(|e| format!("Failed to verify song after rhythm analysis: {e}"))?
         .ok_or_else(|| format!("Song {song_id} was removed during rhythm analysis"))?;
@@ -335,6 +344,6 @@ pub async fn get_or_analyze_song_rhythm(
         ));
     }
 
-    store_analysis(&*db, &song_id, signature_after, &analysis).await?;
+    store_analysis(db, song_id, signature_after, &analysis).await?;
     Ok(analysis)
 }
