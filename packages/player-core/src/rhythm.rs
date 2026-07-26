@@ -353,13 +353,18 @@ fn analyze_mono_pcm_with_loudness(
         }
         for bin in 1..=FFT_SIZE / 2 {
             if let Some(band) = bin_bands[bin] {
-                // SuperFlux-style comparison against a small frequency-neighbourhood
-                // in the preceding frame reduces vibrato-created false positives.
-                let previous_local_max = previous_spectrum[bin.saturating_sub(1)]
-                    .max(previous_spectrum[bin])
-                    .max(previous_spectrum[(bin + 1).min(FFT_SIZE / 2)]);
-                raw_flux[frame_index][band] +=
-                    (current_spectrum[bin] - previous_local_max).max(0.0);
+                // The first frame has no predecessor; comparing against the
+                // all-zero seed would fabricate a full-scale novelty burst that
+                // masks real onsets near t=0 and poisons the adaptive baseline.
+                if frame_index > 0 {
+                    // SuperFlux-style comparison against a small frequency-neighbourhood
+                    // in the preceding frame reduces vibrato-created false positives.
+                    let previous_local_max = previous_spectrum[bin.saturating_sub(1)]
+                        .max(previous_spectrum[bin])
+                        .max(previous_spectrum[(bin + 1).min(FFT_SIZE / 2)]);
+                    raw_flux[frame_index][band] +=
+                        (current_spectrum[bin] - previous_local_max).max(0.0);
+                }
                 band_bin_counts[band] += 1;
             }
         }
@@ -1015,6 +1020,95 @@ mod tests {
                 "expected about {expected_bpm} BPM, detected {bpm} BPM"
             );
         }
+    }
+
+    /// 模拟弦乐/弱奏钢琴:120ms 线性起音的双音摆动,无任何打击性瞬态。
+    fn soft_attack_track(bpm: f32, seconds: f32) -> Vec<f32> {
+        let mut pcm = vec![0.0_f32; (TARGET_SAMPLE_RATE as f32 * seconds) as usize];
+        let period = TARGET_SAMPLE_RATE as f32 * 60.0 / bpm;
+        let attack_samples = (TARGET_SAMPLE_RATE as f32 * 0.12) as usize;
+        let note_samples = (TARGET_SAMPLE_RATE as f32 * 0.32) as usize;
+        let mut start = TARGET_SAMPLE_RATE as f32 * 0.25;
+        let mut note_index = 0_usize;
+        while (start as usize) < pcm.len() {
+            let base = start as usize;
+            // 相邻音符换音高,让频谱确实发生变化而不是纯响度摆动。
+            let frequency = if note_index % 2 == 0 { 294.0 } else { 392.0 };
+            for offset in 0..note_samples.min(pcm.len() - base) {
+                let envelope = if offset < attack_samples {
+                    offset as f32 / attack_samples as f32
+                } else {
+                    1.0 - (offset - attack_samples) as f32
+                        / (note_samples - attack_samples) as f32
+                };
+                let phase = 2.0 * PI * offset as f32 / TARGET_SAMPLE_RATE as f32;
+                pcm[base + offset] += (phase * frequency).sin() * envelope * 0.28
+                    + (phase * frequency * 2.0).sin() * envelope * 0.12;
+            }
+            start += period;
+            note_index += 1;
+        }
+        pcm
+    }
+
+    #[test]
+    fn soft_attacks_still_produce_onsets_and_a_beat_grid() {
+        let pcm = soft_attack_track(70.0, 16.0);
+        let analysis = analyze_mono_pcm(&pcm, TARGET_SAMPLE_RATE).unwrap();
+        // 16s × 70BPM ≈ 18 个音符起音。
+        assert!(
+            analysis.onsets.len() >= 12,
+            "soft attacks lost: only {} onsets",
+            analysis.onsets.len()
+        );
+        let bpm = analysis
+            .global_bpm
+            .expect("soft attack track should still yield a tempo");
+        let normalized = if bpm > 100.0 { bpm / 2.0 } else { bpm };
+        assert!(
+            (normalized - 70.0).abs() <= 5.0,
+            "unexpected BPM for soft attack track: {bpm}"
+        );
+        assert!(
+            analysis.beats.iter().filter(|beat| beat.strength >= 0.06).count() >= 10,
+            "beat grid failed to lock onto soft attacks"
+        );
+    }
+
+    #[test]
+    fn leading_edge_artifact_does_not_mask_a_real_early_hit() {
+        // 背景音从第 0 采样点就存在(歌曲被剪辑到直接开唱是常态),
+        // 真实的宽频敲击落在 ~30ms。旧实现里第 0 帧与全零 previous_spectrum
+        // 比较会产生虚假满幅 novelty,峰值窗口内真实敲击永远赢不了它。
+        let mut pcm = (0..TARGET_SAMPLE_RATE as usize * 4)
+            .map(|sample| {
+                (2.0 * PI * 440.0 * sample as f32 / TARGET_SAMPLE_RATE as f32).sin() * 0.18
+            })
+            .collect::<Vec<_>>();
+        let click_start = (TARGET_SAMPLE_RATE as f32 * 0.03) as usize;
+        let click_length = (TARGET_SAMPLE_RATE as f32 * 0.012) as usize;
+        for offset in 0..click_length {
+            let decay = 1.0 - offset as f32 / click_length as f32;
+            pcm[click_start + offset] +=
+                (2.0 * PI * 6_500.0 * offset as f32 / TARGET_SAMPLE_RATE as f32).sin()
+                    * decay
+                    * 0.8;
+        }
+        let analysis = analyze_mono_pcm(&pcm, TARGET_SAMPLE_RATE).unwrap();
+        let first = analysis
+            .onsets
+            .first()
+            .expect("the early hit should be detected");
+        assert!(
+            first.time_ms <= 90,
+            "early hit was masked by the leading-edge artifact: first onset at {}ms",
+            first.time_ms
+        );
+        assert!(
+            first.strength >= 0.4,
+            "early hit strength too weak: {}",
+            first.strength
+        );
     }
 
     fn dual_band_track(seconds: f32) -> Vec<f32> {
