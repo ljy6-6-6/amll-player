@@ -165,6 +165,20 @@ export const FFTToLowPassContext: FC = () => {
 const RHYTHM_PRECACHE_TOAST_ID = "rhythm-precache-progress";
 
 /**
+ * 项目当前的 i18next 版本组合不会对 defaultValue 做变量插值,这里手动
+ * 替换 {{name}} 占位符;若未来 i18next 已完成插值,正则匹配不到即原样
+ * 返回,两种情况都安全。
+ */
+function formatPrecacheMessage(
+	template: string,
+	values: Record<string, string | number>,
+): string {
+	return template.replace(/\{\{(\w+)\}\}/g, (match, name: string) =>
+		name in values ? String(values[name]) : match,
+	);
+}
+
+/**
  * 后台预建节奏缓存的全局进度提示。挂载时先补拉一次快照,再订阅后端的
  * 进度事件,并触发一次启动扫描——分析器版本升级后的全库重建也由这次
  * 扫描自动完成。
@@ -179,17 +193,23 @@ const RhythmPrecacheProgressContext: FC = () => {
 			const finished = progress.done + progress.failed;
 			if (progress.active) {
 				const render = progress.currentSongName
-					? t("rhythmPrecache.progressWithSong", {
-							defaultValue: "正在预建节奏缓存 {{finished}}/{{total}}：{{song}}",
-							finished,
-							total: progress.total,
-							song: progress.currentSongName,
-						})
-					: t("rhythmPrecache.progress", {
-							defaultValue: "正在预建节奏缓存 {{finished}}/{{total}}",
-							finished,
-							total: progress.total,
-						});
+					? formatPrecacheMessage(
+							t("rhythmPrecache.progressWithSong", {
+								defaultValue:
+									"正在预建节奏缓存 {{finished}}/{{total}}：{{song}}",
+							}),
+							{
+								finished,
+								total: progress.total,
+								song: progress.currentSongName,
+							},
+						)
+					: formatPrecacheMessage(
+							t("rhythmPrecache.progress", {
+								defaultValue: "正在预建节奏缓存 {{finished}}/{{total}}",
+							}),
+							{ finished, total: progress.total },
+						);
 				if (toast.isActive(RHYTHM_PRECACHE_TOAST_ID)) {
 					toast.update(RHYTHM_PRECACHE_TOAST_ID, { render });
 				} else {
@@ -202,15 +222,19 @@ const RhythmPrecacheProgressContext: FC = () => {
 			} else if (toast.isActive(RHYTHM_PRECACHE_TOAST_ID)) {
 				const render =
 					progress.failed > 0
-						? t("rhythmPrecache.doneWithFailures", {
-								defaultValue: "节奏缓存完成：成功 {{done}} 首，失败 {{failed}} 首",
-								done: progress.done,
-								failed: progress.failed,
-							})
-						: t("rhythmPrecache.done", {
-								defaultValue: "节奏缓存已就绪（{{done}} 首）",
-								done: progress.done,
-							});
+						? formatPrecacheMessage(
+								t("rhythmPrecache.doneWithFailures", {
+									defaultValue:
+										"节奏缓存完成：成功 {{done}} 首，失败 {{failed}} 首",
+								}),
+								{ done: progress.done, failed: progress.failed },
+							)
+						: formatPrecacheMessage(
+								t("rhythmPrecache.done", {
+									defaultValue: "节奏缓存已就绪（{{done}} 首）",
+								}),
+								{ done: progress.done },
+							);
 				toast.update(RHYTHM_PRECACHE_TOAST_ID, {
 					render,
 					type: progress.failed > 0 ? "warning" : "success",
