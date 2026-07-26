@@ -313,6 +313,10 @@
 	min-height: 0;
 }
 
+.wrapper[data-hovered="true"] .groupContainer[data-group-content="lyrics"] {
+	visibility: hidden;
+}
+
 .hoverSizer {
 	position: relative;
 }

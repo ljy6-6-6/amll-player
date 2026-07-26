@@ -907,6 +907,9 @@ export const TaskbarLyricApp = () => {
 						<motion.div
 							key={groupKey}
 							className={styles.groupContainer}
+							data-group-content={
+								displayAsMetadata ? "metadata" : "lyrics"
+							}
 							custom={isHoverEvent}
 							variants={{
 								initial: (isHoverFade: boolean) => ({
