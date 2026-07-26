@@ -469,6 +469,25 @@ export const TaskbarLyricApp = () => {
 	const isSingleLineMode =
 		modeSetting === "auto" ? systemMode === "single" : modeSetting === "single";
 	const isVert = orientation === "vertical";
+	const controlsEnterAnimation = {
+		...(isVert
+			? { height: "auto", marginTop: 0 }
+			: { width: "auto", marginLeft: 0 }),
+		opacity: 1,
+		transition: {
+			type: "spring" as const,
+			stiffness: 400,
+			damping: 35,
+			delay: isMetadataMode ? 0 : 0.15,
+		},
+	};
+	const controlsExitAnimation = {
+		...(isVert
+			? { height: 0, marginTop: -12 }
+			: { width: 0, marginLeft: -12 }),
+		opacity: 0,
+		transition: { type: "spring" as const, stiffness: 400, damping: 35 },
+	};
 	const isHoverLayoutLocked = hoverGuardExtent !== null;
 
 	const currentLine =
@@ -751,6 +770,7 @@ export const TaskbarLyricApp = () => {
 			className={styles.wrapper}
 			data-align={align}
 			data-hovered={isHovered}
+			data-hover-source={isMetadataMode ? "metadata" : "lyrics"}
 			data-orientation={orientation}
 			data-visible={isVisible}
 			onMouseEnter={handleMouseEnter}
@@ -832,17 +852,8 @@ export const TaskbarLyricApp = () => {
 									? { height: 0, opacity: 0, marginTop: -12 }
 									: { width: 0, opacity: 0, marginLeft: -12 }
 							}
-							animate={
-								isVert
-									? { height: "auto", opacity: 1, marginTop: 0 }
-									: { width: "auto", opacity: 1, marginLeft: 0 }
-							}
-							exit={
-								isVert
-									? { height: 0, opacity: 0, marginTop: -12 }
-									: { width: 0, opacity: 0, marginLeft: -12 }
-							}
-							transition={{ type: "spring", stiffness: 400, damping: 35 }}
+							animate={controlsEnterAnimation}
+							exit={controlsExitAnimation}
 						>
 							<div className={styles.controlsPanel}>
 								<MediaButton className={styles.controlBtn} onClick={handlePrev}>
