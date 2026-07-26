@@ -223,7 +223,10 @@ pub fn analyze_rhythm_file(path: impl AsRef<Path>) -> anyhow::Result<RhythmAnaly
         .with_context(|| format!("failed to analyze audio file {}", path.display()))
 }
 
-/// Decode any seekable media source to 22.05 kHz mono PCM before analysis.
+/// Decode any seekable media source and stream the 22.05 kHz mono PCM through
+/// the spectral accumulator chunk by chunk. Whole-track PCM is never buffered,
+/// so multi-hour files no longer create hundreds of megabytes of transient
+/// allocations during analysis.
 pub fn analyze_rhythm_source<T>(source: T) -> anyhow::Result<RhythmAnalysis>
 where
     T: Read + Seek + Send + 'static,
@@ -244,7 +247,7 @@ where
         .build_resampler(loudness_options)
         .context("failed to initialize loudness analysis resampler")?;
     let mut loudness_meter = TrackLoudnessMeter::new(LOUDNESS_SAMPLE_RATE);
-    let mut pcm = Vec::new();
+    let mut accumulator = SpectralAccumulator::new(TARGET_SAMPLE_RATE);
 
     let mut recoverable_decode_errors = 0;
     loop {
@@ -268,7 +271,7 @@ where
             .process::<f32>(Some(&frame))
             .context("failed to resample audio for rhythm analysis")?
         {
-            pcm.extend_from_slice(resampler.output_as::<f32>());
+            accumulator.push(resampler.output_as::<f32>());
         }
         if loudness_resampler
             .process::<f32>(Some(&frame))
@@ -282,7 +285,7 @@ where
         .process::<f32>(None)
         .context("failed to flush rhythm analysis resampler")?
     {
-        pcm.extend_from_slice(resampler.output_as::<f32>());
+        accumulator.push(resampler.output_as::<f32>());
     }
 
     while loudness_resampler
@@ -292,7 +295,7 @@ where
         loudness_meter.push_interleaved_stereo(loudness_resampler.output_as::<f32>());
     }
 
-    analyze_mono_pcm_with_loudness(&pcm, TARGET_SAMPLE_RATE, Some(loudness_meter.finish()))
+    finish_analysis(accumulator, TARGET_SAMPLE_RATE, Some(loudness_meter.finish()))
 }
 
 /// Analyze a complete mono PCM signal. This pure boundary is intentionally free
@@ -306,82 +309,162 @@ pub fn analyze_mono_pcm(samples: &[f32], sample_rate: u32) -> anyhow::Result<Rhy
     analyze_mono_pcm_with_loudness(samples, sample_rate, Some(loudness_meter.finish()))
 }
 
+/// Incrementally turns arbitrarily sized PCM chunks into per-frame spectral
+/// features. Only up to one FFT window of PCM is buffered at any moment, so a
+/// complete track never has to exist in memory at once; the per-frame feature
+/// rows grow at roughly 7 MB per hour of audio instead of ~320 MB of buffered
+/// PCM. Feeding the same samples in any chunking produces bit-identical
+/// results to a single-slice pass.
+struct SpectralAccumulator {
+    bin_bands: Vec<Option<usize>>,
+    window: Vec<f32>,
+    pending: Vec<f32>,
+    total_samples: u64,
+    frame_index: usize,
+    previous_spectrum: Vec<f32>,
+    current_spectrum: Vec<f32>,
+    real: Vec<f32>,
+    imaginary: Vec<f32>,
+    raw_flux: Vec<[f32; BAND_COUNT]>,
+    band_linear: Vec<[f32; BAND_COUNT]>,
+    rms: Vec<f32>,
+}
+
+struct SpectralFeatures {
+    raw_flux: Vec<[f32; BAND_COUNT]>,
+    band_linear: Vec<[f32; BAND_COUNT]>,
+    rms: Vec<f32>,
+    total_samples: u64,
+}
+
+impl SpectralAccumulator {
+    fn new(sample_rate: u32) -> Self {
+        Self {
+            bin_bands: frequency_bin_bands(sample_rate),
+            window: hann_window(),
+            pending: Vec::with_capacity(FFT_SIZE * 4),
+            total_samples: 0,
+            frame_index: 0,
+            previous_spectrum: vec![0.0_f32; FFT_SIZE / 2 + 1],
+            current_spectrum: vec![0.0_f32; FFT_SIZE / 2 + 1],
+            real: vec![0.0_f32; FFT_SIZE],
+            imaginary: vec![0.0_f32; FFT_SIZE],
+            raw_flux: Vec::new(),
+            band_linear: Vec::new(),
+            rms: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, samples: &[f32]) {
+        self.total_samples += samples.len() as u64;
+        self.pending.extend_from_slice(samples);
+        // 攒满一个完整分析窗就立即消费,pending 始终只保留窗口尾部。
+        while self.pending.len() >= FFT_SIZE {
+            self.process_frame();
+        }
+    }
+
+    fn process_frame(&mut self) {
+        let mut square_sum = 0.0_f32;
+        for index in 0..FFT_SIZE {
+            let sample = self
+                .pending
+                .get(index)
+                .copied()
+                .filter(|value| value.is_finite())
+                .unwrap_or(0.0);
+            square_sum += sample * sample;
+            self.real[index] = sample * self.window[index];
+            self.imaginary[index] = 0.0;
+        }
+        self.rms.push((square_sum / FFT_SIZE as f32).sqrt());
+
+        fft_in_place(&mut self.real, &mut self.imaginary);
+        let mut band_bin_counts = [0_usize; BAND_COUNT];
+        let mut band_energy = [0.0_f32; BAND_COUNT];
+        let mut flux_row = [0.0_f32; BAND_COUNT];
+        let mut band_linear_row = [0.0_f32; BAND_COUNT];
+        for bin in 1..=FFT_SIZE / 2 {
+            let magnitude = (self.real[bin] * self.real[bin]
+                + self.imaginary[bin] * self.imaginary[bin])
+                .sqrt()
+                / FFT_SIZE as f32;
+            self.current_spectrum[bin] = (1.0 + magnitude * 64.0).ln();
+            if let Some(band) = self.bin_bands[bin] {
+                band_energy[band] += magnitude * magnitude;
+            }
+        }
+        for band in 0..BAND_COUNT {
+            band_linear_row[band] = band_energy[band].sqrt() * BAND_LEVEL_SCALE;
+        }
+        self.band_linear.push(band_linear_row);
+        for bin in 1..=FFT_SIZE / 2 {
+            if let Some(band) = self.bin_bands[bin] {
+                // The first frame has no predecessor; comparing against the
+                // all-zero seed would fabricate a full-scale novelty burst that
+                // masks real onsets near t=0 and poisons the adaptive baseline.
+                if self.frame_index > 0 {
+                    // SuperFlux-style comparison against a small frequency-neighbourhood
+                    // in the preceding frame reduces vibrato-created false positives.
+                    let previous_local_max = self.previous_spectrum[bin.saturating_sub(1)]
+                        .max(self.previous_spectrum[bin])
+                        .max(self.previous_spectrum[(bin + 1).min(FFT_SIZE / 2)]);
+                    flux_row[band] += (self.current_spectrum[bin] - previous_local_max).max(0.0);
+                }
+                band_bin_counts[band] += 1;
+            }
+        }
+        std::mem::swap(&mut self.previous_spectrum, &mut self.current_spectrum);
+        for band in 0..BAND_COUNT {
+            if band_bin_counts[band] > 0 {
+                flux_row[band] /= band_bin_counts[band] as f32;
+            }
+        }
+        self.raw_flux.push(flux_row);
+        self.frame_index += 1;
+        let consumed = HOP_SIZE.min(self.pending.len());
+        self.pending.drain(..consumed);
+    }
+
+    fn finish(mut self) -> SpectralFeatures {
+        // 尾部不足一窗的样本按原实现补零成帧,帧数保持 ceil(len / HOP)。
+        while !self.pending.is_empty() {
+            self.process_frame();
+        }
+        SpectralFeatures {
+            raw_flux: self.raw_flux,
+            band_linear: self.band_linear,
+            rms: self.rms,
+            total_samples: self.total_samples,
+        }
+    }
+}
+
 fn analyze_mono_pcm_with_loudness(
     samples: &[f32],
     sample_rate: u32,
     loudness: Option<TrackLoudnessAnalysis>,
 ) -> anyhow::Result<RhythmAnalysis> {
-    let duration_ms = samples_to_ms(samples.len() as f64, sample_rate);
-    if samples.is_empty() {
+    let mut accumulator = SpectralAccumulator::new(sample_rate);
+    accumulator.push(samples);
+    finish_analysis(accumulator, sample_rate, loudness)
+}
+
+fn finish_analysis(
+    accumulator: SpectralAccumulator,
+    sample_rate: u32,
+    loudness: Option<TrackLoudnessAnalysis>,
+) -> anyhow::Result<RhythmAnalysis> {
+    let features = accumulator.finish();
+    let duration_ms = samples_to_ms(features.total_samples as f64, sample_rate);
+    if features.total_samples == 0 {
         let mut analysis = RhythmAnalysis::empty(duration_ms);
         analysis.loudness = loudness;
         return Ok(analysis);
     }
-
-    let frame_count = samples.len().div_ceil(HOP_SIZE);
-    let mut previous_spectrum = vec![0.0_f32; FFT_SIZE / 2 + 1];
-    let mut raw_flux = vec![[0.0_f32; BAND_COUNT]; frame_count];
-    let mut band_linear = vec![[0.0_f32; BAND_COUNT]; frame_count];
-    let mut rms = vec![0.0_f32; frame_count];
-    let bin_bands = frequency_bin_bands(sample_rate);
-    let window = hann_window();
-    let mut real = vec![0.0_f32; FFT_SIZE];
-    let mut imaginary = vec![0.0_f32; FFT_SIZE];
-    let mut current_spectrum = vec![0.0_f32; FFT_SIZE / 2 + 1];
-
-    for frame_index in 0..frame_count {
-        let start = frame_index * HOP_SIZE;
-        let mut square_sum = 0.0_f32;
-        for index in 0..FFT_SIZE {
-            let sample = samples
-                .get(start + index)
-                .copied()
-                .filter(|value| value.is_finite())
-                .unwrap_or(0.0);
-            square_sum += sample * sample;
-            real[index] = sample * window[index];
-            imaginary[index] = 0.0;
-        }
-        rms[frame_index] = (square_sum / FFT_SIZE as f32).sqrt();
-
-        fft_in_place(&mut real, &mut imaginary);
-        let mut band_bin_counts = [0_usize; BAND_COUNT];
-        let mut band_energy = [0.0_f32; BAND_COUNT];
-        for bin in 1..=FFT_SIZE / 2 {
-            let magnitude =
-                (real[bin] * real[bin] + imaginary[bin] * imaginary[bin]).sqrt() / FFT_SIZE as f32;
-            current_spectrum[bin] = (1.0 + magnitude * 64.0).ln();
-            if let Some(band) = bin_bands[bin] {
-                band_energy[band] += magnitude * magnitude;
-            }
-        }
-        for band in 0..BAND_COUNT {
-            band_linear[frame_index][band] = band_energy[band].sqrt() * BAND_LEVEL_SCALE;
-        }
-        for bin in 1..=FFT_SIZE / 2 {
-            if let Some(band) = bin_bands[bin] {
-                // The first frame has no predecessor; comparing against the
-                // all-zero seed would fabricate a full-scale novelty burst that
-                // masks real onsets near t=0 and poisons the adaptive baseline.
-                if frame_index > 0 {
-                    // SuperFlux-style comparison against a small frequency-neighbourhood
-                    // in the preceding frame reduces vibrato-created false positives.
-                    let previous_local_max = previous_spectrum[bin.saturating_sub(1)]
-                        .max(previous_spectrum[bin])
-                        .max(previous_spectrum[(bin + 1).min(FFT_SIZE / 2)]);
-                    raw_flux[frame_index][band] +=
-                        (current_spectrum[bin] - previous_local_max).max(0.0);
-                }
-                band_bin_counts[band] += 1;
-            }
-        }
-        previous_spectrum.copy_from_slice(&current_spectrum);
-        for band in 0..BAND_COUNT {
-            if band_bin_counts[band] > 0 {
-                raw_flux[frame_index][band] /= band_bin_counts[band] as f32;
-            }
-        }
-    }
+    let raw_flux = features.raw_flux;
+    let band_linear = features.band_linear;
+    let rms = features.rms;
 
     let normalized_bands = normalize_band_flux(&raw_flux);
     let novelty = combine_band_novelty(&normalized_bands);
@@ -1011,6 +1094,29 @@ mod tests {
         ));
         assert!(!can_skip_decode_error(&unrelated_ffmpeg_error, 0));
         assert!(!can_skip_decode_error(&AudioError::Eof, 0));
+    }
+
+    #[test]
+    fn chunked_streaming_matches_single_slice_analysis() {
+        let mut pcm = high_frequency_click_track(120.0, 8.0);
+        // 掺入非法样本,验证与整段路径一致的清洗行为。
+        pcm[1_000] = f32::NAN;
+        let whole = analyze_mono_pcm(&pcm, TARGET_SAMPLE_RATE).unwrap();
+
+        let mut accumulator = SpectralAccumulator::new(TARGET_SAMPLE_RATE);
+        // 777 与 hop/窗口都不对齐,专门制造跨块的帧边界。
+        for chunk in pcm.chunks(777) {
+            accumulator.push(chunk);
+        }
+        let mut loudness_meter = TrackLoudnessMeter::new(TARGET_SAMPLE_RATE);
+        loudness_meter.push_dual_mono(&pcm);
+        let streamed = finish_analysis(
+            accumulator,
+            TARGET_SAMPLE_RATE,
+            Some(loudness_meter.finish()),
+        )
+        .unwrap();
+        assert_eq!(whole, streamed);
     }
 
     #[test]
