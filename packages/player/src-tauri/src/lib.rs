@@ -325,6 +325,8 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             taskbar_lyric::open_taskbar_lyric_devtools,
             #[cfg(target_os = "windows")]
+            taskbar_lyric::refresh_taskbar_lyric_layout,
+            #[cfg(target_os = "windows")]
             theme_watcher::get_system_theme
         ])
         .setup(setup_app)

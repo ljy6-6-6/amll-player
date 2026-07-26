@@ -60,4 +60,5 @@ export const TASKBAR_LAYOUT_EXTRA_EVENT = "taskbar-layout-extra";
 export const SYSTEM_THEME_CHANGED_EVENT = "system-theme-changed";
 
 export const CMD_GET_SYSTEM_THEME = "get_system_theme";
+export const CMD_REFRESH_TASKBAR_LAYOUT = "refresh_taskbar_lyric_layout";
 export const CMD_SET_CLICK_INTERCEPTION = "set_click_interception";

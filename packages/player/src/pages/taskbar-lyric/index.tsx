@@ -20,6 +20,7 @@ import IconRewind from "../../assets/icon_rewind.svg?react";
 import {
 	ALIGN_EVENT,
 	CMD_GET_SYSTEM_THEME,
+	CMD_REFRESH_TASKBAR_LAYOUT,
 	CMD_SET_CLICK_INTERCEPTION,
 	CTRL_NEXT_EVENT,
 	CTRL_PLAY_OR_RESUME_EVENT,
@@ -304,10 +305,6 @@ export const TaskbarLyricApp = () => {
 	}, []);
 
 	useEffect(() => {
-		emit(REQUEST_UPDATE_EVENT).catch((err) => {
-			console.error("请求任务栏歌词数据更新失败:", err);
-		});
-
 		fetchSystemTheme().then((theme) => {
 			dispatch({ type: "UPDATE_SYSTEM_THEME", payload: theme });
 		});
@@ -385,18 +382,40 @@ export const TaskbarLyricApp = () => {
 		const unlistenFadeIn = listen(FADE_IN_EVENT, () => {
 			setIsVisible(true);
 		});
+		const listeners = [
+			unlistenMetadata,
+			unlistenPlayStatus,
+			unlistenPosition,
+			unlistenTheme,
+			unlistenAlign,
+			unlistenLayoutExtra,
+			unlistenSystemTheme,
+			unlistenMode,
+			unlistenFadeOut,
+			unlistenFadeIn,
+		];
+		let cancelled = false;
+
+		Promise.all(listeners)
+			.then(() => {
+				if (cancelled) return;
+
+				emit(REQUEST_UPDATE_EVENT).catch((err) => {
+					console.error("请求任务栏歌词数据更新失败:", err);
+				});
+				invoke(CMD_REFRESH_TASKBAR_LAYOUT).catch((err) => {
+					console.error("刷新任务栏歌词布局失败:", err);
+				});
+			})
+			.catch((err) => {
+				console.error("注册任务栏歌词事件监听失败:", err);
+			});
 
 		return () => {
-			unlistenMetadata.then((fn) => fn());
-			unlistenPlayStatus.then((fn) => fn());
-			unlistenPosition.then((fn) => fn());
-			unlistenTheme.then((fn) => fn());
-			unlistenAlign.then((fn) => fn());
-			unlistenLayoutExtra.then((fn) => fn());
-			unlistenSystemTheme.then((fn) => fn());
-			unlistenFadeOut.then((fn) => fn());
-			unlistenFadeIn.then((fn) => fn());
-			unlistenMode.then((fn) => fn());
+			cancelled = true;
+			listeners.forEach((listener) => {
+				listener.then((fn) => fn());
+			});
 		};
 	}, [updateAnchor]);
 

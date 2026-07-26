@@ -148,6 +148,15 @@ pub fn open_taskbar_lyric_devtools(app: tauri::AppHandle) {
 }
 
 #[tauri::command]
+pub fn refresh_taskbar_lyric_layout(app: tauri::AppHandle) {
+    if let Some(state) = app.try_state::<TaskbarLyricState>()
+        && let Some(service) = state.service.lock().unwrap().as_ref()
+    {
+        service.update(300);
+    }
+}
+
+#[tauri::command]
 pub fn open_taskbar_lyric(app: tauri::AppHandle) {
     if app.get_webview_window("taskbar-lyric").is_some() {
         return;
