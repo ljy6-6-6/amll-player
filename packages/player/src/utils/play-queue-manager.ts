@@ -215,16 +215,24 @@ export class PlayQueueManager {
 		if (cachedLoudness) return cachedLoudness;
 
 		try {
-			const analysis = await db.songs.getOrAnalyzeRhythm(songId, false, true);
+			const analysis = await db.songs.getOrAnalyzeRhythm(songId, false, true, true);
 			if (!this.isCurrentPlayRequest(requestGeneration)) return null;
 			return getCurrentTrackLoudness(analysis);
 		} catch (error) {
 			if (this.isCurrentPlayRequest(requestGeneration)) {
-				console.warn(
-					"[VolumeBalance] Failed to analyze track loudness before playback",
-					songId,
-					error,
-				);
+				const errorMsg = String(error);
+				if (errorMsg.includes("DECODER_BUSY")) {
+					console.log(
+						"[VolumeBalance] Decoder busy, skipping pre-play loudness analysis for",
+						songId,
+					);
+				} else {
+					console.warn(
+						"[VolumeBalance] Failed to analyze track loudness before playback",
+						songId,
+						error,
+					);
+				}
 			}
 			return null;
 		}

@@ -255,11 +255,13 @@ class SongsClient {
 		songId: string,
 		force = false,
 		requireLoudness = false,
+		nonBlocking = false,
 	): Promise<RhythmAnalysis> {
 		return invoke("get_or_analyze_song_rhythm", {
 			songId,
 			force,
 			requireLoudness,
+			nonBlocking,
 		});
 	}
 

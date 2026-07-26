@@ -243,6 +243,7 @@ pub async fn get_or_analyze_song_rhythm(
     song_id: String,
     force: Option<bool>,
     require_loudness: Option<bool>,
+    non_blocking: Option<bool>,
 ) -> Result<RhythmAnalysis, String> {
     let request_id = state
         .latest_request
@@ -259,18 +260,27 @@ pub async fn get_or_analyze_song_rhythm(
     let _foreground = ForegroundGuard::enter(state.foreground_pending.clone());
     let force = force.unwrap_or(false);
     let require_loudness = require_loudness.unwrap_or(false);
+    let non_blocking = non_blocking.unwrap_or(false);
     if !force
         && let Some(analysis) = load_valid_cached_analysis(&*db, &song_id, require_loudness).await?
     {
         return Ok(analysis);
     }
 
-    let _permit = state
-        .semaphore
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|_| "Rhythm analysis queue has been closed".to_string())?;
+    let _permit = if non_blocking {
+        state
+            .semaphore
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| "DECODER_BUSY".to_string())?
+    } else {
+        state
+            .semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| "Rhythm analysis queue has been closed".to_string())?
+    };
 
     // 等待期间同一首歌的请求可能已经完成分析,先吃缓存再谈让位。
     if !force
