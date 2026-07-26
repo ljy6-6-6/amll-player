@@ -1,8 +1,8 @@
 use std::{
     path::Path,
     sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -31,15 +31,47 @@ struct SourceSignature {
 
 pub struct RhythmAnalysisState {
     semaphore: Arc<Semaphore>,
+    foreground_pending: Arc<AtomicUsize>,
     latest_request: AtomicU64,
+    latest_song: Mutex<String>,
 }
 
 impl Default for RhythmAnalysisState {
     fn default() -> Self {
         Self {
             semaphore: Arc::new(Semaphore::new(1)),
+            foreground_pending: Arc::new(AtomicUsize::new(0)),
             latest_request: AtomicU64::new(0),
+            latest_song: Mutex::new(String::new()),
         }
+    }
+}
+
+impl RhythmAnalysisState {
+    /// 预缓存 worker 借此让路:任何播放路径的分析请求仍在进行时,
+    /// 后台队列都不会启动新的分析。
+    pub fn has_foreground_pending(&self) -> bool {
+        self.foreground_pending.load(Ordering::Acquire) > 0
+    }
+
+    pub(crate) fn semaphore(&self) -> Arc<Semaphore> {
+        self.semaphore.clone()
+    }
+}
+
+/// 播放路径请求的存续计数;Drop 保证任何返回路径都会递减。
+struct ForegroundGuard(Arc<AtomicUsize>);
+
+impl ForegroundGuard {
+    fn enter(counter: Arc<AtomicUsize>) -> Self {
+        counter.fetch_add(1, Ordering::AcqRel);
+        Self(counter)
+    }
+}
+
+impl Drop for ForegroundGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -216,6 +248,15 @@ pub async fn get_or_analyze_song_rhythm(
         .latest_request
         .fetch_add(1, Ordering::AcqRel)
         .wrapping_add(1);
+    {
+        let mut latest_song = state
+            .latest_song
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        latest_song.clear();
+        latest_song.push_str(&song_id);
+    }
+    let _foreground = ForegroundGuard::enter(state.foreground_pending.clone());
     let force = force.unwrap_or(false);
     let require_loudness = require_loudness.unwrap_or(false);
     if !force
@@ -231,18 +272,26 @@ pub async fn get_or_analyze_song_rhythm(
         .await
         .map_err(|_| "Rhythm analysis queue has been closed".to_string())?;
 
-    // Rapid skips must not leave the currently playing song behind a queue of
-    // obsolete analyses. A running decode is allowed to finish, while older
-    // requests that were still waiting yield to the newest one.
-    if state.latest_request.load(Ordering::Acquire) != request_id {
-        return Err("Rhythm analysis request was superseded by a newer song".to_string());
-    }
-
-    // A request for the same song may have completed while this request was waiting.
+    // 等待期间同一首歌的请求可能已经完成分析,先吃缓存再谈让位。
     if !force
         && let Some(analysis) = load_valid_cached_analysis(&*db, &song_id, require_loudness).await?
     {
         return Ok(analysis);
+    }
+
+    // Rapid skips must not leave the currently playing song behind a queue of
+    // obsolete analyses. A running decode is allowed to finish; an older request
+    // that was still waiting only yields when the newest request belongs to a
+    // *different* song, so the two playback-path callers (pre-play loudness and
+    // rhythm visuals) for the same song no longer cancel each other.
+    if state.latest_request.load(Ordering::Acquire) != request_id {
+        let latest_song = state
+            .latest_song
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *latest_song != song_id {
+            return Err("Rhythm analysis request was superseded by a newer song".to_string());
+        }
     }
 
     let song = song::Entity::find_by_id(&song_id)
