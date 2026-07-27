@@ -12,7 +12,7 @@ use ffmpeg_audio::{AudioError, AudioReader, ResampleOptions};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-pub const RHYTHM_ANALYZER_VERSION: u32 = 3;
+pub const RHYTHM_ANALYZER_VERSION: u32 = 4;
 pub const LOUDNESS_ANALYZER_VERSION: u32 = 1;
 
 const TARGET_SAMPLE_RATE: u32 = 22_050;
@@ -23,6 +23,7 @@ const BAND_COUNT: usize = 5;
 const BAND_EDGES_HZ: [f32; BAND_COUNT + 1] = [30.0, 150.0, 400.0, 1_200.0, 3_500.0, 11_025.0];
 const MIN_TEMPO_BPM: f32 = 55.0;
 const MAX_TEMPO_BPM: f32 = 210.0;
+const TEMPO_SEGMENT_DOWNSAMPLE: usize = 2;
 const MAX_RECOVERABLE_DECODE_ERRORS: usize = 8;
 /// Calibrates `sqrt(sum of squared Hann-windowed bin magnitudes)` back to an
 /// approximate PCM RMS scale so `band_levels` is comparable with `energy_scale`.
@@ -482,7 +483,8 @@ fn finish_analysis(
     let (energy_envelope, energy_scale) = make_energy_envelope(&rms, sample_rate, duration_ms);
 
     let tempo_envelope = smooth_tempo_envelope(&novelty, &onset_frames);
-    let global_tempo = estimate_tempo(&tempo_envelope, sample_rate);
+    let frames_per_second = sample_rate as f32 / HOP_SIZE as f32;
+    let global_tempo = estimate_tempo(&tempo_envelope, frames_per_second);
     let (global_bpm, confidence, beats, tempo_segments) = match global_tempo {
         Some(tempo) => {
             let segments =
@@ -748,9 +750,8 @@ struct TempoEstimate {
     period_frames: f32,
 }
 
-fn estimate_tempo(envelope: &[f32], sample_rate: u32) -> Option<TempoEstimate> {
-    let frames_per_second = sample_rate as f32 / HOP_SIZE as f32;
-    let min_lag = (frames_per_second * 60.0 / MAX_TEMPO_BPM).ceil() as usize;
+fn estimate_tempo(envelope: &[f32], frames_per_second: f32) -> Option<TempoEstimate> {
+    let min_lag = ((frames_per_second * 60.0 / MAX_TEMPO_BPM).floor() as usize).max(1);
     let max_lag = (frames_per_second * 60.0 / MIN_TEMPO_BPM).floor() as usize;
     if max_lag < min_lag
         || envelope.len() < max_lag.max((frames_per_second * 4.0) as usize)
@@ -1014,23 +1015,28 @@ fn estimate_tempo_segments(
         }];
     }
 
-    // Downsample envelope by 4× for sliding-window tempo estimation.
+    // Downsample envelope by 2× for sliding-window tempo estimation.
     // The 18-second windows don't need 11ms resolution; reducing the input
-    // size cuts autocorrelation cost from O(total_frames × max_lag) to
-    // O(total_frames/4 × max_lag/4), a 16× speedup with negligible accuracy loss.
+    // and lag ranges by half cuts autocorrelation cost to roughly one quarter.
+    // Sum pooling preserves the absolute energy used by estimate_tempo's
+    // sparse-window guard.
     let downsampled = envelope
-        .chunks(4)
-        .map(|chunk| chunk.iter().sum::<f32>() / chunk.len() as f32)
+        .chunks(TEMPO_SEGMENT_DOWNSAMPLE)
+        .map(|chunk| chunk.iter().sum::<f32>())
         .collect::<Vec<_>>();
-    let downsampled_window_frames = window_frames / 4;
+    let downsampled_window_frames = window_frames.div_ceil(TEMPO_SEGMENT_DOWNSAMPLE);
 
     let mut raw_segments = Vec::new();
     for start in (0..downsampled.len()).step_by(downsampled_window_frames) {
         let end = (start + downsampled_window_frames).min(downsampled.len());
-        let estimate = estimate_tempo(&downsampled[start..end], sample_rate / 4).unwrap_or(global);
+        let estimate = estimate_tempo(
+            &downsampled[start..end],
+            frames_per_second / TEMPO_SEGMENT_DOWNSAMPLE as f32,
+        )
+        .unwrap_or(global);
         // Map downsampled frame indices back to original timeline
-        let original_start = start * 4;
-        let original_end = (end * 4).min(envelope.len());
+        let original_start = start * TEMPO_SEGMENT_DOWNSAMPLE;
+        let original_end = (end * TEMPO_SEGMENT_DOWNSAMPLE).min(envelope.len());
         let start_ms = frame_boundary_to_ms(original_start, sample_rate).min(duration_ms);
         let end_ms = frame_boundary_to_ms(original_end, sample_rate).min(duration_ms);
         if start_ms >= end_ms {
@@ -1433,6 +1439,80 @@ mod tests {
                 })
             })
             .count()
+    }
+
+    fn synthetic_tempo_envelope(
+        len: usize,
+        start_frame: f32,
+        interval_frames: f32,
+        strength: f32,
+    ) -> Vec<f32> {
+        let mut novelty = vec![0.0_f32; len];
+        let mut onset_frames = Vec::new();
+        let mut position = start_frame;
+        while position < len as f32 {
+            let frame = position.round() as usize;
+            if frame >= len {
+                break;
+            }
+            novelty[frame] = strength;
+            onset_frames.push(frame);
+            position += interval_frames;
+        }
+        smooth_tempo_envelope(&novelty, &onset_frames)
+    }
+
+    fn dominant_tempo_segment(segments: &[RhythmTempoSegment]) -> &RhythmTempoSegment {
+        segments
+            .iter()
+            .max_by_key(|segment| segment.end_ms.saturating_sub(segment.start_ms))
+            .expect("expected at least one tempo segment")
+    }
+
+    #[test]
+    fn sparse_local_tempo_survives_energy_preserving_downsample() {
+        let frames_per_second = TARGET_SAMPLE_RATE as f32 / HOP_SIZE as f32;
+        let window_frames = (frames_per_second * 18.0).round() as usize;
+        let envelope = synthetic_tempo_envelope(window_frames * 2, 20.0, 148.0, 0.14);
+        let global = TempoEstimate {
+            bpm: 120.0,
+            confidence: 0.9,
+            period_frames: frames_per_second * 60.0 / 120.0,
+        };
+        let duration_ms = frame_boundary_to_ms(envelope.len(), TARGET_SAMPLE_RATE);
+
+        let segments = estimate_tempo_segments(&envelope, TARGET_SAMPLE_RATE, duration_ms, global);
+        let dominant = dominant_tempo_segment(&segments);
+        let expected_bpm = frames_per_second * 60.0 / 74.0;
+
+        assert!(
+            (dominant.bpm - expected_bpm).abs() <= 2.0,
+            "sparse local tempo fell back to global: expected {expected_bpm}, got {}",
+            dominant.bpm
+        );
+    }
+
+    #[test]
+    fn local_tempo_downsample_preserves_maximum_bpm() {
+        let frames_per_second = TARGET_SAMPLE_RATE as f32 / HOP_SIZE as f32;
+        let window_frames = (frames_per_second * 18.0).round() as usize;
+        let interval = frames_per_second * 60.0 / MAX_TEMPO_BPM;
+        let envelope = synthetic_tempo_envelope(window_frames * 2, 20.0, interval, 1.0);
+        let global = TempoEstimate {
+            bpm: 120.0,
+            confidence: 0.9,
+            period_frames: frames_per_second * 60.0 / 120.0,
+        };
+        let duration_ms = frame_boundary_to_ms(envelope.len(), TARGET_SAMPLE_RATE);
+
+        let segments = estimate_tempo_segments(&envelope, TARGET_SAMPLE_RATE, duration_ms, global);
+        let dominant = dominant_tempo_segment(&segments);
+
+        assert!(
+            (dominant.bpm - MAX_TEMPO_BPM).abs() <= 6.0,
+            "210 BPM local segment collapsed to {} BPM",
+            dominant.bpm
+        );
     }
 
     #[test]
