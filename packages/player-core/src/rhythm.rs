@@ -851,6 +851,10 @@ fn ms_to_frame(time_ms: u64, sample_rate: u32) -> f32 {
     time_ms as f32 * (sample_rate as f32 / HOP_SIZE as f32) / 1_000.0
 }
 
+fn tempo_periods_match(left: f32, right: f32) -> bool {
+    (left - right).abs() <= left.abs().max(right.abs()) * 1.0e-6
+}
+
 /// tempo segments 是局部估计;只有足够长、足够可信、且明显偏离全局速度的
 /// 分段才获得自己的拍格周期。其余区间沿用全局周期,因此恒速曲目的拍格与
 /// 分段化之前完全一致。
@@ -881,7 +885,7 @@ fn build_grid_spans(
         };
         let end_frame = ms_to_frame(segment.end_ms, sample_rate).min(envelope_len as f32);
         if let Some(last) = spans.last_mut()
-            && (last.period_frames - period_frames).abs() <= f32::EPSILON
+            && tempo_periods_match(last.period_frames, period_frames)
         {
             last.end_frame = last.end_frame.max(end_frame);
             last.confidence = last.confidence.max(confidence);
@@ -1534,6 +1538,37 @@ mod tests {
             "210 BPM local segment collapsed to {} BPM",
             dominant.bpm
         );
+    }
+
+    #[test]
+    fn nearly_equal_local_periods_merge_into_one_grid_span() {
+        let frames_per_second = TARGET_SAMPLE_RATE as f32 / HOP_SIZE as f32;
+        let global = TempoEstimate {
+            bpm: 120.0,
+            confidence: 0.9,
+            period_frames: frames_per_second * 60.0 / 120.0,
+        };
+        let segments = [
+            RhythmTempoSegment {
+                start_ms: 0,
+                end_ms: 13_000,
+                bpm: 100.0,
+                confidence: 0.9,
+            },
+            RhythmTempoSegment {
+                start_ms: 13_000,
+                end_ms: 26_000,
+                bpm: 100.000_05,
+                confidence: 0.9,
+            },
+        ];
+        let envelope_len = ms_to_frame(26_000, TARGET_SAMPLE_RATE).ceil() as usize;
+
+        let spans = build_grid_spans(envelope_len, &segments, global, TARGET_SAMPLE_RATE);
+
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].start_frame, 0.0);
+        assert!(spans[0].end_frame >= envelope_len as f32);
     }
 
     #[test]
