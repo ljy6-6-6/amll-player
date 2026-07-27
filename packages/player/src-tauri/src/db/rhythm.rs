@@ -2,7 +2,7 @@ use std::{
     path::Path,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicUsize, Ordering},
     },
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -32,8 +32,13 @@ pub(crate) struct SourceSignature {
 pub struct RhythmAnalysisState {
     semaphore: Arc<Semaphore>,
     foreground_pending: Arc<AtomicUsize>,
-    latest_request: AtomicU64,
-    latest_song: Mutex<String>,
+    latest_request: Mutex<LatestRhythmRequest>,
+}
+
+#[derive(Default)]
+struct LatestRhythmRequest {
+    request_id: u64,
+    song_id: String,
 }
 
 impl Default for RhythmAnalysisState {
@@ -41,8 +46,7 @@ impl Default for RhythmAnalysisState {
         Self {
             semaphore: Arc::new(Semaphore::new(1)),
             foreground_pending: Arc::new(AtomicUsize::new(0)),
-            latest_request: AtomicU64::new(0),
-            latest_song: Mutex::new(String::new()),
+            latest_request: Mutex::new(LatestRhythmRequest::default()),
         }
     }
 }
@@ -56,6 +60,25 @@ impl RhythmAnalysisState {
 
     pub(crate) fn semaphore(&self) -> Arc<Semaphore> {
         self.semaphore.clone()
+    }
+
+    fn register_request(&self, song_id: &str) -> u64 {
+        let mut latest = self
+            .latest_request
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        latest.request_id = latest.request_id.wrapping_add(1);
+        latest.song_id.clear();
+        latest.song_id.push_str(song_id);
+        latest.request_id
+    }
+
+    fn request_is_superseded(&self, request_id: u64, song_id: &str) -> bool {
+        let latest = self
+            .latest_request
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        latest.request_id != request_id && latest.song_id != song_id
     }
 }
 
@@ -245,18 +268,7 @@ pub async fn get_or_analyze_song_rhythm(
     require_loudness: Option<bool>,
     non_blocking: Option<bool>,
 ) -> Result<RhythmAnalysis, String> {
-    let request_id = state
-        .latest_request
-        .fetch_add(1, Ordering::AcqRel)
-        .wrapping_add(1);
-    {
-        let mut latest_song = state
-            .latest_song
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        latest_song.clear();
-        latest_song.push_str(&song_id);
-    }
+    let request_id = state.register_request(&song_id);
     let _foreground = ForegroundGuard::enter(state.foreground_pending.clone());
     let force = force.unwrap_or(false);
     let require_loudness = require_loudness.unwrap_or(false);
@@ -294,14 +306,8 @@ pub async fn get_or_analyze_song_rhythm(
     // that was still waiting only yields when the newest request belongs to a
     // *different* song, so the two playback-path callers (pre-play loudness and
     // rhythm visuals) for the same song no longer cancel each other.
-    if state.latest_request.load(Ordering::Acquire) != request_id {
-        let latest_song = state
-            .latest_song
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if *latest_song != song_id {
-            return Err("Rhythm analysis request was superseded by a newer song".to_string());
-        }
+    if state.request_is_superseded(request_id, &song_id) {
+        return Err("Rhythm analysis request was superseded by a newer song".to_string());
     }
 
     analyze_and_store(&db, &song_id).await
@@ -356,4 +362,56 @@ pub(crate) async fn analyze_and_store(
 
     store_analysis(db, song_id, signature_after, &analysis).await?;
     Ok(analysis)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Barrier;
+
+    #[test]
+    fn latest_request_publishes_id_and_song_as_one_state() {
+        let state = Arc::new(RhythmAnalysisState::default());
+        let barrier = Arc::new(Barrier::new(33));
+        let handles = (0..32)
+            .map(|index| {
+                let state = state.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let song_id = format!("song-{index}");
+                    barrier.wait();
+                    let request_id = state.register_request(&song_id);
+                    (request_id, song_id)
+                })
+            })
+            .collect::<Vec<_>>();
+        barrier.wait();
+        let registrations = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("registration thread panicked"))
+            .collect::<Vec<_>>();
+        let latest = state
+            .latest_request
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let published = registrations
+            .iter()
+            .find(|(request_id, _)| *request_id == latest.request_id)
+            .expect("latest request id was not returned by any registration");
+
+        assert_eq!(latest.song_id, published.1);
+    }
+
+    #[test]
+    fn same_song_waiters_do_not_supersede_each_other() {
+        let state = RhythmAnalysisState::default();
+        let first = state.register_request("same-song");
+        let second = state.register_request("same-song");
+
+        assert!(!state.request_is_superseded(first, "same-song"));
+        assert!(!state.request_is_superseded(second, "same-song"));
+
+        state.register_request("new-song");
+        assert!(state.request_is_superseded(first, "same-song"));
+    }
 }
