@@ -262,6 +262,53 @@ test("起播前分析失败会继续播放但禁止后台结果中途改变增�
 	assert.equal(warnings.length, 1);
 });
 
+test("解码器临时忙时立即起播并允许播放后补齐音量平衡", {
+	concurrency: false,
+}, async (context) => {
+	const calls = [];
+	mockIPC((command, payload) => {
+		calls.push({ command, payload });
+		switch (command) {
+			case "get_cached_song_loudness":
+				return null;
+			case "get_or_analyze_song_rhythm":
+				throw new Error("DECODER_BUSY");
+			case "local_player_send_msg":
+				return undefined;
+			default:
+				throw new Error(`Unexpected IPC command: ${command}`);
+		}
+	});
+
+	const store = createStore();
+	const manager = new PlayQueueManager(store);
+	context.after(() => {
+		manager.dispose();
+		clearMocks();
+	});
+
+	manager.replaceQueueAndPlay(makeSong("busy"));
+	await waitFor(
+		() => getPlayMessages(calls).length === 1,
+		"解码器忙时没有立即回退播放",
+	);
+
+	const analysisCall = calls.find(
+		({ command }) => command === "get_or_analyze_song_rhythm",
+	);
+	assert.equal(analysisCall?.payload.nonBlocking, true);
+	assert.deepEqual(getPlayMessages(calls)[0]?.loudnessNormalization, {
+		enabled: true,
+		integratedLoudnessLufs: null,
+		samplePeak: null,
+	});
+	assert.equal(
+		store.get(queueLoudnessUpdatePolicyAtom),
+		null,
+		"临时忙态不应永久禁止播放后的平滑响度更新",
+	);
+});
+
 test("等待响度缓存期间快速切歌不会为过期歌曲启动整轨分析", {
 	concurrency: false,
 }, async (context) => {

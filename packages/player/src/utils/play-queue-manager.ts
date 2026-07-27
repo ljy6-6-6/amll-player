@@ -18,6 +18,11 @@ import { emitAudioThread } from "./player.ts";
 
 type JotaiStore = ReturnType<typeof createStore>;
 
+interface TrackLoudnessPreparation {
+	loudness: TrackLoudnessAnalysis | null;
+	suppressAutomaticUpdate: boolean;
+}
+
 //#region 持久化数据结构
 interface PersistedQueueState {
 	/** playList 中的 songId 序列 */
@@ -197,7 +202,7 @@ export class PlayQueueManager {
 	private async prepareTrackLoudness(
 		songId: string,
 		requestGeneration: number,
-	): Promise<TrackLoudnessAnalysis | null> {
+	): Promise<TrackLoudnessPreparation> {
 		let cachedLoudness: TrackLoudnessAnalysis | null = null;
 		try {
 			cachedLoudness = await db.songs.getCachedLoudness(songId);
@@ -211,19 +216,33 @@ export class PlayQueueManager {
 			}
 		}
 
-		if (!this.isCurrentPlayRequest(requestGeneration)) return null;
-		if (cachedLoudness) return cachedLoudness;
+		if (!this.isCurrentPlayRequest(requestGeneration)) {
+			return { loudness: null, suppressAutomaticUpdate: false };
+		}
+		if (cachedLoudness) {
+			return { loudness: cachedLoudness, suppressAutomaticUpdate: false };
+		}
 
 		try {
-			const analysis = await db.songs.getOrAnalyzeRhythm(songId, false, true, true);
-			if (!this.isCurrentPlayRequest(requestGeneration)) return null;
-			return getCurrentTrackLoudness(analysis);
+			const analysis = await db.songs.getOrAnalyzeRhythm(
+				songId,
+				false,
+				true,
+				true,
+			);
+			if (!this.isCurrentPlayRequest(requestGeneration)) {
+				return { loudness: null, suppressAutomaticUpdate: false };
+			}
+			return {
+				loudness: getCurrentTrackLoudness(analysis),
+				suppressAutomaticUpdate: false,
+			};
 		} catch (error) {
+			const decoderBusy = String(error).includes("DECODER_BUSY");
 			if (this.isCurrentPlayRequest(requestGeneration)) {
-				const errorMsg = String(error);
-				if (errorMsg.includes("DECODER_BUSY")) {
+				if (decoderBusy) {
 					console.log(
-						"[VolumeBalance] Decoder busy, skipping pre-play loudness analysis for",
+						"[VolumeBalance] Decoder busy, deferring loudness update for",
 						songId,
 					);
 				} else {
@@ -234,7 +253,12 @@ export class PlayQueueManager {
 					);
 				}
 			}
-			return null;
+			return {
+				loudness: null,
+				// 临时忙态会由播放后的节奏请求补齐，并通过音频线程平滑更新；
+				// 真正的分析失败仍禁止本曲中途改变增益。
+				suppressAutomaticUpdate: !decoderBusy,
+			};
 		}
 	}
 
@@ -257,8 +281,14 @@ export class PlayQueueManager {
 			this.syncToAtoms();
 
 			let loudness: TrackLoudnessAnalysis | null = null;
+			let suppressAutomaticLoudnessUpdate = false;
 			if (this.store.get(enableLoudnessNormalizationAtom)) {
-				loudness = await this.prepareTrackLoudness(song.id, requestGeneration);
+				const preparation = await this.prepareTrackLoudness(
+					song.id,
+					requestGeneration,
+				);
+				loudness = preparation.loudness;
+				suppressAutomaticLoudnessUpdate = preparation.suppressAutomaticUpdate;
 			}
 
 			if (!this.isCurrentPlayRequest(requestGeneration)) return false;
@@ -279,7 +309,7 @@ export class PlayQueueManager {
 				this.currentPlaybackId = playbackId;
 				this.store.set(
 					queueLoudnessUpdatePolicyAtom,
-					enabled && !loudness
+					enabled && !loudness && suppressAutomaticLoudnessUpdate
 						? {
 								musicId: song.id,
 								suppressAutomaticUpdate: true,

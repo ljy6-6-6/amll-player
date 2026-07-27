@@ -419,7 +419,6 @@ export const LocalMusicContext: FC = () => {
 					musicId,
 					false,
 					requireLoudness,
-					true,
 				);
 				const current = store.get(currentRhythmAnalysisAtom);
 				if (
@@ -438,20 +437,12 @@ export const LocalMusicContext: FC = () => {
 				});
 			} catch (error) {
 				if (generation === rhythmGenerationRef.current) {
-					const errorMsg = String(error);
-					if (errorMsg.includes("DECODER_BUSY")) {
-						console.log(
-							"[RhythmAnalysis] Decoder busy, rhythm visuals will update when precache completes",
-							musicId,
-						);
-					} else {
-						failedRhythmAnalysisRef.current = { musicId, generation };
-						console.warn(
-							"[RhythmAnalysis] Failed to analyze song",
-							musicId,
-							error,
-						);
-					}
+					failedRhythmAnalysisRef.current = { musicId, generation };
+					console.warn(
+						"[RhythmAnalysis] Failed to analyze song",
+						musicId,
+						error,
+					);
 				}
 			}
 		},
