@@ -10,13 +10,12 @@ index 819b12c2307970f3b2dc160b47c90bc9a560887d..e1ea0609d6fa7b7f9ad8698fbca1232f
  //#endregion
  //#region \0raw:/home/runner/work/applemusic-like-lyrics/applemusic-like-lyrics/packages/core/src/bg-render/mesh-renderer/mesh.vert.glsl
  var mesh_vert_default = "precision mediump float;\n\nattribute vec2 a_pos;\nattribute vec3 a_color;\nattribute vec2 a_uv;\nvarying vec3 v_color;\nvarying vec2 v_uv;\n\nuniform float u_aspect;\n\nvoid main() {\n    v_color = a_color;\n    v_uv = a_uv;\n    vec2 pos = a_pos;\n    if (u_aspect > 1.0) {\n        pos.y *= u_aspect;\n    } else {\n        pos.x /= u_aspect;\n    }\n    gl_Position = vec4(pos, 0.0, 1.0);\n}\n";
-@@ -1136,11 +1137,22 @@ function createOffscreenCanvas(width, height) {
+@@ -1136,11 +1137,21 @@ function createOffscreenCanvas(width, height) {
  	return canvas;
  }
  var MeshGradientRenderer = class extends BaseRenderer {
 +	static rhythmVisualVolume = 0;
 +	static strongBeat = 0;
-+	static _needResetKick = false;
 +	static setRhythmVisualSignal(breath, heavyBeat) {
 +		MeshGradientRenderer.rhythmVisualVolume = Number.isFinite(breath) ? Math.min(.4, Math.max(0, breath)) : 0;
 +		MeshGradientRenderer.strongBeat = Number.isFinite(heavyBeat) ? Math.min(1, Math.max(0, heavyBeat)) : 0;
@@ -33,7 +32,7 @@ index 819b12c2307970f3b2dc160b47c90bc9a560887d..e1ea0609d6fa7b7f9ad8698fbca1232f
  	volume = 0;
  	tickHandle = 0;
  	maxFPS = 60;
-@@ -1192,8 +1204,10 @@ var MeshGradientRenderer = class extends BaseRenderer {
+@@ -1192,8 +1203,10 @@ var MeshGradientRenderer = class extends BaseRenderer {
  		const frameDelta = tickTime - this.lastFrameTime;
  		this.lastFrameTime = tickTime;
  		this.lastTickTime = tickTime - delta % interval;
@@ -46,7 +45,7 @@ index 819b12c2307970f3b2dc160b47c90bc9a560887d..e1ea0609d6fa7b7f9ad8698fbca1232f
  		else if (this.staticMode) this.lastFrameTime = NaN;
  	}
  	checkIfResize() {
-@@ -1228,7 +1242,16 @@ var MeshGradientRenderer = class extends BaseRenderer {
+@@ -1228,7 +1241,12 @@ var MeshGradientRenderer = class extends BaseRenderer {
  	onRedraw(tickTime, delta) {
  		const latestMeshState = this.meshStates[this.meshStates.length - 1];
  		let canBeStatic = false;
@@ -55,16 +54,12 @@ index 819b12c2307970f3b2dc160b47c90bc9a560887d..e1ea0609d6fa7b7f9ad8698fbca1232f
 +		const safeDelta = Number.isFinite(delta) ? Math.min(maxFrameDelta, Math.max(0, delta)) : 0;
 +		const deltaFactor = safeDelta / 500;
 +		const kickDrive = MeshGradientRenderer.strongBeat;
-+		if (MeshGradientRenderer._needResetKick) {
-+			this.lastKickDrive = 0;
-+			MeshGradientRenderer._needResetKick = false;
-+		}
 +		this.kickVelocity += 2.4 * Math.max(0, kickDrive - this.lastKickDrive);
 +		this.lastKickDrive = kickDrive;
  		if (latestMeshState) {
  			latestMeshState.mesh.bind();
  			if (this.manualControl) latestMeshState.mesh.updateMesh();
-@@ -1263,8 +1286,30 @@ var MeshGradientRenderer = class extends BaseRenderer {
+@@ -1263,8 +1281,30 @@ var MeshGradientRenderer = class extends BaseRenderer {
  		gl.bindFramebuffer(gl.FRAMEBUFFER, null);
  		gl.clearColor(0, 0, 0, 0);
  		gl.clear(gl.COLOR_BUFFER_BIT);
@@ -96,7 +91,7 @@ index 819b12c2307970f3b2dc160b47c90bc9a560887d..e1ea0609d6fa7b7f9ad8698fbca1232f
  		for (const state of this.meshStates) {
  			gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
  			gl.disable(gl.BLEND);
-@@ -1275,9 +1320,9 @@ var MeshGradientRenderer = class extends BaseRenderer {
+@@ -1275,9 +1315,9 @@ var MeshGradientRenderer = class extends BaseRenderer {
  			const uTime = tickTime / 1e4;
  			this.mainProgram.setUniform1f("u_aspect", this.manualControl ? 1 : this.canvas.width / this.canvas.height);
  			this.mainProgram.setUniform1i("u_texture", 0);
@@ -109,18 +104,19 @@ index 819b12c2307970f3b2dc160b47c90bc9a560887d..e1ea0609d6fa7b7f9ad8698fbca1232f
  			this.mainProgram.setUniform1f("u_sinAngle", Math.sin(angle));
  			this.mainProgram.setUniform1f("u_cosAngle", Math.cos(angle));
  			state.texture.bind();
-@@ -1363,6 +1408,10 @@ var MeshGradientRenderer = class extends BaseRenderer {
+@@ -1363,6 +1403,11 @@ var MeshGradientRenderer = class extends BaseRenderer {
  	}
  	resume() {
++		const wasPaused = this.paused;
  		this.paused = false;
 +		const now = performance.now();
 +		this.lastFrameTime = now;
 +		this.lastTickTime = now;
-+		MeshGradientRenderer._needResetKick = true;
++		if (wasPaused) this.lastKickDrive = 0;
  		this.requestTick();
  	}
  	async setAlbum(albumSource, isVideo) {
-@@ -1471,7 +1520,7 @@ var MeshGradientRenderer = class extends BaseRenderer {
+@@ -1471,7 +1516,7 @@ var MeshGradientRenderer = class extends BaseRenderer {
  		this.requestTick();
  	}
  	setLowFreqVolume(volume) {
@@ -165,13 +161,12 @@ index 37bd9873e58044f0900c04c2ab80da5a6d29f16a..2d83d26c90c6947b5d86449295aa4bdb
  //#endregion
  //#region \0raw:/home/runner/work/applemusic-like-lyrics/applemusic-like-lyrics/packages/core/src/bg-render/mesh-renderer/mesh.vert.glsl
  var mesh_vert_default = "precision mediump float;\n\nattribute vec2 a_pos;\nattribute vec3 a_color;\nattribute vec2 a_uv;\nvarying vec3 v_color;\nvarying vec2 v_uv;\n\nuniform float u_aspect;\n\nvoid main() {\n    v_color = a_color;\n    v_uv = a_uv;\n    vec2 pos = a_pos;\n    if (u_aspect > 1.0) {\n        pos.y *= u_aspect;\n    } else {\n        pos.x /= u_aspect;\n    }\n    gl_Position = vec4(pos, 0.0, 1.0);\n}\n";
-@@ -1111,11 +1112,22 @@ function createOffscreenCanvas(width, height) {
+@@ -1111,11 +1112,21 @@ function createOffscreenCanvas(width, height) {
  	return canvas;
  }
  var MeshGradientRenderer = class extends BaseRenderer {
 +	static rhythmVisualVolume = 0;
 +	static strongBeat = 0;
-+	static _needResetKick = false;
 +	static setRhythmVisualSignal(breath, heavyBeat) {
 +		MeshGradientRenderer.rhythmVisualVolume = Number.isFinite(breath) ? Math.min(.4, Math.max(0, breath)) : 0;
 +		MeshGradientRenderer.strongBeat = Number.isFinite(heavyBeat) ? Math.min(1, Math.max(0, heavyBeat)) : 0;
@@ -188,7 +183,7 @@ index 37bd9873e58044f0900c04c2ab80da5a6d29f16a..2d83d26c90c6947b5d86449295aa4bdb
  	volume = 0;
  	tickHandle = 0;
  	maxFPS = 60;
-@@ -1167,8 +1179,10 @@ var MeshGradientRenderer = class extends BaseRenderer {
+@@ -1167,8 +1178,10 @@ var MeshGradientRenderer = class extends BaseRenderer {
  		const frameDelta = tickTime - this.lastFrameTime;
  		this.lastFrameTime = tickTime;
  		this.lastTickTime = tickTime - delta % interval;
@@ -201,7 +196,7 @@ index 37bd9873e58044f0900c04c2ab80da5a6d29f16a..2d83d26c90c6947b5d86449295aa4bdb
  		else if (this.staticMode) this.lastFrameTime = NaN;
  	}
  	checkIfResize() {
-@@ -1203,7 +1217,16 @@ var MeshGradientRenderer = class extends BaseRenderer {
+@@ -1203,7 +1216,12 @@ var MeshGradientRenderer = class extends BaseRenderer {
  	onRedraw(tickTime, delta) {
  		const latestMeshState = this.meshStates[this.meshStates.length - 1];
  		let canBeStatic = false;
@@ -210,16 +205,12 @@ index 37bd9873e58044f0900c04c2ab80da5a6d29f16a..2d83d26c90c6947b5d86449295aa4bdb
 +		const safeDelta = Number.isFinite(delta) ? Math.min(maxFrameDelta, Math.max(0, delta)) : 0;
 +		const deltaFactor = safeDelta / 500;
 +		const kickDrive = MeshGradientRenderer.strongBeat;
-+		if (MeshGradientRenderer._needResetKick) {
-+			this.lastKickDrive = 0;
-+			MeshGradientRenderer._needResetKick = false;
-+		}
 +		this.kickVelocity += 2.4 * Math.max(0, kickDrive - this.lastKickDrive);
 +		this.lastKickDrive = kickDrive;
  		if (latestMeshState) {
  			latestMeshState.mesh.bind();
  			if (this.manualControl) latestMeshState.mesh.updateMesh();
-@@ -1238,8 +1261,30 @@ var MeshGradientRenderer = class extends BaseRenderer {
+@@ -1238,8 +1256,30 @@ var MeshGradientRenderer = class extends BaseRenderer {
  		gl.bindFramebuffer(gl.FRAMEBUFFER, null);
  		gl.clearColor(0, 0, 0, 0);
  		gl.clear(gl.COLOR_BUFFER_BIT);
@@ -251,7 +242,7 @@ index 37bd9873e58044f0900c04c2ab80da5a6d29f16a..2d83d26c90c6947b5d86449295aa4bdb
  		for (const state of this.meshStates) {
  			gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
  			gl.disable(gl.BLEND);
-@@ -1250,9 +1295,9 @@ var MeshGradientRenderer = class extends BaseRenderer {
+@@ -1250,9 +1290,9 @@ var MeshGradientRenderer = class extends BaseRenderer {
  			const uTime = tickTime / 1e4;
  			this.mainProgram.setUniform1f("u_aspect", this.manualControl ? 1 : this.canvas.width / this.canvas.height);
  			this.mainProgram.setUniform1i("u_texture", 0);
@@ -264,18 +255,19 @@ index 37bd9873e58044f0900c04c2ab80da5a6d29f16a..2d83d26c90c6947b5d86449295aa4bdb
  			this.mainProgram.setUniform1f("u_sinAngle", Math.sin(angle));
  			this.mainProgram.setUniform1f("u_cosAngle", Math.cos(angle));
  			state.texture.bind();
-@@ -1338,6 +1383,10 @@ var MeshGradientRenderer = class extends BaseRenderer {
+@@ -1338,6 +1378,11 @@ var MeshGradientRenderer = class extends BaseRenderer {
  	}
  	resume() {
++		const wasPaused = this.paused;
  		this.paused = false;
 +		const now = performance.now();
 +		this.lastFrameTime = now;
 +		this.lastTickTime = now;
-+		MeshGradientRenderer._needResetKick = true;
++		if (wasPaused) this.lastKickDrive = 0;
  		this.requestTick();
  	}
  	async setAlbum(albumSource, isVideo) {
-@@ -1446,7 +1495,7 @@ var MeshGradientRenderer = class extends BaseRenderer {
+@@ -1446,7 +1491,7 @@ var MeshGradientRenderer = class extends BaseRenderer {
  		this.requestTick();
  	}
  	setLowFreqVolume(volume) {

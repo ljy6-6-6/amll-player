@@ -2269,6 +2269,30 @@ function createMeshHarness() {
 	};
 }
 
+test("真实 Mesh 的 resume 只重置当前实例的重拍边沿", () => {
+	const resumed = createMeshHarness();
+	const sibling = createMeshHarness();
+	resumed.step(0, 0, { strongBeat: 1 });
+	sibling.step(0, 0, { strongBeat: 1 });
+	Object.assign(resumed.renderer, {
+		paused: true,
+		requestTick() {},
+	});
+
+	resumed.renderer.resume();
+	sibling.step(0, 0, { strongBeat: 1 });
+	resumed.step(0, 0, { strongBeat: 1 });
+
+	assert.ok(
+		Math.abs(resumed.renderer.kickVelocity - 4.8) < 1e-12,
+		"恢复实例没有重新接收当前重拍的首个冲量",
+	);
+	assert.ok(
+		Math.abs(sibling.renderer.kickVelocity - 2.4) < 1e-12,
+		"其他 Mesh 实例错误消费了恢复状态",
+	);
+});
+
 function median(values) {
 	if (values.length === 0) return 0;
 	const sorted = [...values].sort((left, right) => left - right);
