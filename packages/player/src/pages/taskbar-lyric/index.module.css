@@ -426,6 +426,12 @@
 	padding-left: 4px;
 }
 
+.groupContainer[data-group-content="metadata"]
+	.ghostLine[data-status="secondary"]
+	> span {
+	font-size: 0.85em;
+}
+
 .animatedLine {
 	grid-area: 1 / 1;
 	width: 100%;

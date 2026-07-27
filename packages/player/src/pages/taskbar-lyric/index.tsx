@@ -922,9 +922,13 @@ export const TaskbarLyricApp = () => {
 	const renderGhostLines = (metadata: boolean) =>
 		metadata ? (
 			<>
-				<div className={styles.ghostLine}>{musicName}</div>
+				<div className={styles.ghostLine} data-status="primary">
+					<span>{musicName}</span>
+				</div>
 				{!isSingleLineMode && (
-					<div className={styles.ghostLine}>{musicArtists}</div>
+					<div className={styles.ghostLine} data-status="secondary">
+						<span>{musicArtists}</span>
+					</div>
 				)}
 			</>
 		) : (
@@ -1116,20 +1120,7 @@ export const TaskbarLyricApp = () => {
 							exit="exit"
 						>
 							<div className={styles.ghostPanel} aria-hidden="true">
-								{displayAsMetadata ? (
-									<>
-										<div className={styles.ghostLine}>{musicName}</div>
-										{!isSingleLineMode && (
-											<div className={styles.ghostLine}>{musicArtists}</div>
-										)}
-									</>
-								) : (
-									lyricItems.map((item) => (
-										<div key={item.key} className={styles.ghostLine}>
-											{item.text}
-										</div>
-									))
-								)}
+								{renderGhostLines(displayAsMetadata)}
 							</div>
 
 							{displayAsMetadata ? (
