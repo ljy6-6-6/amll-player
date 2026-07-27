@@ -2,7 +2,6 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::Path,
     sync::Mutex,
-    time::Duration,
 };
 
 use amll_player_core::RHYTHM_ANALYZER_VERSION;
@@ -202,10 +201,9 @@ pub fn get_rhythm_precache_progress(
 async fn run_worker(app: AppHandle) {
     loop {
         // 播放路径的分析请求在场时后台完全静默,把解码线程让给当前歌曲。
-        if app.state::<RhythmAnalysisState>().has_foreground_pending() {
-            tokio::time::sleep(Duration::from_millis(300)).await;
-            continue;
-        }
+        app.state::<RhythmAnalysisState>()
+            .wait_for_foreground_idle()
+            .await;
 
         let next_song_id = {
             let state = app.state::<RhythmPrecacheState>();

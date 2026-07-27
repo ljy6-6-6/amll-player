@@ -12,7 +12,7 @@ use amll_player_core::{
 };
 use sea_orm::{ActiveValue::Set, EntityTrait, sea_query::OnConflict};
 use tauri::State;
-use tokio::sync::Semaphore;
+use tokio::sync::{Notify, Semaphore};
 use tracing::warn;
 
 use crate::{
@@ -32,6 +32,7 @@ pub(crate) struct SourceSignature {
 pub struct RhythmAnalysisState {
     semaphore: Arc<Semaphore>,
     foreground_pending: Arc<AtomicUsize>,
+    foreground_idle: Arc<Notify>,
     latest_request: Mutex<LatestRhythmRequest>,
 }
 
@@ -46,6 +47,7 @@ impl Default for RhythmAnalysisState {
         Self {
             semaphore: Arc::new(Semaphore::new(1)),
             foreground_pending: Arc::new(AtomicUsize::new(0)),
+            foreground_idle: Arc::new(Notify::new()),
             latest_request: Mutex::new(LatestRhythmRequest::default()),
         }
     }
@@ -60,6 +62,16 @@ impl RhythmAnalysisState {
 
     pub(crate) fn semaphore(&self) -> Arc<Semaphore> {
         self.semaphore.clone()
+    }
+
+    pub(crate) async fn wait_for_foreground_idle(&self) {
+        loop {
+            let notified = self.foreground_idle.notified();
+            if !self.has_foreground_pending() {
+                return;
+            }
+            notified.await;
+        }
     }
 
     fn register_request(&self, song_id: &str) -> u64 {
@@ -83,18 +95,23 @@ impl RhythmAnalysisState {
 }
 
 /// 播放路径请求的存续计数;Drop 保证任何返回路径都会递减。
-struct ForegroundGuard(Arc<AtomicUsize>);
+struct ForegroundGuard {
+    counter: Arc<AtomicUsize>,
+    idle: Arc<Notify>,
+}
 
 impl ForegroundGuard {
-    fn enter(counter: Arc<AtomicUsize>) -> Self {
+    fn enter(counter: Arc<AtomicUsize>, idle: Arc<Notify>) -> Self {
         counter.fetch_add(1, Ordering::AcqRel);
-        Self(counter)
+        Self { counter, idle }
     }
 }
 
 impl Drop for ForegroundGuard {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::AcqRel);
+        if self.counter.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.idle.notify_one();
+        }
     }
 }
 
@@ -269,7 +286,10 @@ pub async fn get_or_analyze_song_rhythm(
     non_blocking: Option<bool>,
 ) -> Result<RhythmAnalysis, String> {
     let request_id = state.register_request(&song_id);
-    let _foreground = ForegroundGuard::enter(state.foreground_pending.clone());
+    let _foreground = ForegroundGuard::enter(
+        state.foreground_pending.clone(),
+        state.foreground_idle.clone(),
+    );
     let force = force.unwrap_or(false);
     let require_loudness = require_loudness.unwrap_or(false);
     let non_blocking = non_blocking.unwrap_or(false);
@@ -413,5 +433,34 @@ mod tests {
 
         state.register_request("new-song");
         assert!(state.request_is_superseded(first, "same-song"));
+    }
+
+    #[tokio::test]
+    async fn idle_waiter_wakes_after_last_foreground_request_finishes() {
+        let state = Arc::new(RhythmAnalysisState::default());
+        let first = ForegroundGuard::enter(
+            state.foreground_pending.clone(),
+            state.foreground_idle.clone(),
+        );
+        let second = ForegroundGuard::enter(
+            state.foreground_pending.clone(),
+            state.foreground_idle.clone(),
+        );
+        let waiting_state = state.clone();
+        let waiter = tokio::spawn(async move {
+            waiting_state.wait_for_foreground_idle().await;
+        });
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+
+        drop(first);
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+
+        drop(second);
+        tokio::time::timeout(std::time::Duration::from_secs(1), waiter)
+            .await
+            .expect("idle waiter was not notified")
+            .expect("idle waiter task failed");
     }
 }
