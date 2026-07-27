@@ -47,7 +47,7 @@ import { PageContainer } from "../../components/PageContainer/index.tsx";
 import { PlaylistCover } from "../../components/PlaylistCover/index.tsx";
 import { PlaylistSongCard } from "../../components/PlaylistSongCard/index.tsx";
 import { queueManagerAtom } from "../../states/appAtoms.ts";
-import { db, type Song } from "../../utils/db-client.ts";
+import { db, type Song, startRhythmPrecache } from "../../utils/db-client.ts";
 import { queuePlaylistIdAtom } from "../../utils/play-queue-manager.ts";
 import {
 	readLocalMusicMetadata,
@@ -431,6 +431,9 @@ export const Component: FC = () => {
 			.map((v) => v.id)
 			.filter((v) => !playlist?.songIds.includes(v));
 		await db.playlists.addSongs(Number(param.id), shouldAddIds);
+		if (transformed.length > 0) {
+			void startRhythmPrecache().catch(() => {});
+		}
 
 		if (shouldAddIds.length > 0 && queueManager) {
 			const queuePlaylistId = store.get(queuePlaylistIdAtom);
