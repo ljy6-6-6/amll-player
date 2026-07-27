@@ -211,7 +211,11 @@ const RhythmPrecacheProgressContext: FC = () => {
 							{ finished, total: progress.total },
 						);
 				if (toast.isActive(RHYTHM_PRECACHE_TOAST_ID)) {
-					toast.update(RHYTHM_PRECACHE_TOAST_ID, { render });
+					toast.update(RHYTHM_PRECACHE_TOAST_ID, {
+						render,
+						autoClose: false,
+						type: "info",
+					});
 				} else {
 					toast.info(render, {
 						toastId: RHYTHM_PRECACHE_TOAST_ID,
