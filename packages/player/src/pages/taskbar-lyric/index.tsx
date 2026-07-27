@@ -50,6 +50,11 @@ import { LyricScroll } from "./LyricScroll.tsx";
 
 const LYRIC_OFFSET = 300;
 const HOVER_REARM_MARGIN = 2;
+const HOVER_LAYOUT_TRANSITION = {
+	type: "tween" as const,
+	duration: 0.24,
+	ease: [0.22, 1, 0.36, 1] as [number, number, number, number],
+};
 
 type PointerPosition = {
 	x: number;
@@ -545,16 +550,12 @@ export const TaskbarLyricApp = () => {
 			? { height: measuredControlsExtent, marginTop: 0 }
 			: { width: measuredControlsExtent, marginLeft: 0 }),
 		opacity: 1,
-		transition: {
-			type: "spring" as const,
-			stiffness: 400,
-			damping: 35,
-		},
+		transition: HOVER_LAYOUT_TRANSITION,
 	};
 	const controlsExitAnimation = {
 		...(isVert ? { height: 0, marginTop: -12 } : { width: 0, marginLeft: -12 }),
 		opacity: 0,
-		transition: { type: "spring" as const, stiffness: 400, damping: 35 },
+		transition: HOVER_LAYOUT_TRANSITION,
 	};
 	const currentLine =
 		currentLyricIndex >= 0 ? lyricLines[currentLyricIndex] : null;
@@ -1004,11 +1005,7 @@ export const TaskbarLyricApp = () => {
 				data-single-line={isSingleLineMode}
 				initial={false}
 				animate={containerSizeAnimation}
-				transition={{
-					type: "tween",
-					duration: 0.24,
-					ease: [0.22, 1, 0.36, 1],
-				}}
+				transition={HOVER_LAYOUT_TRANSITION}
 				onMouseEnter={() => {
 					if (!hoverArmedRef.current && !isHoveredRef.current) return;
 					setClickInterception(true);
