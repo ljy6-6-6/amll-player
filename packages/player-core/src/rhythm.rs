@@ -27,6 +27,8 @@ const TEMPO_SEGMENT_DOWNSAMPLE: usize = 2;
 const MAX_RECOVERABLE_DECODE_ERRORS: usize = 8;
 /// Calibrates `sqrt(sum of squared Hann-windowed bin magnitudes)` back to an
 /// approximate PCM RMS scale so `band_levels` is comparable with `energy_scale`.
+/// Spectral leakage and fixed band edges make it a visual estimate rather than
+/// an exact per-band loudness measurement.
 const BAND_LEVEL_SCALE: f32 = 2.828_427;
 /// A tempo segment only gets its own beat-grid period when it is long and
 /// confident enough, and clearly deviates from the global tempo. Everything
