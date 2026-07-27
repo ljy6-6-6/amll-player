@@ -44,6 +44,31 @@ struct PrecacheQueue {
     current_song_name: Option<String>,
 }
 
+impl PrecacheQueue {
+    fn enqueue(&mut self, song_id: String) -> bool {
+        if !self.queued.insert(song_id.clone()) {
+            return false;
+        }
+        self.pending.push_back(song_id);
+        self.total += 1;
+        true
+    }
+
+    fn dequeue(&mut self) -> Option<String> {
+        // queued 同时覆盖等待中和分析中的歌曲，完成前都不能再次入队。
+        self.pending.pop_front()
+    }
+
+    fn complete(&mut self, song_id: &str, succeeded: bool) {
+        self.queued.remove(song_id);
+        if succeeded {
+            self.done += 1;
+        } else {
+            self.failed += 1;
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct RhythmPrecacheState {
     queue: Mutex<PrecacheQueue>,
@@ -149,10 +174,7 @@ pub async fn start_rhythm_precache(
             queue.failed = 0;
         }
         for song_id in needing {
-            if queue.queued.insert(song_id.clone()) {
-                queue.pending.push_back(song_id);
-                queue.total += 1;
-            }
+            queue.enqueue(song_id);
         }
         if !queue.worker_running && !queue.pending.is_empty() {
             queue.worker_running = true;
@@ -191,11 +213,8 @@ async fn run_worker(app: AppHandle) {
                 .queue
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            match queue.pending.pop_front() {
-                Some(song_id) => {
-                    queue.queued.remove(&song_id);
-                    Some(song_id)
-                }
+            match queue.dequeue() {
+                Some(song_id) => Some(song_id),
                 None => {
                     queue.worker_running = false;
                     queue.current_song_name = None;
@@ -234,10 +253,7 @@ async fn run_worker(app: AppHandle) {
                 .queue
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            match &result {
-                Ok(()) => queue.done += 1,
-                Err(_) => queue.failed += 1,
-            }
+            queue.complete(&song_id, result.is_ok());
             queue.current_song_name = None;
         }
         if let Err(error) = result {
@@ -259,4 +275,24 @@ async fn precache_song(app: &AppHandle, song_id: &str) -> Result<(), String> {
         return Ok(());
     }
     analyze_and_store(&db, song_id).await.map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn in_flight_song_stays_deduplicated_until_completion() {
+        let mut queue = PrecacheQueue::default();
+        assert!(queue.enqueue("song-a".to_string()));
+        assert_eq!(queue.dequeue().as_deref(), Some("song-a"));
+
+        assert!(!queue.enqueue("song-a".to_string()));
+        assert_eq!(queue.total, 1);
+
+        queue.complete("song-a", true);
+        assert_eq!(queue.done, 1);
+        assert!(queue.enqueue("song-a".to_string()));
+        assert_eq!(queue.total, 2);
+    }
 }
