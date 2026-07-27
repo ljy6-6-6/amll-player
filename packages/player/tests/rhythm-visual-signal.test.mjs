@@ -2293,6 +2293,25 @@ test("真实 Mesh 的 resume 只重置当前实例的重拍边沿", () => {
 	);
 });
 
+test("真实 Mesh 在离屏缓冲不可用时不会累积未显示的重拍冲量", () => {
+	const harness = createMeshHarness();
+	harness.renderer.fbo = null;
+
+	for (let pulse = 0; pulse < 4; pulse++) {
+		harness.step(pulse * 2, 0, { strongBeat: 1 });
+		harness.step(pulse * 2 + 1, 0, { strongBeat: 0 });
+	}
+	assert.equal(harness.renderer.kickVelocity, 0);
+
+	harness.renderer.fbo = {};
+	harness.step(10, 0, { strongBeat: 0 });
+	assert.equal(
+		harness.renderer.kickVelocity,
+		0,
+		"离屏期间积累的冲量在缓冲恢复后被异常释放",
+	);
+});
+
 function median(values) {
 	if (values.length === 0) return 0;
 	const sorted = [...values].sort((left, right) => left - right);

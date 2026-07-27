@@ -45,7 +45,7 @@ index 819b12c2307970f3b2dc160b47c90bc9a560887d..e1ea0609d6fa7b7f9ad8698fbca1232f
  		else if (this.staticMode) this.lastFrameTime = NaN;
  	}
  	checkIfResize() {
-@@ -1228,7 +1241,12 @@ var MeshGradientRenderer = class extends BaseRenderer {
+@@ -1228,7 +1241,9 @@ var MeshGradientRenderer = class extends BaseRenderer {
  	onRedraw(tickTime, delta) {
  		const latestMeshState = this.meshStates[this.meshStates.length - 1];
  		let canBeStatic = false;
@@ -53,13 +53,13 @@ index 819b12c2307970f3b2dc160b47c90bc9a560887d..e1ea0609d6fa7b7f9ad8698fbca1232f
 +		const maxFrameDelta = Math.max(50, (Number.isFinite(this.maxFPS) && this.maxFPS > 0 ? 1e3 / this.maxFPS : 0) * 1.5);
 +		const safeDelta = Number.isFinite(delta) ? Math.min(maxFrameDelta, Math.max(0, delta)) : 0;
 +		const deltaFactor = safeDelta / 500;
-+		const kickDrive = MeshGradientRenderer.strongBeat;
-+		this.kickVelocity += 2.4 * Math.max(0, kickDrive - this.lastKickDrive);
-+		this.lastKickDrive = kickDrive;
  		if (latestMeshState) {
  			latestMeshState.mesh.bind();
  			if (this.manualControl) latestMeshState.mesh.updateMesh();
-@@ -1263,8 +1281,30 @@ var MeshGradientRenderer = class extends BaseRenderer {
+@@ -1263,8 +1278,33 @@ var MeshGradientRenderer = class extends BaseRenderer {
++		const kickDrive = MeshGradientRenderer.strongBeat;
++		this.kickVelocity += 2.4 * Math.max(0, kickDrive - this.lastKickDrive);
++		this.lastKickDrive = kickDrive;
  		gl.bindFramebuffer(gl.FRAMEBUFFER, null);
  		gl.clearColor(0, 0, 0, 0);
  		gl.clear(gl.COLOR_BUFFER_BIT);
@@ -196,7 +196,7 @@ index 37bd9873e58044f0900c04c2ab80da5a6d29f16a..2d83d26c90c6947b5d86449295aa4bdb
  		else if (this.staticMode) this.lastFrameTime = NaN;
  	}
  	checkIfResize() {
-@@ -1203,7 +1216,12 @@ var MeshGradientRenderer = class extends BaseRenderer {
+@@ -1203,7 +1216,9 @@ var MeshGradientRenderer = class extends BaseRenderer {
  	onRedraw(tickTime, delta) {
  		const latestMeshState = this.meshStates[this.meshStates.length - 1];
  		let canBeStatic = false;
@@ -204,13 +204,13 @@ index 37bd9873e58044f0900c04c2ab80da5a6d29f16a..2d83d26c90c6947b5d86449295aa4bdb
 +		const maxFrameDelta = Math.max(50, (Number.isFinite(this.maxFPS) && this.maxFPS > 0 ? 1e3 / this.maxFPS : 0) * 1.5);
 +		const safeDelta = Number.isFinite(delta) ? Math.min(maxFrameDelta, Math.max(0, delta)) : 0;
 +		const deltaFactor = safeDelta / 500;
-+		const kickDrive = MeshGradientRenderer.strongBeat;
-+		this.kickVelocity += 2.4 * Math.max(0, kickDrive - this.lastKickDrive);
-+		this.lastKickDrive = kickDrive;
  		if (latestMeshState) {
  			latestMeshState.mesh.bind();
  			if (this.manualControl) latestMeshState.mesh.updateMesh();
-@@ -1238,8 +1256,30 @@ var MeshGradientRenderer = class extends BaseRenderer {
+@@ -1238,8 +1253,33 @@ var MeshGradientRenderer = class extends BaseRenderer {
++		const kickDrive = MeshGradientRenderer.strongBeat;
++		this.kickVelocity += 2.4 * Math.max(0, kickDrive - this.lastKickDrive);
++		this.lastKickDrive = kickDrive;
  		gl.bindFramebuffer(gl.FRAMEBUFFER, null);
  		gl.clearColor(0, 0, 0, 0);
  		gl.clear(gl.COLOR_BUFFER_BIT);

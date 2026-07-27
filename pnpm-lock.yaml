@@ -44,7 +44,7 @@ catalogs:
       version: 3.6.0
 
 patchedDependencies:
-  '@applemusic-like-lyrics/core@0.5.2': f4592459ef143bc9d92c745357a25d7d82d48e0bfe3d5cd4c0ec48d0172b689f
+  '@applemusic-like-lyrics/core@0.5.2': ae1000e0ceb7a0df37a4d304b44bc6cb4cbe3ec4b54e5d38f07443c5e12b2bba
 
 importers:
 
@@ -61,7 +61,7 @@ importers:
     dependencies:
       '@applemusic-like-lyrics/core':
         specifier: ^0.5.2
-        version: 0.5.2(patch_hash=f4592459ef143bc9d92c745357a25d7d82d48e0bfe3d5cd4c0ec48d0172b689f)(@pixi/app@7.4.3(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3)))(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3))(@pixi/filter-blur@7.4.3(@pixi/core@7.4.3))(@pixi/filter-bulge-pinch@5.1.1(@pixi/core@7.4.3))(@pixi/filter-color-matrix@7.4.3(@pixi/core@7.4.3))(@pixi/sprite@7.4.3(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3)))
+        version: 0.5.2(patch_hash=ae1000e0ceb7a0df37a4d304b44bc6cb4cbe3ec4b54e5d38f07443c5e12b2bba)(@pixi/app@7.4.3(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3)))(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3))(@pixi/filter-blur@7.4.3(@pixi/core@7.4.3))(@pixi/filter-bulge-pinch@5.1.1(@pixi/core@7.4.3))(@pixi/filter-color-matrix@7.4.3(@pixi/core@7.4.3))(@pixi/sprite@7.4.3(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3)))
       '@applemusic-like-lyrics/fft':
         specifier: ^0.2.2
         version: 0.2.2
@@ -3303,7 +3303,7 @@ packages:
 
 snapshots:
 
-  '@applemusic-like-lyrics/core@0.5.2(patch_hash=f4592459ef143bc9d92c745357a25d7d82d48e0bfe3d5cd4c0ec48d0172b689f)(@pixi/app@7.4.3(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3)))(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3))(@pixi/filter-blur@7.4.3(@pixi/core@7.4.3))(@pixi/filter-bulge-pinch@5.1.1(@pixi/core@7.4.3))(@pixi/filter-color-matrix@7.4.3(@pixi/core@7.4.3))(@pixi/sprite@7.4.3(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3)))':
+  '@applemusic-like-lyrics/core@0.5.2(patch_hash=ae1000e0ceb7a0df37a4d304b44bc6cb4cbe3ec4b54e5d38f07443c5e12b2bba)(@pixi/app@7.4.3(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3)))(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3))(@pixi/filter-blur@7.4.3(@pixi/core@7.4.3))(@pixi/filter-bulge-pinch@5.1.1(@pixi/core@7.4.3))(@pixi/filter-color-matrix@7.4.3(@pixi/core@7.4.3))(@pixi/sprite@7.4.3(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3)))':
     dependencies:
       '@pixi/app': 7.4.3(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3))
       '@pixi/core': 7.4.3
@@ -3326,7 +3326,7 @@ snapshots:
 
   '@applemusic-like-lyrics/react-full@0.4.2(@pixi/app@7.4.3(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3)))(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3))(@pixi/filter-blur@7.4.3(@pixi/core@7.4.3))(@pixi/filter-bulge-pinch@5.1.1(@pixi/core@7.4.3))(@pixi/filter-color-matrix@7.4.3(@pixi/core@7.4.3))(@pixi/sprite@7.4.3(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3)))(jotai@2.20.1(@babel/core@7.29.0)(@babel/template@7.29.7)(@types/react@19.2.17)(react@19.2.7))(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
     dependencies:
-      '@applemusic-like-lyrics/core': 0.5.2(patch_hash=f4592459ef143bc9d92c745357a25d7d82d48e0bfe3d5cd4c0ec48d0172b689f)(@pixi/app@7.4.3(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3)))(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3))(@pixi/filter-blur@7.4.3(@pixi/core@7.4.3))(@pixi/filter-bulge-pinch@5.1.1(@pixi/core@7.4.3))(@pixi/filter-color-matrix@7.4.3(@pixi/core@7.4.3))(@pixi/sprite@7.4.3(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3)))
+      '@applemusic-like-lyrics/core': 0.5.2(patch_hash=ae1000e0ceb7a0df37a4d304b44bc6cb4cbe3ec4b54e5d38f07443c5e12b2bba)(@pixi/app@7.4.3(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3)))(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3))(@pixi/filter-blur@7.4.3(@pixi/core@7.4.3))(@pixi/filter-bulge-pinch@5.1.1(@pixi/core@7.4.3))(@pixi/filter-color-matrix@7.4.3(@pixi/core@7.4.3))(@pixi/sprite@7.4.3(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3)))
       '@applemusic-like-lyrics/react': 0.5.2(@pixi/app@7.4.3(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3)))(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3))(@pixi/filter-blur@7.4.3(@pixi/core@7.4.3))(@pixi/filter-bulge-pinch@5.1.1(@pixi/core@7.4.3))(@pixi/filter-color-matrix@7.4.3(@pixi/core@7.4.3))(@pixi/sprite@7.4.3(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3)))(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       '@ungap/structured-clone': 1.3.0
       classnames: 2.5.1
@@ -3348,7 +3348,7 @@ snapshots:
 
   '@applemusic-like-lyrics/react@0.5.2(@pixi/app@7.4.3(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3)))(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3))(@pixi/filter-blur@7.4.3(@pixi/core@7.4.3))(@pixi/filter-bulge-pinch@5.1.1(@pixi/core@7.4.3))(@pixi/filter-color-matrix@7.4.3(@pixi/core@7.4.3))(@pixi/sprite@7.4.3(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3)))(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
     dependencies:
-      '@applemusic-like-lyrics/core': 0.5.2(patch_hash=f4592459ef143bc9d92c745357a25d7d82d48e0bfe3d5cd4c0ec48d0172b689f)(@pixi/app@7.4.3(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3)))(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3))(@pixi/filter-blur@7.4.3(@pixi/core@7.4.3))(@pixi/filter-bulge-pinch@5.1.1(@pixi/core@7.4.3))(@pixi/filter-color-matrix@7.4.3(@pixi/core@7.4.3))(@pixi/sprite@7.4.3(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3)))
+      '@applemusic-like-lyrics/core': 0.5.2(patch_hash=ae1000e0ceb7a0df37a4d304b44bc6cb4cbe3ec4b54e5d38f07443c5e12b2bba)(@pixi/app@7.4.3(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3)))(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3))(@pixi/filter-blur@7.4.3(@pixi/core@7.4.3))(@pixi/filter-bulge-pinch@5.1.1(@pixi/core@7.4.3))(@pixi/filter-color-matrix@7.4.3(@pixi/core@7.4.3))(@pixi/sprite@7.4.3(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3)))
       '@pixi/app': 7.4.3(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3))
       '@pixi/core': 7.4.3
       '@pixi/display': 7.4.3(@pixi/core@7.4.3)
