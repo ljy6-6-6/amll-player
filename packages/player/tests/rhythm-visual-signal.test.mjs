@@ -2312,6 +2312,33 @@ test("真实 Mesh 在离屏缓冲不可用时不会累积未显示的重拍冲�
 	);
 });
 
+test("歌词页静态关闭再重开后首个高 strongBeat 只恢复一次冲量", () => {
+	const harness = createMeshHarness();
+	Object.assign(harness.renderer, {
+		lastFrameTime: 0,
+		requestTick() {},
+	});
+	harness.step(0, 0, { strongBeat: 1 });
+
+	MeshGradientRenderer.setRhythmVisualSignal(0, 0);
+	harness.renderer.setStaticMode(true);
+	harness.renderer.onRedraw(1, 0);
+	harness.renderer.setStaticMode(false);
+
+	harness.step(2, 0, { strongBeat: 1 });
+	const reopenedVelocity = harness.renderer.kickVelocity;
+	harness.step(3, 0, { strongBeat: 1 });
+
+	assert.ok(
+		Math.abs(reopenedVelocity - 4.8) < 1e-12,
+		"重开后的首个高 strongBeat 没有恢复冲量",
+	);
+	assert.ok(
+		Math.abs(harness.renderer.kickVelocity - reopenedVelocity) < 1e-12,
+		"持续高 strongBeat 被逐帧重复施加冲量",
+	);
+});
+
 function median(values) {
 	if (values.length === 0) return 0;
 	const sorted = [...values].sort((left, right) => left - right);
