@@ -21,6 +21,8 @@ const STRONG_BEAT_IMPACT_FULL = 0.995;
 const STRONG_BEAT_ABSOLUTE_RMS_FLOOR = 0.06;
 const STRONG_BEAT_ABSOLUTE_RMS_FULL = 0.3;
 const STRONG_BEAT_WEAK_EXTRA_PRE_ROLL_MS = 85;
+const MAX_STRONG_BEAT_PRE_ROLL_MS =
+	STRONG_BEAT_PRE_ROLL_MS + STRONG_BEAT_WEAK_EXTRA_PRE_ROLL_MS;
 const STRONG_BEAT_FULL_ATTACK_STRENGTH = 0.5;
 const PERCUSSIVE_ACCENT_PRE_ROLL_MS = 55;
 const PERCUSSIVE_ACCENT_RELEASE_MS = 170;
@@ -1445,11 +1447,9 @@ function sampleStrongPulses<T extends { timeMs: number }>(
 	const nextIndex = lowerBound(values, timeMs);
 	let result = 0;
 
-	const maxPreRollMs =
-		STRONG_BEAT_PRE_ROLL_MS + STRONG_BEAT_WEAK_EXTRA_PRE_ROLL_MS;
 	for (let index = nextIndex; index < values.length; index++) {
 		const point = values[index];
-		if (!point || point.timeMs - timeMs > maxPreRollMs) break;
+		if (!point || point.timeMs - timeMs > MAX_STRONG_BEAT_PRE_ROLL_MS) break;
 		const strength = clamp01(getStrength(point));
 		if (strength <= 0) continue;
 		result = Math.max(
