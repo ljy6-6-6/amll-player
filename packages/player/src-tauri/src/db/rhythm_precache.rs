@@ -82,7 +82,12 @@ pub async fn start_rhythm_precache(
     db: State<'_, DbConnection>,
     state: State<'_, RhythmPrecacheState>,
 ) -> Result<RhythmPrecacheProgress, String> {
-    let songs = song::Entity::find()
+    // 预扫只需要歌曲编号和本地路径，不加载歌词、翻译等大文本列。
+    let songs: Vec<(String, String)> = song::Entity::find()
+        .select_only()
+        .column(song::Column::Id)
+        .column(song::Column::FilePath)
+        .into_tuple()
         .all(&*db)
         .await
         .map_err(|e| format!("Failed to list songs for rhythm precache: {e}"))?;
@@ -110,13 +115,13 @@ pub async fn start_rhythm_precache(
     let needing = tokio::task::spawn_blocking(move || {
         songs
             .into_iter()
-            .filter(|entry| {
+            .filter(|(song_id, file_path)| {
                 // 文件暂不可读(已删除/移动/外置盘未挂载):预扫一律不重试,
                 // 否则无缓存的坏路径会每轮入队、每轮失败。交给播放路径按需处理。
-                let Ok(signature) = source_signature(Path::new(&entry.file_path)) else {
+                let Ok(signature) = source_signature(Path::new(file_path)) else {
                     return false;
                 };
-                match cache_index.get(&entry.id) {
+                match cache_index.get(song_id) {
                     None => true,
                     Some(&(version, modified_at, file_size)) => {
                         version != expected_version
@@ -125,7 +130,7 @@ pub async fn start_rhythm_precache(
                     }
                 }
             })
-            .map(|entry| entry.id)
+            .map(|(song_id, _)| song_id)
             .collect::<Vec<_>>()
     })
     .await
