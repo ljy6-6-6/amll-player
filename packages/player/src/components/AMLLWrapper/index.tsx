@@ -6,7 +6,7 @@ import {
 import { ContextMenu } from "@radix-ui/themes";
 import classnames from "classnames";
 import { useAtomValue, useSetAtom } from "jotai";
-import { type FC, useEffect, useLayoutEffect } from "react";
+import { type FC, useEffect, useLayoutEffect, useRef } from "react";
 import { useCursorAutoHide } from "../../utils/useCursorAutoHide.ts";
 import { useTitlebarAutoHide } from "../../utils/useTitlebarAutoHide.ts";
 import { AMLLContextMenuContent } from "../AMLLContextMenu/index.tsx";
@@ -21,6 +21,7 @@ export const AMLLWrapper: FC = () => {
 	const isLyricPageOpened = useAtomValue(isLyricPageOpenedAtom);
 	const onPlayOrResume = useAtomValue(onPlayOrResumeAtom).onEmit;
 	const setLyricPageOpened = useSetAtom(isLyricPageOpenedAtom);
+	const lyricPageRef = useRef<HTMLDivElement>(null);
 
 	useTitlebarAutoHide(isLyricPageOpened);
 	const cursorHidden = useCursorAutoHide(isLyricPageOpened);
@@ -30,6 +31,9 @@ export const AMLLWrapper: FC = () => {
 			document.body.dataset.amllLyricsOpen = "";
 		} else {
 			delete document.body.dataset.amllLyricsOpen;
+			if (lyricPageRef.current) {
+				delete lyricPageRef.current.dataset.pointerInput;
+			}
 		}
 	}, [isLyricPageOpened]);
 
@@ -37,6 +41,9 @@ export const AMLLWrapper: FC = () => {
 		if (!isLyricPageOpened) return;
 
 		const handleKeyDown = (e: KeyboardEvent) => {
+			if (lyricPageRef.current) {
+				delete lyricPageRef.current.dataset.pointerInput;
+			}
 			if (e.key === " ") {
 				e.preventDefault();
 				onPlayOrResume?.();
@@ -56,11 +63,17 @@ export const AMLLWrapper: FC = () => {
 			<ContextMenu.Root>
 				<ContextMenu.Trigger>
 					<div
+						ref={lyricPageRef}
 						className={classnames(
 							styles.lyricPage,
 							isLyricPageOpened && styles.opened,
 						)}
 						id="amll-lyric-player-wrapper"
+						onPointerDownCapture={(event) => {
+							if (event.pointerType === "mouse") {
+								event.currentTarget.dataset.pointerInput = "";
+							}
+						}}
 					>
 						<PrebuiltLyricPlayer
 							id="amll-lyric-player"
