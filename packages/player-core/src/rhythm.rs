@@ -359,10 +359,17 @@ impl SpectralAccumulator {
 
     fn push(&mut self, samples: &[f32]) {
         self.total_samples += samples.len() as u64;
-        self.pending.extend(samples.iter().copied());
-        // 攒满一个完整分析窗就立即消费,pending 始终只保留窗口尾部。
-        while self.pending.len() >= FFT_SIZE {
-            self.process_frame();
+        let mut remaining = samples;
+        while !remaining.is_empty() {
+            let needed = FFT_SIZE - self.pending.len();
+            let take = needed.min(remaining.len());
+            self.pending.extend(remaining[..take].iter().copied());
+            remaining = &remaining[take..];
+            // 每次只补满一个分析窗后立即消费，避免解码器给出大块 PCM 时
+            // pending 临时扩容到整块大小。
+            if self.pending.len() == FFT_SIZE {
+                self.process_frame();
+            }
         }
     }
 
@@ -1137,6 +1144,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(whole, streamed);
+    }
+
+    #[test]
+    fn large_pcm_slice_does_not_expand_pending_to_track_size() {
+        let mut accumulator = SpectralAccumulator::new(TARGET_SAMPLE_RATE);
+        let pcm = vec![0.0_f32; FFT_SIZE * 64 + 123];
+        accumulator.push(&pcm);
+
+        assert!(accumulator.pending.len() < FFT_SIZE);
+        assert!(
+            accumulator.pending.capacity() <= FFT_SIZE * 4,
+            "pending capacity grew to {} samples",
+            accumulator.pending.capacity()
+        );
     }
 
     #[test]
