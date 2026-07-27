@@ -110,19 +110,18 @@ pub async fn start_rhythm_precache(
     let needing = tokio::task::spawn_blocking(move || {
         songs
             .into_iter()
-            .filter(|entry| match cache_index.get(&entry.id) {
-                None => true,
-                Some(&(version, modified_at, file_size)) => {
-                    if version != expected_version {
-                        return true;
-                    }
-                    match source_signature(Path::new(&entry.file_path)) {
-                        Ok(signature) => {
-                            signature.modified_at != modified_at
-                                || signature.file_size != file_size
-                        }
-                        // 文件暂不可读:预扫不重试,交给播放路径按需处理。
-                        Err(_) => false,
+            .filter(|entry| {
+                // 文件暂不可读(已删除/移动/外置盘未挂载):预扫一律不重试,
+                // 否则无缓存的坏路径会每轮入队、每轮失败。交给播放路径按需处理。
+                let Ok(signature) = source_signature(Path::new(&entry.file_path)) else {
+                    return false;
+                };
+                match cache_index.get(&entry.id) {
+                    None => true,
+                    Some(&(version, modified_at, file_size)) => {
+                        version != expected_version
+                            || signature.modified_at != modified_at
+                            || signature.file_size != file_size
                     }
                 }
             })
