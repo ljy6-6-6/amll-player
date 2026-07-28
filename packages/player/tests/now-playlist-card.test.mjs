@@ -107,6 +107,21 @@ test("拖动卡片保持不透明且不显示正在播放的蓝色边线", () =>
 	);
 });
 
+test("拖动卡片松手落位后保留短暂淡出动画", () => {
+	assert.match(queueCard, /AnimatePresence/);
+	assert.match(queueCard, /QUEUE_DROP_EXIT_DURATION_SECONDS = 0\.12/);
+	assert.match(queueCard, /exit=\{\{ opacity: 0 \}\}/);
+	assert.match(queueCard, /dropExitActiveRef\.current = !prefersReducedMotion/);
+	assert.match(
+		queueCard,
+		/activeDragRef\.current \|\|\s*dropExitActiveRef\.current/,
+	);
+	assert.match(
+		queueCard,
+		/onExitComplete=\{\(\) => \{[\s\S]*dropExitActiveRef\.current = false/,
+	);
+});
+
 test("拖动目标按固定行高计算并限制在队列范围内", () => {
 	assert.equal(QUEUE_DRAG_THRESHOLD_PX, 6);
 	assert.equal(getQueueDropIndex(0, -100, 0, 36, 72, 5), 0);

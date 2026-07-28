@@ -4,6 +4,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import classNames from "classnames";
 import {
+	AnimatePresence,
 	animate,
 	motion,
 	useMotionValue,
@@ -36,6 +37,7 @@ import {
 
 export const NOW_PLAYLIST_ROW_HEIGHT = 72;
 const QUEUE_DROP_DURATION_SECONDS = 0.16;
+const QUEUE_DROP_EXIT_DURATION_SECONDS = 0.12;
 const QUEUE_SHIFT_SPRING = {
 	type: "spring" as const,
 	stiffness: 520,
@@ -184,6 +186,7 @@ export const NowPlaylistCard: FC<NowPlaylistCardProps> = ({
 	const lastAutoScrolledSongIdRef = useRef<string | undefined>(undefined);
 	const dropAnimationRef = useRef<{ stop: () => void } | null>(null);
 	const dropGenerationRef = useRef(0);
+	const dropExitActiveRef = useRef(false);
 	const overlayY = useMotionValue(0);
 	const prefersReducedMotion = useReducedMotion();
 	const [activeDrag, setActiveDrag] = useState<ActiveQueueDrag | null>(null);
@@ -216,6 +219,8 @@ export const NowPlaylistCard: FC<NowPlaylistCardProps> = ({
 			const candidate = dragCandidateRef.current;
 			const capturedPointerId = pointerId ?? candidate?.pointerId;
 			dragCandidateRef.current = null;
+			dropExitActiveRef.current =
+				activeDragRef.current !== null && !prefersReducedMotion;
 			activeDragRef.current = null;
 			setActiveDrag(null);
 			if (suppressedClickSongIdRef.current) {
@@ -230,7 +235,7 @@ export const NowPlaylistCard: FC<NowPlaylistCardProps> = ({
 				releasePointerCapture(capturedPointerId, candidate?.captureTarget);
 			}
 		},
-		[releasePointerCapture],
+		[prefersReducedMotion, releasePointerCapture],
 	);
 
 	const updateDragPosition = useCallback(
@@ -280,7 +285,8 @@ export const NowPlaylistCard: FC<NowPlaylistCardProps> = ({
 				!event.isPrimary ||
 				event.pointerType === "touch" ||
 				dragCandidateRef.current ||
-				activeDragRef.current
+				activeDragRef.current ||
+				dropExitActiveRef.current
 			) {
 				return;
 			}
@@ -398,6 +404,7 @@ export const NowPlaylistCard: FC<NowPlaylistCardProps> = ({
 					droppingDrag.targetIndex,
 					currentPlaylist.length - 1,
 				);
+				dropExitActiveRef.current = !prefersReducedMotion;
 				activeDragRef.current = null;
 				const shouldMove =
 					fromIndex >= 0 &&
@@ -696,25 +703,40 @@ export const NowPlaylistCard: FC<NowPlaylistCardProps> = ({
 								</div>
 							);
 						})}
-						{activeDrag && draggedSong && (
-							<motion.div
-								className={styles.dragOverlay}
-								style={{ y: overlayY }}
-								initial={false}
-								animate={{ opacity: 1 }}
-								aria-hidden="true"
-								inert
-							>
-								<PlaylistSongItem
-									song={draggedSong}
-									isCurrent={currentSongId === draggedSong.id}
-									isDragOverlay
-									onPlay={() => {}}
-									onMoveBy={() => {}}
-									onRemove={() => {}}
-								/>
-							</motion.div>
-						)}
+						<AnimatePresence
+							initial={false}
+							onExitComplete={() => {
+								dropExitActiveRef.current = false;
+							}}
+						>
+							{activeDrag && draggedSong && (
+								<motion.div
+									key={`queue-drag-overlay:${activeDrag.songId}`}
+									className={styles.dragOverlay}
+									style={{ y: overlayY }}
+									initial={false}
+									animate={{ opacity: 1 }}
+									exit={{ opacity: 0 }}
+									transition={{
+										duration: prefersReducedMotion
+											? 0
+											: QUEUE_DROP_EXIT_DURATION_SECONDS,
+										ease: "easeOut",
+									}}
+									aria-hidden="true"
+									inert
+								>
+									<PlaylistSongItem
+										song={draggedSong}
+										isCurrent={currentSongId === draggedSong.id}
+										isDragOverlay
+										onPlay={() => {}}
+										onMoveBy={() => {}}
+										onRemove={() => {}}
+									/>
+								</motion.div>
+							)}
+						</AnimatePresence>
 					</div>
 				</ScrollArea>
 			)}
