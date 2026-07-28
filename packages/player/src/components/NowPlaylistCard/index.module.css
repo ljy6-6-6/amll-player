@@ -2,7 +2,12 @@
 	box-sizing: border-box;
 	width: min(400px, calc(100vw - var(--space-6)));
 	height: auto;
-	max-height: calc(100dvh - var(--amll-player-playbar-bottom) - var(--space-6));
+	max-height: calc(
+		100dvh -
+		var(--amll-player-playbar-bottom) -
+		var(--system-titlebar-height, 0px) -
+		var(--space-6)
+	);
 	min-height: 0;
 	overflow: hidden;
 	background-color: var(--black-a9);
