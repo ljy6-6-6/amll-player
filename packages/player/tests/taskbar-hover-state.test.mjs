@@ -56,6 +56,45 @@ test("贴近屏幕右边退出后原路返回可以重新激活悬停", () => {
 	);
 });
 
+test("一 CSS 像素的真实回移可以重新激活悬停", () => {
+	const surfaceRect = { left: 70, right: 300, top: 3, bottom: 37 };
+	const exitPointer = { x: 180, y: 38 };
+	const returnedPointer = { x: 180, y: 37 };
+
+	assert.equal(hasPointerMoved(returnedPointer, exitPointer), true);
+	assert.equal(
+		shouldReactivateHover(returnedPointer, exitPointer, surfaceRect),
+		true,
+	);
+});
+
+test("百分之一百五十缩放下跨过自动隐藏边带即可重新激活悬停", () => {
+	const scaleFactor = 1.5;
+	const autoHideBandPhysicalPixels = 2;
+	const autoHideBandCssPixels = autoHideBandPhysicalPixels / scaleFactor;
+	const surfaceRect = { left: 70, right: 300, top: 3, bottom: 37 };
+	const exitPointer = {
+		x: 180,
+		y: surfaceRect.bottom + autoHideBandCssPixels,
+	};
+	const returnedPointer = { x: 180, y: surfaceRect.bottom };
+
+	assert.ok(autoHideBandCssPixels < 2);
+	assert.equal(hasPointerMoved(returnedPointer, exitPointer), true);
+	assert.equal(
+		shouldReactivateHover(returnedPointer, exitPointer, surfaceRect),
+		true,
+	);
+});
+
+test("布局移动到静止指针下方时仍然不会重新激活悬停", () => {
+	const surfaceRect = { left: 70, right: 300, top: 3, bottom: 37 };
+	const pointer = { x: 180, y: 37 };
+
+	assert.equal(hasPointerMoved(pointer, pointer), false);
+	assert.equal(shouldReactivateHover(pointer, pointer, surfaceRect), false);
+});
+
 test("静止指针和仍在控件外的指针不会误触发悬停", () => {
 	const surfaceRect = { left: 70, right: 300, top: 3, bottom: 37 };
 	const exitPointer = { x: 180, y: 39 };

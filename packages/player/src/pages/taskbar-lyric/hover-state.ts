@@ -28,7 +28,7 @@ export function isPointerOutsideRect(
 export function hasPointerMoved(
 	pointer: PointerPosition,
 	origin: PointerPosition,
-	distance = HOVER_REARM_MARGIN,
+	distance = 0,
 ): boolean {
 	return (
 		Math.abs(pointer.x - origin.x) > distance ||
