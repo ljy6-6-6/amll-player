@@ -83,21 +83,16 @@ impl TaskbarLyricState {
         Ok(())
     }
 
-    fn install_watchers<F>(
+    fn install_watchers(
         &self,
         generation: u64,
         watchers: TaskbarLyricWatchers,
-        on_install: F,
-    ) -> Result<(), TaskbarLyricWatchers>
-    where
-        F: FnOnce(),
-    {
+    ) -> Result<(), TaskbarLyricWatchers> {
         let visibility = self.visibility.state.lock().unwrap();
         if visibility.generation != generation {
             return Err(watchers);
         }
         let mut slot = self.watchers.lock().unwrap();
-        on_install();
         let previous = slot.replace(GenerationResource {
             generation,
             value: watchers,
@@ -138,6 +133,28 @@ enum TaskbarShowFailureAction {
     Stale,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MouseForwardingInstallResult {
+    Installed,
+    InstalledAndRearm,
+    Retry,
+    Stale,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WebviewLookupReservation {
+    Start(u64),
+    Queued,
+    Skip,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WebviewLookupFinish {
+    Rearm,
+    Exhausted,
+    Stale,
+}
+
 #[derive(Default)]
 struct TaskbarLyricVisibilityState {
     generation: u64,
@@ -148,6 +165,10 @@ struct TaskbarLyricVisibilityState {
     layout_retry_pending: bool,
     show_retry_count: u8,
     window_hwnd: Option<usize>,
+    webview_lookup_pending: bool,
+    webview_lookup_rearm_requested: bool,
+    webview_lookup_epoch: u64,
+    mouse_forwarding_webview_hwnd: Option<usize>,
 }
 
 impl TaskbarLyricVisibility {
@@ -204,6 +225,10 @@ impl TaskbarLyricVisibility {
         state.layout_retry_pending = false;
         state.show_retry_count = 0;
         state.window_hwnd = None;
+        state.webview_lookup_pending = false;
+        state.webview_lookup_rearm_requested = false;
+        state.webview_lookup_epoch = 0;
+        state.mouse_forwarding_webview_hwnd = None;
     }
 
     fn current_generation(&self) -> u64 {
@@ -231,6 +256,151 @@ impl TaskbarLyricVisibility {
     fn window_matches(&self, generation: u64, hwnd: usize) -> bool {
         let state = self.state.lock().unwrap();
         state.generation == generation && state.window_hwnd == Some(hwnd)
+    }
+
+    fn reserve_webview_lookup(
+        &self,
+        generation: u64,
+        top_hwnd: usize,
+        force_revalidate: bool,
+    ) -> WebviewLookupReservation {
+        self.reserve_webview_lookup_with_hook_health(
+            generation,
+            top_hwnd,
+            force_revalidate,
+            mouse_forward::is_mouse_hook_running,
+        )
+    }
+
+    fn reserve_webview_lookup_with_hook_health<F>(
+        &self,
+        generation: u64,
+        top_hwnd: usize,
+        force_revalidate: bool,
+        hook_running: F,
+    ) -> WebviewLookupReservation
+    where
+        F: FnOnce() -> bool,
+    {
+        let mut state = self.state.lock().unwrap();
+        if state.generation != generation || state.window_hwnd != Some(top_hwnd) {
+            return WebviewLookupReservation::Skip;
+        }
+        let hook_running = hook_running();
+        if state.mouse_forwarding_webview_hwnd.is_some() && !hook_running {
+            state.mouse_forwarding_webview_hwnd = None;
+        }
+        if state.webview_lookup_pending {
+            if force_revalidate {
+                state.webview_lookup_rearm_requested = true;
+            }
+            return WebviewLookupReservation::Queued;
+        }
+        if state.mouse_forwarding_webview_hwnd.is_some() && !force_revalidate {
+            return WebviewLookupReservation::Skip;
+        }
+        state.webview_lookup_epoch = state.webview_lookup_epoch.wrapping_add(1);
+        if state.webview_lookup_epoch == 0 {
+            state.webview_lookup_epoch = 1;
+        }
+        state.webview_lookup_pending = true;
+        WebviewLookupReservation::Start(state.webview_lookup_epoch)
+    }
+
+    fn finish_webview_lookup(
+        &self,
+        generation: u64,
+        top_hwnd: usize,
+        lookup_epoch: u64,
+    ) -> WebviewLookupFinish {
+        let mut state = self.state.lock().unwrap();
+        if state.generation != generation
+            || state.window_hwnd != Some(top_hwnd)
+            || !state.webview_lookup_pending
+            || state.webview_lookup_epoch != lookup_epoch
+        {
+            return WebviewLookupFinish::Stale;
+        }
+        state.webview_lookup_pending = false;
+        if state.webview_lookup_rearm_requested {
+            state.webview_lookup_rearm_requested = false;
+            WebviewLookupFinish::Rearm
+        } else {
+            WebviewLookupFinish::Exhausted
+        }
+    }
+
+    fn invalidate_exhausted_webview_lookup_if_current<F>(
+        &self,
+        generation: u64,
+        top_hwnd: usize,
+        lookup_epoch: u64,
+        on_invalidate: F,
+    ) -> bool
+    where
+        F: FnOnce(),
+    {
+        let mut state = self.state.lock().unwrap();
+        if state.generation != generation
+            || state.window_hwnd != Some(top_hwnd)
+            || state.webview_lookup_pending
+            || state.webview_lookup_rearm_requested
+            || state.webview_lookup_epoch != lookup_epoch
+            || state.mouse_forwarding_webview_hwnd.is_some()
+        {
+            return false;
+        }
+        Self::advance_generation(&mut state);
+        on_invalidate();
+        true
+    }
+
+    fn commit_mouse_forwarding_install(
+        state: &mut TaskbarLyricVisibilityState,
+        webview_hwnd: usize,
+    ) -> MouseForwardingInstallResult {
+        state.mouse_forwarding_webview_hwnd = Some(webview_hwnd);
+        state.webview_lookup_pending = false;
+        if std::mem::take(&mut state.webview_lookup_rearm_requested) {
+            MouseForwardingInstallResult::InstalledAndRearm
+        } else {
+            MouseForwardingInstallResult::Installed
+        }
+    }
+
+    fn install_mouse_forwarding<F>(
+        &self,
+        generation: u64,
+        top_hwnd: HWND,
+        webview_hwnd: HWND,
+        lookup_epoch: u64,
+        on_exit: F,
+    ) -> MouseForwardingInstallResult
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        let mut state = self.state.lock().unwrap();
+        if state.generation != generation
+            || state.window_hwnd != Some(top_hwnd.0 as usize)
+            || !state.webview_lookup_pending
+            || state.webview_lookup_epoch != lookup_epoch
+        {
+            return MouseForwardingInstallResult::Stale;
+        }
+        let webview_hwnd_ptr = webview_hwnd.0 as usize;
+        if state.mouse_forwarding_webview_hwnd == Some(webview_hwnd_ptr)
+            && mouse_forward::is_mouse_hook_running()
+        {
+            return Self::commit_mouse_forwarding_install(&mut state, webview_hwnd_ptr);
+        }
+
+        if mouse_forward::start_mouse_hook_thread(top_hwnd, webview_hwnd, on_exit) {
+            Self::commit_mouse_forwarding_install(&mut state, webview_hwnd_ptr)
+        } else {
+            state.mouse_forwarding_webview_hwnd = None;
+            mouse_forward::set_forwarding_enabled(false);
+            MouseForwardingInstallResult::Retry
+        }
     }
 
     fn mark_layout_ready(&self, generation: u64) -> bool {
@@ -329,6 +499,115 @@ const AUTO_HIDE_TRIGGER_BAND_PX: i32 = 2;
 const MAX_TASKBAR_LAYOUT_RETRIES: u8 = 4;
 const MAX_TASKBAR_SHOW_FAILURES: u8 = 4;
 const TASKBAR_LAYOUT_RETRY_BASE_DELAY_MS: u64 = 50;
+const MAX_WEBVIEW_HWND_LOOKUP_ATTEMPTS: u8 = 7;
+const WEBVIEW_HWND_RETRY_BASE_DELAY_MS: u64 = 50;
+
+fn webview_hwnd_retry_delay(attempt: u8) -> Option<Duration> {
+    if attempt + 1 >= MAX_WEBVIEW_HWND_LOOKUP_ATTEMPTS {
+        return None;
+    }
+    Some(Duration::from_millis(
+        WEBVIEW_HWND_RETRY_BASE_DELAY_MS * (1_u64 << attempt),
+    ))
+}
+
+fn schedule_webview_hwnd_lookup(
+    app: tauri::AppHandle,
+    generation: u64,
+    top_hwnd: usize,
+    force_revalidate: bool,
+) {
+    let Some(state) = app.try_state::<TaskbarLyricState>() else {
+        return;
+    };
+    let lookup_epoch =
+        match state
+            .visibility
+            .reserve_webview_lookup(generation, top_hwnd, force_revalidate)
+        {
+            WebviewLookupReservation::Start(lookup_epoch) => lookup_epoch,
+            WebviewLookupReservation::Queued | WebviewLookupReservation::Skip => return,
+        };
+
+    tauri::async_runtime::spawn(async move {
+        for attempt in 0..MAX_WEBVIEW_HWND_LOOKUP_ATTEMPTS {
+            let Some(state) = app.try_state::<TaskbarLyricState>() else {
+                return;
+            };
+            if !state.visibility.window_matches(generation, top_hwnd) {
+                return;
+            }
+
+            let top_hwnd = HWND(top_hwnd as _);
+            if let Some(webview_hwnd) = webview_finder::find_webview_hwnd(top_hwnd) {
+                let recovery_app = app.clone();
+                let recovery_top_hwnd = top_hwnd.0 as usize;
+                let on_exit = move || {
+                    schedule_webview_hwnd_lookup(recovery_app, generation, recovery_top_hwnd, true);
+                };
+                match state.visibility.install_mouse_forwarding(
+                    generation,
+                    top_hwnd,
+                    webview_hwnd,
+                    lookup_epoch,
+                    on_exit,
+                ) {
+                    MouseForwardingInstallResult::Installed => return,
+                    MouseForwardingInstallResult::InstalledAndRearm => {
+                        schedule_webview_hwnd_lookup(
+                            app.clone(),
+                            generation,
+                            top_hwnd.0 as usize,
+                            true,
+                        );
+                        return;
+                    }
+                    MouseForwardingInstallResult::Stale => return,
+                    MouseForwardingInstallResult::Retry => {}
+                }
+            }
+
+            let Some(delay) = webview_hwnd_retry_delay(attempt) else {
+                match state.visibility.finish_webview_lookup(
+                    generation,
+                    top_hwnd.0 as usize,
+                    lookup_epoch,
+                ) {
+                    WebviewLookupFinish::Rearm => {
+                        schedule_webview_hwnd_lookup(
+                            app.clone(),
+                            generation,
+                            top_hwnd.0 as usize,
+                            true,
+                        );
+                    }
+                    WebviewLookupFinish::Exhausted => {
+                        let window = app.get_webview_window("taskbar-lyric");
+                        if state
+                            .visibility
+                            .invalidate_exhausted_webview_lookup_if_current(
+                                generation,
+                                top_hwnd.0 as usize,
+                                lookup_epoch,
+                                mouse_forward::stop_mouse_hook,
+                            )
+                        {
+                            warn!("多次重试后仍未能初始化任务栏歌词 WebView 鼠标转发");
+                            schedule_taskbar_generation_cleanup(&app, generation);
+                            if let Some(window) = window {
+                                let _ = window.hide();
+                                let _ = window.destroy();
+                            }
+                        }
+                    }
+                    WebviewLookupFinish::Stale => {}
+                }
+                return;
+            };
+            tokio::time::sleep(delay).await;
+        }
+    });
+}
 
 fn show_taskbar_lyric_if_ready(app: &tauri::AppHandle, generation: u64, should_show: bool) {
     if !should_show {
@@ -399,6 +678,11 @@ fn invalidate_taskbar_generation(app: &tauri::AppHandle, generation: u64) -> boo
         return false;
     }
 
+    schedule_taskbar_generation_cleanup(app, generation);
+    true
+}
+
+fn schedule_taskbar_generation_cleanup(app: &tauri::AppHandle, generation: u64) {
     let cleanup_app = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::task::yield_now().await;
@@ -407,7 +691,6 @@ fn invalidate_taskbar_generation(app: &tauri::AppHandle, generation: u64) -> boo
         };
         state.take_resources_for_generation(generation);
     });
-    true
 }
 
 fn invalidate_and_destroy_taskbar_window(
@@ -636,6 +919,7 @@ pub fn taskbar_lyric_page_ready(
     {
         return Err("任务栏歌词窗口身份与页面代际不匹配".to_string());
     }
+    schedule_webview_hwnd_lookup(app.clone(), generation, current_hwnd.0 as usize, true);
 
     let should_show = state.visibility.mark_page_ready(generation);
     if !state.visibility.is_current(generation) {
@@ -785,7 +1069,6 @@ pub fn open_taskbar_lyric(app: tauri::AppHandle) {
 
             if let Ok(hwnd) = win.hwnd() {
                 let hwnd_ptr = hwnd.0 as usize;
-                let top_hwnd = HWND(hwnd.0.cast());
                 if !state.visibility.bind_window(generation, hwnd_ptr) {
                     let _ = win.destroy();
                     return;
@@ -802,8 +1085,6 @@ pub fn open_taskbar_lyric(app: tauri::AppHandle) {
                 }
 
                 if let Some(state) = app_clone.try_state::<TaskbarLyricState>() {
-                    let webview_hwnd = webview_finder::find_webview_hwnd(top_hwnd);
-
                     let uia_counter = Arc::new(AtomicUsize::new(0));
                     let win_clone = app_clone.clone();
                     let uia_cb = Box::new(move || {
@@ -859,18 +1140,12 @@ pub fn open_taskbar_lyric(app: tauri::AppHandle) {
                         tray: taskbar_lyric::TrayWatcher::new(tray_cb).ok(),
                         reg: taskbar_lyric::RegistryWatcher::new(reg_cb).ok(),
                     };
-                    let install_result =
-                        state.install_watchers(generation, watchers, move || match webview_hwnd {
-                            Some(webview_hwnd) => {
-                                mouse_forward::init_mouse_forwarding_state(top_hwnd, webview_hwnd);
-                                mouse_forward::start_mouse_hook_thread();
-                            }
-                            None => warn!("未能找到 WebView 句柄"),
-                        });
+                    let install_result = state.install_watchers(generation, watchers);
                     if install_result.is_err() {
                         let _ = win.destroy();
                         return;
                     }
+                    schedule_webview_hwnd_lookup(app_clone.clone(), generation, hwnd_ptr, false);
                 }
             } else {
                 tracing::warn!("Failed to get hwnd for taskbar-lyric window");
@@ -1072,6 +1347,184 @@ mod tests {
         assert!(!visibility.window_matches(old_generation, 100));
         assert!(!visibility.window_matches(old_generation, 200));
         assert!(visibility.window_matches(new_generation, 200));
+    }
+
+    #[test]
+    fn webview_lookup_is_single_flight_and_can_be_rearmed_after_exhaustion() {
+        let visibility = TaskbarLyricVisibility::default();
+        let generation = visibility.begin_open();
+        assert!(visibility.bind_window(generation, 100));
+
+        let first_lookup_epoch =
+            match visibility
+                .reserve_webview_lookup_with_hook_health(generation, 100, false, || false)
+            {
+                WebviewLookupReservation::Start(lookup_epoch) => lookup_epoch,
+                result => panic!("unexpected lookup reservation: {result:?}"),
+            };
+        assert_eq!(
+            visibility.reserve_webview_lookup_with_hook_health(generation, 100, true, || false),
+            WebviewLookupReservation::Queued
+        );
+        assert_eq!(
+            visibility.finish_webview_lookup(generation, 100, first_lookup_epoch),
+            WebviewLookupFinish::Rearm
+        );
+        let second_lookup_epoch =
+            match visibility
+                .reserve_webview_lookup_with_hook_health(generation, 100, true, || false)
+            {
+                WebviewLookupReservation::Start(lookup_epoch) => lookup_epoch,
+                result => panic!("unexpected lookup reservation: {result:?}"),
+            };
+        assert_ne!(first_lookup_epoch, second_lookup_epoch);
+
+        let new_generation = visibility.begin_open();
+        assert!(visibility.bind_window(new_generation, 200));
+        assert_eq!(
+            visibility.finish_webview_lookup(generation, 100, second_lookup_epoch),
+            WebviewLookupFinish::Stale
+        );
+        assert_eq!(
+            visibility.reserve_webview_lookup_with_hook_health(generation, 100, true, || false),
+            WebviewLookupReservation::Skip
+        );
+    }
+
+    #[test]
+    fn webview_lookup_ready_state_tracks_hook_health_and_forced_revalidation() {
+        let visibility = TaskbarLyricVisibility::default();
+        let generation = visibility.begin_open();
+        assert!(visibility.bind_window(generation, 100));
+        visibility
+            .state
+            .lock()
+            .unwrap()
+            .mouse_forwarding_webview_hwnd = Some(300);
+
+        assert_eq!(
+            visibility.reserve_webview_lookup_with_hook_health(generation, 100, false, || true),
+            WebviewLookupReservation::Skip
+        );
+        let lookup_epoch = match visibility.reserve_webview_lookup_with_hook_health(
+            generation,
+            100,
+            true,
+            || true,
+        ) {
+            WebviewLookupReservation::Start(lookup_epoch) => lookup_epoch,
+            result => panic!("unexpected lookup reservation: {result:?}"),
+        };
+        assert_eq!(
+            visibility.finish_webview_lookup(generation, 100, lookup_epoch),
+            WebviewLookupFinish::Exhausted
+        );
+
+        assert!(matches!(
+            visibility.reserve_webview_lookup_with_hook_health(generation, 100, false, || false),
+            WebviewLookupReservation::Start(_)
+        ));
+    }
+
+    #[test]
+    fn queued_force_revalidation_survives_inflight_install_success() {
+        let visibility = TaskbarLyricVisibility::default();
+        let generation = visibility.begin_open();
+        assert!(visibility.bind_window(generation, 100));
+
+        let lookup_epoch =
+            match visibility
+                .reserve_webview_lookup_with_hook_health(generation, 100, false, || false)
+            {
+                WebviewLookupReservation::Start(lookup_epoch) => lookup_epoch,
+                result => panic!("unexpected lookup reservation: {result:?}"),
+            };
+        assert_eq!(
+            visibility.reserve_webview_lookup_with_hook_health(generation, 100, true, || false),
+            WebviewLookupReservation::Queued
+        );
+
+        let install_result = {
+            let mut state = visibility.state.lock().unwrap();
+            assert_eq!(state.webview_lookup_epoch, lookup_epoch);
+            TaskbarLyricVisibility::commit_mouse_forwarding_install(&mut state, 300)
+        };
+        assert_eq!(
+            install_result,
+            MouseForwardingInstallResult::InstalledAndRearm
+        );
+
+        let successor_epoch = match visibility.reserve_webview_lookup_with_hook_health(
+            generation,
+            100,
+            true,
+            || true,
+        ) {
+            WebviewLookupReservation::Start(lookup_epoch) => lookup_epoch,
+            result => panic!("unexpected lookup reservation: {result:?}"),
+        };
+        assert_ne!(lookup_epoch, successor_epoch);
+    }
+
+    #[test]
+    fn exhausted_lookup_cannot_invalidate_a_newer_lookup() {
+        let visibility = TaskbarLyricVisibility::default();
+        let generation = visibility.begin_open();
+        assert!(visibility.bind_window(generation, 100));
+
+        let exhausted_epoch =
+            match visibility
+                .reserve_webview_lookup_with_hook_health(generation, 100, false, || false)
+            {
+                WebviewLookupReservation::Start(lookup_epoch) => lookup_epoch,
+                result => panic!("unexpected lookup reservation: {result:?}"),
+            };
+        assert_eq!(
+            visibility.finish_webview_lookup(generation, 100, exhausted_epoch),
+            WebviewLookupFinish::Exhausted
+        );
+
+        let replacement_epoch =
+            match visibility
+                .reserve_webview_lookup_with_hook_health(generation, 100, true, || false)
+            {
+                WebviewLookupReservation::Start(lookup_epoch) => lookup_epoch,
+                result => panic!("unexpected lookup reservation: {result:?}"),
+            };
+        assert_ne!(exhausted_epoch, replacement_epoch);
+        {
+            let mut state = visibility.state.lock().unwrap();
+            state.webview_lookup_pending = false;
+            state.mouse_forwarding_webview_hwnd = Some(300);
+        }
+
+        assert!(!visibility.invalidate_exhausted_webview_lookup_if_current(
+            generation,
+            100,
+            exhausted_epoch,
+            || panic!("stale lookup invalidated the replacement"),
+        ));
+        assert!(visibility.window_matches(generation, 100));
+    }
+
+    #[test]
+    fn webview_hwnd_lookup_retry_schedule_is_finite() {
+        let delays = (0..MAX_WEBVIEW_HWND_LOOKUP_ATTEMPTS)
+            .map(webview_hwnd_retry_delay)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            delays,
+            vec![
+                Some(Duration::from_millis(50)),
+                Some(Duration::from_millis(100)),
+                Some(Duration::from_millis(200)),
+                Some(Duration::from_millis(400)),
+                Some(Duration::from_millis(800)),
+                Some(Duration::from_millis(1_600)),
+                None,
+            ]
+        );
     }
 
     #[test]
