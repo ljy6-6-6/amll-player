@@ -29,6 +29,8 @@ interface PersistedQueueState {
 	songIds: string[];
 	/** originalList 中的 songId 序列（用于 shuffle 恢复） */
 	originalSongIds: string[];
+	/** 当前歌曲 ID；旧版本数据缺少此字段时回退到 currentIndex */
+	currentSongId?: string | null;
 	currentIndex: number;
 	repeatMode: RepeatMode;
 	shuffleActive: boolean;
@@ -40,6 +42,7 @@ interface PersistedQueueState {
 const EMPTY_PERSISTED_STATE: PersistedQueueState = {
 	songIds: [],
 	originalSongIds: [],
+	currentSongId: null,
 	currentIndex: -1,
 	repeatMode: RepeatMode.Off,
 	shuffleActive: false,
@@ -152,6 +155,7 @@ export class PlayQueueManager {
 		this.store.set(persistedQueueStateAtom, {
 			songIds: this.playList.map((s) => s.id),
 			originalSongIds: this.originalList.map((s) => s.id),
+			currentSongId: this.getCurrentSong()?.id ?? null,
 			currentIndex: this.currentIndex,
 			repeatMode: this.repeatMode,
 			shuffleActive: this.shuffleActive,
@@ -415,16 +419,45 @@ export class PlayQueueManager {
 	private findInPlayList(songId: string): number {
 		return this.playList.findIndex((s) => s.id === songId);
 	}
+
+	private stopAndClearQueue(): void {
+		this.queueRevision++;
+		this.playRequestGeneration++;
+		this.playRequestPending = false;
+		this.desiredPlaying = false;
+		this.currentPlaybackEnded = false;
+		this.currentPlaybackId = null;
+		this.originalList = [];
+		this.playList = [];
+		this.currentIndex = -1;
+		this.playlistId = null;
+		this.store.set(queueLoudnessUpdatePolicyAtom, null);
+		this.syncToAtoms();
+
+		void this.queueAudioDispatch(async () => {
+			await emitAudioThread("stopAudio");
+		}).catch((error) => {
+			console.warn("[PlayQueueManager] Failed to stop an empty queue", error);
+		});
+	}
 	//#endregion
 
 	//#region 队列设置
 	/**
-	 * 设置完整播放队列并开始播放第一首
+	 * 设置完整播放队列并开始播放指定歌曲
 	 * @param songs - Song[]（来自后端 DB）
 	 * @param playlistId - 来源播放列表 ID（可选）
+	 * @param startIndex - 需要直接开始播放的原始歌曲索引；不传时从实际队列首项开始
 	 */
-	setQueue(songs: Song[], playlistId?: number): void {
+	setQueue(songs: Song[], playlistId?: number, startIndex?: number): void {
 		if (this.disposed || songs.length === 0) return;
+		const requestedSongId =
+			startIndex !== undefined &&
+			Number.isInteger(startIndex) &&
+			startIndex >= 0 &&
+			startIndex < songs.length
+				? songs[startIndex]?.id
+				: undefined;
 		const uniqueSongs = dedupeSongsById(songs);
 		if (uniqueSongs.length === 0) return;
 		this.originalList = uniqueSongs;
@@ -436,7 +469,10 @@ export class PlayQueueManager {
 			this.playList = [...uniqueSongs];
 		}
 
-		void this.playSongAt(0);
+		const resolvedStartIndex = requestedSongId
+			? this.findInPlayList(requestedSongId)
+			: -1;
+		void this.playSongAt(resolvedStartIndex >= 0 ? resolvedStartIndex : 0);
 	}
 
 	/**
@@ -453,21 +489,69 @@ export class PlayQueueManager {
 	/**
 	 * 将歌曲添加到队尾
 	 */
-	addToQueue(song: Song): void {
+	enqueueTail(song: Song): void {
 		if (this.disposed || this.originalList.some((s) => s.id === song.id))
 			return;
+		if (this.playList.length === 0) {
+			this.replaceQueueAndPlay(song);
+			return;
+		}
 		this.queueRevision++;
 
 		this.originalList.push(song);
+		this.playList.push(song);
+		this.syncToAtoms();
+	}
 
-		if (this.shuffleActive) {
-			// 随机模式下，插入到当前播放位置的下一位
-			const insertAt = this.currentIndex + 1;
-			this.playList.splice(insertAt, 0, song);
-		} else {
-			this.playList.push(song);
+	/** 向后兼容旧调用；随机模式下仍沿用插入当前歌曲之后的原有行为。 */
+	addToQueue(song: Song): void {
+		if (this.disposed || this.originalList.some((s) => s.id === song.id))
+			return;
+		if (!this.shuffleActive) {
+			this.enqueueTail(song);
+			return;
+		}
+		if (this.playList.length === 0) {
+			this.replaceQueueAndPlay(song);
+			return;
 		}
 
+		this.queueRevision++;
+		this.originalList.push(song);
+		const insertAt = Math.min(this.currentIndex + 1, this.playList.length);
+		this.playList.splice(insertAt, 0, song);
+		this.syncToAtoms();
+	}
+
+	/**
+	 * 将歌曲放到当前歌曲之后；若已存在于队列中则移动现有项目。
+	 */
+	enqueueNext(song: Song): void {
+		if (this.disposed) return;
+		if (this.playList.length === 0 || this.currentIndex < 0) {
+			this.replaceQueueAndPlay(song);
+			return;
+		}
+
+		const currentSongId = this.getCurrentSong()?.id;
+		if (!currentSongId || currentSongId === song.id) return;
+
+		this.queueRevision++;
+		const existingIndex = this.findInPlayList(song.id);
+		if (existingIndex >= 0) {
+			this.playList.splice(existingIndex, 1);
+		} else {
+			this.originalList.push(song);
+		}
+
+		this.currentIndex = this.findInPlayList(currentSongId);
+		const insertAt = Math.min(this.currentIndex + 1, this.playList.length);
+		this.playList.splice(insertAt, 0, song);
+
+		if (!this.shuffleActive) {
+			this.originalList = [...this.playList];
+		}
+		this.currentIndex = this.findInPlayList(currentSongId);
 		this.syncToAtoms();
 	}
 	//#endregion
@@ -598,6 +682,36 @@ export class PlayQueueManager {
 
 	//#region 队列修改
 	/**
+	 * 移动当前队列中的歌曲；只改变播放队列，不写回来源歌单。
+	 */
+	moveSong(fromIndex: number, toIndex: number): void {
+		if (
+			this.disposed ||
+			!Number.isInteger(fromIndex) ||
+			!Number.isInteger(toIndex) ||
+			fromIndex < 0 ||
+			fromIndex >= this.playList.length ||
+			toIndex < 0 ||
+			toIndex >= this.playList.length ||
+			fromIndex === toIndex
+		) {
+			return;
+		}
+
+		const currentSongId = this.getCurrentSong()?.id;
+		const [song] = this.playList.splice(fromIndex, 1);
+		if (!song) return;
+		this.queueRevision++;
+		this.playList.splice(toIndex, 0, song);
+
+		if (!this.shuffleActive) {
+			this.originalList = [...this.playList];
+		}
+		this.currentIndex = currentSongId ? this.findInPlayList(currentSongId) : -1;
+		this.syncToAtoms();
+	}
+
+	/**
 	 * 从队列中移除一首歌
 	 */
 	removeSong(songId: string): void {
@@ -609,20 +723,43 @@ export class PlayQueueManager {
 		this.originalList = this.originalList.filter((s) => s.id !== songId);
 		this.playList.splice(removeIndex, 1);
 
+		if (this.playList.length === 0) {
+			this.stopAndClearQueue();
+			return;
+		}
+
 		if (removeIndex < this.currentIndex) {
 			this.currentIndex--;
 		} else if (removeIndex === this.currentIndex) {
-			if (this.playList.length === 0) {
-				this.currentIndex = -1;
-			} else if (this.currentIndex >= this.playList.length) {
-				this.currentIndex = 0;
-			}
-			if (this.currentIndex >= 0) {
-				void this.playSongAt(this.currentIndex);
-				return;
-			}
+			const wasPlaying = this.desiredPlaying;
+			this.currentIndex = Math.min(removeIndex, this.playList.length - 1);
+			void this.playSongAt(this.currentIndex, !wasPlaying);
+			return;
 		}
 
+		this.syncToAtoms();
+	}
+
+	/**
+	 * 清空当前歌曲之后的待播项目，保留播放历史与当前歌曲。
+	 */
+	clearUpcoming(): void {
+		if (
+			this.disposed ||
+			this.currentIndex < 0 ||
+			this.currentIndex >= this.playList.length - 1
+		) {
+			return;
+		}
+
+		this.queueRevision++;
+		const retainedIds = new Set(
+			this.playList.slice(0, this.currentIndex + 1).map((song) => song.id),
+		);
+		this.playList = this.playList.slice(0, this.currentIndex + 1);
+		this.originalList = this.originalList.filter((song) =>
+			retainedIds.has(song.id),
+		);
 		this.syncToAtoms();
 	}
 	//#endregion
@@ -677,12 +814,20 @@ export class PlayQueueManager {
 			this.shuffleActive = persisted.shuffleActive;
 			this.playlistId = persisted.playlistId;
 
-			// 恢复 currentIndex，做边界检查
-			this.currentIndex = Math.min(
-				persisted.currentIndex,
-				this.playList.length - 1,
-			);
-			if (this.currentIndex < 0) this.currentIndex = 0;
+			// 优先按歌曲 ID 恢复，避免前序歌曲缺失后数字索引发生偏移。
+			const currentSongIndex = persisted.currentSongId
+				? this.findInPlayList(persisted.currentSongId)
+				: -1;
+			if (currentSongIndex >= 0) {
+				this.currentIndex = currentSongIndex;
+			} else {
+				// 兼容旧版本仅保存 currentIndex 的数据。
+				this.currentIndex = Math.min(
+					persisted.currentIndex,
+					this.playList.length - 1,
+				);
+				if (this.currentIndex < 0) this.currentIndex = 0;
+			}
 
 			this.syncToAtoms();
 			return { restored: true, position: persisted.position ?? 0 };

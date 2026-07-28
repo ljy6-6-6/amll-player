@@ -50,15 +50,22 @@ registerHooks({
 const { clearMocks, mockIPC } = await import("@tauri-apps/api/mocks");
 const {
 	PlayQueueManager,
+	persistedQueueStateAtom,
+	queueCurrentIndexAtom,
 	queueLoudnessUpdatePolicyAtom,
+	queuePlaylistAtom,
 	shouldSuppressAutomaticLoudnessUpdate,
 } = await import("../src/utils/play-queue-manager.ts");
 
-function createStore() {
+function createStore({
+	loudnessEnabled = true,
+	playing = true,
+	position = 0,
+} = {}) {
 	const values = new Map([
-		[testAtoms.enableLoudnessNormalization, true],
-		[testAtoms.musicPlaying, true],
-		[testAtoms.musicPlayingPosition, 0],
+		[testAtoms.enableLoudnessNormalization, loudnessEnabled],
+		[testAtoms.musicPlaying, playing],
+		[testAtoms.musicPlayingPosition, position],
 	]);
 	return {
 		get(atom) {
@@ -140,6 +147,13 @@ function getPlayMessages(calls) {
 		.filter(({ command }) => command === "local_player_send_msg")
 		.map(({ payload }) => payload.msg.data)
 		.filter(({ type }) => type === "playAudio");
+}
+
+function getAudioMessages(calls, type) {
+	return calls
+		.filter(({ command }) => command === "local_player_send_msg")
+		.map(({ payload }) => payload.msg.data)
+		.filter((message) => message.type === type);
 }
 
 test("冷缓存歌曲会在整轨响度分析完成后才发送首个播放请求", {
@@ -418,4 +432,294 @@ test("整轨响度分析期间快速切歌不会在分析返回后播放过期�
 		["second"],
 		"过期分析结果不能启动已被切走的歌曲",
 	);
+});
+
+test("指定索引设置队列只会为目标歌曲发送一次播放请求", {
+	concurrency: false,
+}, async (context) => {
+	const calls = [];
+	mockIPC((command, payload) => {
+		calls.push({ command, payload });
+		if (command === "local_player_send_msg") return undefined;
+		throw new Error(`Unexpected IPC command: ${command}`);
+	});
+
+	const manager = new PlayQueueManager(createStore({ loudnessEnabled: false }));
+	context.after(() => {
+		manager.dispose();
+		clearMocks();
+	});
+
+	manager.setQueue(
+		[makeSong("first"), makeSong("second"), makeSong("third")],
+		42,
+		2,
+	);
+	await waitFor(
+		() => getPlayMessages(calls).length === 1,
+		"指定索引歌曲未启动播放",
+	);
+	await drainAsyncWork();
+
+	assert.deepEqual(
+		getPlayMessages(calls).map(({ song }) => song.songId),
+		["third"],
+	);
+	assert.equal(manager.getCurrentIndex(), 2);
+	assert.equal(manager.getPlaylistId(), 42);
+});
+
+test("随机模式未指定起播索引时保留播放洗牌后首项的语义", {
+	concurrency: false,
+}, async (context) => {
+	const calls = [];
+	const originalRandom = Math.random;
+	Math.random = () => 0;
+	mockIPC((command, payload) => {
+		calls.push({ command, payload });
+		if (command === "local_player_send_msg") return undefined;
+		throw new Error(`Unexpected IPC command: ${command}`);
+	});
+
+	const manager = new PlayQueueManager(createStore({ loudnessEnabled: false }));
+	context.after(() => {
+		Math.random = originalRandom;
+		manager.dispose();
+		clearMocks();
+	});
+
+	manager.toggleShuffleOn();
+	manager.setQueue([makeSong("a"), makeSong("b"), makeSong("c")]);
+	await waitFor(
+		() => getPlayMessages(calls).length === 1,
+		"随机队列首项未启动播放",
+	);
+	await drainAsyncWork();
+
+	assert.deepEqual(
+		manager.getPlayList().map((song) => song.id),
+		["b", "c", "a"],
+	);
+	assert.equal(manager.getCurrentIndex(), 0);
+	assert.deepEqual(
+		getPlayMessages(calls).map(({ song }) => song.songId),
+		["b"],
+	);
+});
+
+test("随机模式显式指定原始索引时只播放对应目标歌曲", {
+	concurrency: false,
+}, async (context) => {
+	const calls = [];
+	const originalRandom = Math.random;
+	Math.random = () => 0;
+	mockIPC((command, payload) => {
+		calls.push({ command, payload });
+		if (command === "local_player_send_msg") return undefined;
+		throw new Error(`Unexpected IPC command: ${command}`);
+	});
+
+	const manager = new PlayQueueManager(createStore({ loudnessEnabled: false }));
+	context.after(() => {
+		Math.random = originalRandom;
+		manager.dispose();
+		clearMocks();
+	});
+
+	manager.toggleShuffleOn();
+	manager.setQueue([makeSong("a"), makeSong("b"), makeSong("c")], undefined, 2);
+	await waitFor(
+		() => getPlayMessages(calls).length === 1,
+		"显式指定的随机队列歌曲未启动播放",
+	);
+	await drainAsyncWork();
+
+	assert.deepEqual(
+		manager.getPlayList().map((song) => song.id),
+		["b", "c", "a"],
+	);
+	assert.equal(manager.getCurrentSong()?.id, "c");
+	assert.equal(manager.getCurrentIndex(), 1);
+	assert.deepEqual(
+		getPlayMessages(calls).map(({ song }) => song.songId),
+		["c"],
+	);
+});
+
+test("下一首、队尾和拖动排序保持当前歌曲身份且不重新起播", {
+	concurrency: false,
+}, async (context) => {
+	const calls = [];
+	mockIPC((command, payload) => {
+		calls.push({ command, payload });
+		if (command === "local_player_send_msg") return undefined;
+		throw new Error(`Unexpected IPC command: ${command}`);
+	});
+
+	const manager = new PlayQueueManager(createStore({ loudnessEnabled: false }));
+	context.after(() => {
+		manager.dispose();
+		clearMocks();
+	});
+
+	manager.setQueue([makeSong("a"), makeSong("b"), makeSong("c")], undefined, 1);
+	await waitFor(() => getPlayMessages(calls).length === 1, "队列未启动播放");
+
+	manager.enqueueNext(makeSong("d"));
+	manager.enqueueTail(makeSong("e"));
+	manager.enqueueNext(makeSong("a"));
+	manager.moveSong(4, 0);
+
+	assert.deepEqual(
+		manager.getPlayList().map((song) => song.id),
+		["e", "b", "a", "d", "c"],
+	);
+	assert.equal(manager.getCurrentSong()?.id, "b");
+	assert.equal(manager.getCurrentIndex(), 1);
+	manager.toggleShuffleOn();
+	manager.enqueueTail(makeSong("f"));
+	assert.equal(manager.getPlayList().at(-1)?.id, "f");
+	assert.equal(manager.getCurrentSong()?.id, "b");
+	await drainAsyncWork();
+	assert.equal(getPlayMessages(calls).length, 1);
+});
+
+test("暂停时删除当前歌曲会加载相邻歌曲但保持暂停", {
+	concurrency: false,
+}, async (context) => {
+	const calls = [];
+	mockIPC((command, payload) => {
+		calls.push({ command, payload });
+		if (command === "local_player_send_msg") return undefined;
+		throw new Error(`Unexpected IPC command: ${command}`);
+	});
+
+	const manager = new PlayQueueManager(createStore({ loudnessEnabled: false }));
+	context.after(() => {
+		manager.dispose();
+		clearMocks();
+	});
+
+	manager.setQueue([makeSong("a"), makeSong("b"), makeSong("c")], undefined, 1);
+	await waitFor(() => getPlayMessages(calls).length === 1, "队列未启动播放");
+	manager.setPlaybackState(false);
+	await waitFor(
+		() => getAudioMessages(calls, "pauseAudio").length === 1,
+		"暂停请求未发送",
+	);
+
+	manager.removeSong("b");
+	await waitFor(
+		() => getPlayMessages(calls).length === 2,
+		"删除当前歌曲后未加载相邻歌曲",
+	);
+
+	const replacement = getPlayMessages(calls)[1];
+	assert.equal(replacement.song.songId, "c");
+	assert.equal(replacement.startPaused, true);
+	assert.equal(manager.getCurrentSong()?.id, "c");
+});
+
+test("删除队列最后一首歌曲会清空状态并停止音频", {
+	concurrency: false,
+}, async (context) => {
+	const calls = [];
+	const store = createStore({ loudnessEnabled: false });
+	mockIPC((command, payload) => {
+		calls.push({ command, payload });
+		if (command === "local_player_send_msg") return undefined;
+		throw new Error(`Unexpected IPC command: ${command}`);
+	});
+
+	const manager = new PlayQueueManager(store);
+	context.after(() => {
+		manager.dispose();
+		clearMocks();
+	});
+
+	manager.replaceQueueAndPlay(makeSong("only"));
+	await waitFor(() => getPlayMessages(calls).length === 1, "歌曲未启动播放");
+	manager.removeSong("only");
+	await waitFor(
+		() => getAudioMessages(calls, "stopAudio").length === 1,
+		"空队列未停止音频",
+	);
+
+	assert.deepEqual(manager.getPlayList(), []);
+	assert.equal(manager.getCurrentIndex(), -1);
+	assert.equal(store.get(queueCurrentIndexAtom), -1);
+	assert.deepEqual(store.get(queuePlaylistAtom), []);
+	assert.equal(store.get(persistedQueueStateAtom).currentSongId, null);
+});
+
+test("清空待播只保留播放历史和当前歌曲", {
+	concurrency: false,
+}, async (context) => {
+	const calls = [];
+	mockIPC((command, payload) => {
+		calls.push({ command, payload });
+		if (command === "local_player_send_msg") return undefined;
+		throw new Error(`Unexpected IPC command: ${command}`);
+	});
+
+	const manager = new PlayQueueManager(createStore({ loudnessEnabled: false }));
+	context.after(() => {
+		manager.dispose();
+		clearMocks();
+	});
+
+	manager.setQueue(
+		[makeSong("a"), makeSong("b"), makeSong("c"), makeSong("d")],
+		undefined,
+		1,
+	);
+	await waitFor(() => getPlayMessages(calls).length === 1, "队列未启动播放");
+	manager.clearUpcoming();
+
+	assert.deepEqual(
+		manager.getPlayList().map((song) => song.id),
+		["a", "b"],
+	);
+	assert.equal(manager.getCurrentSong()?.id, "b");
+	assert.equal(getPlayMessages(calls).length, 1);
+});
+
+test("恢复队列时按当前歌曲 ID 抵消缺失歌曲造成的索引偏移", {
+	concurrency: false,
+}, async (context) => {
+	const store = createStore({ loudnessEnabled: false });
+	store.set(persistedQueueStateAtom, {
+		songIds: ["missing", "b", "c"],
+		originalSongIds: ["missing", "b", "c"],
+		currentSongId: "b",
+		currentIndex: 1,
+		repeatMode: 0,
+		shuffleActive: false,
+		playlistId: 7,
+		position: 12,
+	});
+
+	mockIPC((command) => {
+		if (command === "get_songs_by_ids") {
+			return [makeSong("b"), makeSong("c")];
+		}
+		throw new Error(`Unexpected IPC command: ${command}`);
+	});
+
+	const manager = new PlayQueueManager(store);
+	context.after(() => {
+		manager.dispose();
+		clearMocks();
+	});
+
+	const restored = await manager.restore();
+
+	assert.deepEqual(restored, { restored: true, position: 12 });
+	assert.deepEqual(
+		manager.getPlayList().map((song) => song.id),
+		["b", "c"],
+	);
+	assert.equal(manager.getCurrentSong()?.id, "b");
+	assert.equal(manager.getCurrentIndex(), 0);
+	assert.equal(store.get(persistedQueueStateAtom).currentSongId, "b");
 });
