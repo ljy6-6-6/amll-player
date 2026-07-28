@@ -490,6 +490,15 @@ export class PlayQueueManager {
 
 		if (this.shuffleActive) {
 			this.playList = shuffleArray(uniqueSongs);
+			if (requestedSongId) {
+				const requestedIndex = this.findInPlayList(requestedSongId);
+				if (requestedIndex > 0) {
+					this.playList = [
+						...this.playList.slice(requestedIndex),
+						...this.playList.slice(0, requestedIndex),
+					];
+				}
+			}
 		} else {
 			this.playList = [...uniqueSongs];
 		}

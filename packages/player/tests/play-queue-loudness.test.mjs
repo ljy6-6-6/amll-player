@@ -611,13 +611,30 @@ test("随机模式显式指定原始索引时只播放对应目标歌曲", {
 
 	assert.deepEqual(
 		manager.getPlayList().map((song) => song.id),
-		["b", "c", "a"],
+		["c", "a", "b"],
 	);
 	assert.equal(manager.getCurrentSong()?.id, "c");
-	assert.equal(manager.getCurrentIndex(), 1);
+	assert.equal(manager.getCurrentIndex(), 0);
 	assert.deepEqual(
 		getPlayMessages(calls).map(({ song }) => song.songId),
 		["c"],
+	);
+
+	const firstPlayback = getPlayMessages(calls)[0];
+	manager.advanceForAutoEnd("c", firstPlayback.playbackId);
+	await waitFor(
+		() => getPlayMessages(calls).length === 2,
+		"随机队列没有自然播放目标歌曲后的下一项",
+	);
+	const secondPlayback = getPlayMessages(calls)[1];
+	manager.advanceForAutoEnd("a", secondPlayback.playbackId);
+	await waitFor(
+		() => getPlayMessages(calls).length === 3,
+		"随机队列没有自然播放完整轮次",
+	);
+	assert.deepEqual(
+		getPlayMessages(calls).map(({ song }) => song.songId),
+		["c", "a", "b"],
 	);
 });
 
