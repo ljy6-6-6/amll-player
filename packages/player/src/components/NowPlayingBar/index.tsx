@@ -21,6 +21,7 @@ import { Flex, IconButton } from "@radix-ui/themes";
 import classNames from "classnames";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { type FC, useEffect, useLayoutEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import IconForward from "../../assets/icon_forward.svg?react";
 import IconRewind from "../../assets/icon_rewind.svg?react";
 import {
@@ -32,6 +33,7 @@ import { NowPlaylistCard } from "../NowPlaylistCard/index.tsx";
 import styles from "./index.module.css";
 
 export const NowPlayingBar: FC = () => {
+	const { t } = useTranslation();
 	const hideNowPlayingBar = useAtomValue(hideNowPlayingBarAtom);
 	const musicName = useAtomValue(musicNameAtom);
 	const musicArtists = useAtomValue(musicArtistsAtom);
@@ -119,7 +121,7 @@ export const NowPlayingBar: FC = () => {
 						className={styles.playlistDismissLayer}
 						type="button"
 						tabIndex={-1}
-						aria-label="关闭当前播放列表"
+						aria-label={t("playbar.playlist.close", "关闭当前播放列表")}
 						onPointerDown={(event) => event.preventDefault()}
 						onClick={(event) => {
 							event.preventDefault();
@@ -278,7 +280,9 @@ export const NowPlayingBar: FC = () => {
 						variant="soft"
 						onClick={() => setPlaylistOpened((v) => !v)}
 						aria-label={
-							playlistOpened ? "关闭当前播放列表" : "打开当前播放列表"
+							playlistOpened
+								? t("playbar.playlist.close", "关闭当前播放列表")
+								: t("playbar.playlist.open", "打开当前播放列表")
 						}
 						aria-expanded={playlistOpened}
 						aria-controls="now-playlist-card"

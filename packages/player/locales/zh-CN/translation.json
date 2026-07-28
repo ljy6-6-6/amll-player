@@ -523,7 +523,27 @@
 	},
 	"playbar": {
 		"playlist": {
-			"title": "当前播放列表"
+			"clearUpcoming": "清空待播",
+			"clearUpcomingLabel": "清空 {count, plural, other {#}} 首待播歌曲",
+			"close": "关闭当前播放列表",
+			"closeShort": "关闭",
+			"count": "{count, plural, other {#}} 首",
+			"current": "正在播放",
+			"emptyHint": "播放歌曲或将歌曲添加到队列后会显示在这里",
+			"emptyTitle": "播放队列为空",
+			"moveDown": "下移 {name}",
+			"moveDownShort": "下移",
+			"moveUp": "上移 {name}",
+			"moveUpShort": "上移",
+			"open": "打开当前播放列表",
+			"playSong": "播放 {name} - {artists}",
+			"queueLabel": "播放队列",
+			"removeShort": "移除",
+			"removeSong": "从播放队列移除 {name}",
+			"replaySong": "重新播放 {name} - {artists}",
+			"title": "当前播放列表",
+			"unknownArtist": "未知艺术家",
+			"unknownSong": "未知歌曲"
 		}
 	},
 	"settings": {

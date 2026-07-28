@@ -523,7 +523,27 @@
 	},
 	"playbar": {
 		"playlist": {
-			"title": "当前播放列表"
+			"clearUpcoming": "Xóa bài chờ phát",
+			"clearUpcomingLabel": "Xóa {count, plural, other {# bài}} đang chờ phát",
+			"close": "Đóng danh sách phát hiện tại",
+			"closeShort": "Đóng",
+			"count": "{count, plural, other {# bài}}",
+			"current": "Đang phát",
+			"emptyHint": "Phát một bài hát hoặc thêm bài vào hàng đợi để hiển thị tại đây",
+			"emptyTitle": "Hàng đợi phát đang trống",
+			"moveDown": "Di chuyển {name} xuống",
+			"moveDownShort": "Di chuyển xuống",
+			"moveUp": "Di chuyển {name} lên",
+			"moveUpShort": "Di chuyển lên",
+			"open": "Mở danh sách phát hiện tại",
+			"playSong": "Phát {name} - {artists}",
+			"queueLabel": "Hàng đợi phát",
+			"removeShort": "Xóa",
+			"removeSong": "Xóa {name} khỏi hàng đợi phát",
+			"replaySong": "Phát lại {name} - {artists}",
+			"title": "Danh sách phát hiện tại",
+			"unknownArtist": "Nghệ sĩ không xác định",
+			"unknownSong": "Bài hát không xác định"
 		}
 	},
 	"settings": {

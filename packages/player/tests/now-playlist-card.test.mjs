@@ -28,7 +28,7 @@ test("队列行单击即可播放且当前歌曲有明确状态", () => {
 	assert.match(queueCard, /role="listitem"/);
 	assert.match(queueCard, /aria-posinset=\{virtualItem\.index \+ 1\}/);
 	assert.match(queueCard, /aria-setsize=\{playlist\.length\}/);
-	assert.match(queueCard, /正在播放/);
+	assert.match(queueCard, /playbar\.playlist\.current/);
 	assert.match(queueCardStyle, /\.playlistSongItem\.current\s*\{/);
 	assert.match(queueCardStyle, /border-left-color:\s*var\(--accent-9\)/);
 });
@@ -40,9 +40,9 @@ test("队列弹层提供逐项移除、上下移动和清空待播操作", () =>
 	assert.match(queueCard, /queueManager\?\.clearUpcoming\(\)/);
 	assert.match(queueCard, /disabled=\{index === 0\}/);
 	assert.match(queueCard, /disabled=\{index === queueLength - 1\}/);
-	assert.match(queueCard, /aria-label=\{`上移 \$\{name\}`\}/);
-	assert.match(queueCard, /aria-label=\{`下移 \$\{name\}`\}/);
-	assert.match(queueCard, /aria-label=\{`从播放队列移除 \$\{name\}`\}/);
+	assert.match(queueCard, /playbar\.playlist\.moveUp/);
+	assert.match(queueCard, /playbar\.playlist\.moveDown/);
+	assert.match(queueCard, /playbar\.playlist\.removeSong/);
 	assert.ok(
 		(queueCard.match(/event\.stopPropagation\(\)/g) ?? []).length >= 5,
 		"队列操作按钮应拦截点击，避免误触歌曲播放",
@@ -65,11 +65,45 @@ test("虚拟列表估算行高与实际行盒保持一致", () => {
 });
 
 test("标题展示队列计数并覆盖空队列和待播数量", () => {
-	assert.match(queueCard, /aria-label=\{`共 \$\{playlist\.length\} 首`\}/);
-	assert.match(queueCard, /\{playlist\.length\} 首/);
+	assert.match(queueCard, /playbar\.playlist\.count/);
 	assert.match(queueCard, /playlist\.length === 0/);
-	assert.match(queueCard, /播放队列为空/);
-	assert.match(queueCard, /清空 \$\{upcomingCount\} 首待播歌曲/);
+	assert.match(queueCard, /playbar\.playlist\.emptyTitle/);
+	assert.match(queueCard, /playbar\.playlist\.clearUpcomingLabel/);
+});
+
+test("播放队列新增文案在所有内置语言中都有翻译", () => {
+	const requiredKeys = [
+		"clearUpcoming",
+		"clearUpcomingLabel",
+		"close",
+		"count",
+		"current",
+		"emptyHint",
+		"emptyTitle",
+		"moveDown",
+		"moveUp",
+		"open",
+		"playSong",
+		"queueLabel",
+		"removeSong",
+		"replaySong",
+		"title",
+		"unknownArtist",
+		"unknownSong",
+	];
+	for (const locale of ["en-US", "ja-JP", "vi-VN", "zh-CN", "zh-TW"]) {
+		const messages = JSON.parse(
+			readProjectFile(`../locales/${locale}/translation.json`),
+		).playbar.playlist;
+		for (const key of requiredKeys) {
+			assert.equal(
+				typeof messages[key],
+				"string",
+				`${locale} 缺少 playbar.playlist.${key}`,
+			);
+			assert.notEqual(messages[key].length, 0);
+		}
+	}
 });
 
 test("Esc 和外部指针关闭弹层且内部交互不会被当作外部点击", () => {

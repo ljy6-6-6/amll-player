@@ -523,7 +523,27 @@
 	},
 	"playbar": {
 		"playlist": {
-			"title": "当前播放列表"
+			"clearUpcoming": "待機中をクリア",
+			"clearUpcomingLabel": "待機中の {count, plural, other {# 曲}}をクリア",
+			"close": "現在のプレイリストを閉じる",
+			"closeShort": "閉じる",
+			"count": "{count, plural, other {# 曲}}",
+			"current": "再生中",
+			"emptyHint": "曲を再生するかキューに追加すると、ここに表示されます",
+			"emptyTitle": "再生キューは空です",
+			"moveDown": "{name} を下へ移動",
+			"moveDownShort": "下へ移動",
+			"moveUp": "{name} を上へ移動",
+			"moveUpShort": "上へ移動",
+			"open": "現在のプレイリストを開く",
+			"playSong": "{name} - {artists} を再生",
+			"queueLabel": "再生キュー",
+			"removeShort": "削除",
+			"removeSong": "{name} を再生キューから削除",
+			"replaySong": "{name} - {artists} をもう一度再生",
+			"title": "現在のプレイリスト",
+			"unknownArtist": "不明なアーティスト",
+			"unknownSong": "不明な曲"
 		}
 	},
 	"settings": {

@@ -11,7 +11,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import classNames from "classnames";
 import { useAtomValue } from "jotai";
 import { type FC, useEffect, useRef } from "react";
-import { Trans } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import { queueManagerAtom } from "../../states/appAtoms.ts";
 import type { Song } from "../../utils/db-client.ts";
 import {
@@ -36,14 +36,16 @@ const PlaylistSongItem: FC<PlaylistSongItemProps> = ({
 	queueLength,
 }) => {
 	const queueManager = useAtomValue(queueManagerAtom);
+	const { t } = useTranslation();
 	const cover = song.coverPath
 		? song.coverPath.startsWith("http://") ||
 			song.coverPath.startsWith("https://")
 			? song.coverPath
 			: convertFileSrc(song.coverPath)
 		: "";
-	const name = song.songName || "未知歌曲";
-	const artists = song.songArtists || "未知艺术家";
+	const name = song.songName || t("playbar.playlist.unknownSong", "未知歌曲");
+	const artists =
+		song.songArtists || t("playbar.playlist.unknownArtist", "未知艺术家");
 
 	return (
 		<div
@@ -58,7 +60,13 @@ const PlaylistSongItem: FC<PlaylistSongItemProps> = ({
 				className={styles.songMain}
 				onClick={() => queueManager?.playAt(index)}
 				aria-current={isCurrent ? "true" : undefined}
-				aria-label={`${isCurrent ? "重新播放" : "播放"} ${name} - ${artists}`}
+				aria-label={t(
+					isCurrent
+						? "playbar.playlist.replaySong"
+						: "playbar.playlist.playSong",
+					isCurrent ? "重新播放 {name} - {artists}" : "播放 {name} - {artists}",
+					{ name, artists },
+				)}
 			>
 				<span
 					className={classNames(
@@ -73,7 +81,11 @@ const PlaylistSongItem: FC<PlaylistSongItemProps> = ({
 				<span className={styles.musicInfo}>
 					<span className={styles.titleLine}>
 						<span className={styles.name}>{name}</span>
-						{isCurrent && <span className={styles.currentLabel}>正在播放</span>}
+						{isCurrent && (
+							<span className={styles.currentLabel}>
+								{t("playbar.playlist.current", "正在播放")}
+							</span>
+						)}
 					</span>
 					<span className={styles.artists}>{artists}</span>
 				</span>
@@ -87,8 +99,8 @@ const PlaylistSongItem: FC<PlaylistSongItemProps> = ({
 						event.stopPropagation();
 						queueManager?.moveSong(index, index - 1);
 					}}
-					aria-label={`上移 ${name}`}
-					title="上移"
+					aria-label={t("playbar.playlist.moveUp", "上移 {name}", { name })}
+					title={t("playbar.playlist.moveUpShort", "上移")}
 				>
 					<ChevronUpIcon />
 				</button>
@@ -100,8 +112,10 @@ const PlaylistSongItem: FC<PlaylistSongItemProps> = ({
 						event.stopPropagation();
 						queueManager?.moveSong(index, index + 1);
 					}}
-					aria-label={`下移 ${name}`}
-					title="下移"
+					aria-label={t("playbar.playlist.moveDown", "下移 {name}", {
+						name,
+					})}
+					title={t("playbar.playlist.moveDownShort", "下移")}
 				>
 					<ChevronDownIcon />
 				</button>
@@ -112,8 +126,12 @@ const PlaylistSongItem: FC<PlaylistSongItemProps> = ({
 						event.stopPropagation();
 						queueManager?.removeSong(song.id);
 					}}
-					aria-label={`从播放队列移除 ${name}`}
-					title="移除"
+					aria-label={t(
+						"playbar.playlist.removeSong",
+						"从播放队列移除 {name}",
+						{ name },
+					)}
+					title={t("playbar.playlist.removeShort", "移除")}
 				>
 					<TrashIcon />
 				</button>
@@ -131,6 +149,7 @@ export const NowPlaylistCard: FC<NowPlaylistCardProps> = ({
 	onRequestClose,
 	...props
 }) => {
+	const { t } = useTranslation();
 	const playlist = useAtomValue(queuePlaylistAtom);
 	const playlistIndex = useAtomValue(queueCurrentIndexAtom);
 	const queueManager = useAtomValue(queueManagerAtom);
@@ -159,18 +178,17 @@ export const NowPlaylistCard: FC<NowPlaylistCardProps> = ({
 			className={classNames(styles.root, className)}
 			role="dialog"
 			aria-modal="false"
-			aria-label="当前播放列表"
+			aria-label={t("playbar.playlist.title", "当前播放列表")}
 		>
 			<header className={styles.header}>
 				<div className={styles.heading}>
 					<strong>
 						<Trans i18nKey="playbar.playlist.title">当前播放列表</Trans>
 					</strong>
-					<span
-						className={styles.count}
-						aria-label={`共 ${playlist.length} 首`}
-					>
-						{playlist.length} 首
+					<span className={styles.count}>
+						{t("playbar.playlist.count", "{count, plural, other {#}} 首", {
+							count: playlist.length,
+						})}
 					</span>
 				</div>
 				<div className={styles.headerActions}>
@@ -182,9 +200,13 @@ export const NowPlaylistCard: FC<NowPlaylistCardProps> = ({
 								event.stopPropagation();
 								queueManager?.clearUpcoming();
 							}}
-							aria-label={`清空 ${upcomingCount} 首待播歌曲`}
+							aria-label={t(
+								"playbar.playlist.clearUpcomingLabel",
+								"清空 {count, plural, other {#}} 首待播歌曲",
+								{ count: upcomingCount },
+							)}
 						>
-							清空待播
+							{t("playbar.playlist.clearUpcoming", "清空待播")}
 						</button>
 					)}
 					{onRequestClose && (
@@ -196,8 +218,8 @@ export const NowPlaylistCard: FC<NowPlaylistCardProps> = ({
 								onRequestClose();
 							}}
 							autoFocus
-							aria-label="关闭当前播放列表"
-							title="关闭"
+							aria-label={t("playbar.playlist.close", "关闭当前播放列表")}
+							title={t("playbar.playlist.closeShort", "关闭")}
 						>
 							<Cross2Icon />
 						</button>
@@ -207,15 +229,20 @@ export const NowPlaylistCard: FC<NowPlaylistCardProps> = ({
 
 			{playlist.length === 0 ? (
 				<div className={styles.emptyState} role="status">
-					<div>播放队列为空</div>
-					<small>播放歌曲或将歌曲添加到队列后会显示在这里</small>
+					<div>{t("playbar.playlist.emptyTitle", "播放队列为空")}</div>
+					<small>
+						{t(
+							"playbar.playlist.emptyHint",
+							"播放歌曲或将歌曲添加到队列后会显示在这里",
+						)}
+					</small>
 				</div>
 			) : (
 				<div
 					className={styles.queueViewport}
 					ref={playlistContainerRef}
 					role="list"
-					aria-label="播放队列"
+					aria-label={t("playbar.playlist.queueLabel", "播放队列")}
 				>
 					<div
 						className={styles.virtualCanvas}

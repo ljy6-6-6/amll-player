@@ -523,7 +523,27 @@
 	},
 	"playbar": {
 		"playlist": {
-			"title": "Current Playlist"
+			"clearUpcoming": "Clear upcoming",
+			"clearUpcomingLabel": "Clear {count, plural, one {# upcoming track} other {# upcoming tracks}}",
+			"close": "Close current playlist",
+			"closeShort": "Close",
+			"count": "{count, plural, one {# track} other {# tracks}}",
+			"current": "Playing",
+			"emptyHint": "Play a song or add tracks to the queue to see them here",
+			"emptyTitle": "The play queue is empty",
+			"moveDown": "Move {name} down",
+			"moveDownShort": "Move down",
+			"moveUp": "Move {name} up",
+			"moveUpShort": "Move up",
+			"open": "Open current playlist",
+			"playSong": "Play {name} - {artists}",
+			"queueLabel": "Play queue",
+			"removeShort": "Remove",
+			"removeSong": "Remove {name} from the play queue",
+			"replaySong": "Replay {name} - {artists}",
+			"title": "Current Playlist",
+			"unknownArtist": "Unknown Artist",
+			"unknownSong": "Unknown Track"
 		}
 	},
 	"settings": {

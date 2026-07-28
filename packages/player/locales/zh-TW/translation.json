@@ -523,7 +523,27 @@
 	},
 	"playbar": {
 		"playlist": {
-			"title": "當前播放列表"
+			"clearUpcoming": "清除待播",
+			"clearUpcomingLabel": "清除 {count, plural, other {#}} 首待播歌曲",
+			"close": "關閉目前播放清單",
+			"closeShort": "關閉",
+			"count": "{count, plural, other {#}} 首",
+			"current": "正在播放",
+			"emptyHint": "播放歌曲或將歌曲加入佇列後會顯示在這裡",
+			"emptyTitle": "播放佇列是空的",
+			"moveDown": "下移 {name}",
+			"moveDownShort": "下移",
+			"moveUp": "上移 {name}",
+			"moveUpShort": "上移",
+			"open": "開啟目前播放清單",
+			"playSong": "播放 {name} - {artists}",
+			"queueLabel": "播放佇列",
+			"removeShort": "移除",
+			"removeSong": "從播放佇列移除 {name}",
+			"replaySong": "重新播放 {name} - {artists}",
+			"title": "目前播放清單",
+			"unknownArtist": "未知藝人",
+			"unknownSong": "未知歌曲"
 		}
 	},
 	"settings": {
