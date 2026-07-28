@@ -20,7 +20,7 @@ import {
 import { Flex, IconButton } from "@radix-ui/themes";
 import classNames from "classnames";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
-import { type FC, useLayoutEffect, useRef } from "react";
+import { type FC, useEffect, useLayoutEffect, useRef } from "react";
 import IconForward from "../../assets/icon_forward.svg?react";
 import IconRewind from "../../assets/icon_rewind.svg?react";
 import {
@@ -45,6 +45,9 @@ export const NowPlayingBar: FC = () => {
 	const onRequestNextSong = useAtomValue(onRequestNextSongAtom).onEmit;
 
 	const playbarRef = useRef<HTMLDivElement>(null);
+	const playlistPanelRef = useRef<HTMLDivElement>(null);
+	const playlistDismissLayerRef = useRef<HTMLButtonElement>(null);
+	const playlistToggleButtonRef = useRef<HTMLButtonElement>(null);
 
 	useLayoutEffect(() => {
 		const playbarEl = playbarRef.current;
@@ -66,6 +69,37 @@ export const NowPlayingBar: FC = () => {
 		};
 	}, []);
 
+	useEffect(() => {
+		if (!playlistOpened) return;
+
+		const handlePointerDown = (event: PointerEvent) => {
+			const target = event.target;
+			if (!(target instanceof Node)) return;
+			if (
+				playlistPanelRef.current?.contains(target) ||
+				playlistDismissLayerRef.current?.contains(target) ||
+				playlistToggleButtonRef.current?.contains(target)
+			) {
+				return;
+			}
+			setPlaylistOpened(false);
+		};
+		const handleKeyDown = (event: KeyboardEvent) => {
+			if (event.key !== "Escape") return;
+			event.preventDefault();
+			event.stopPropagation();
+			setPlaylistOpened(false);
+			playlistToggleButtonRef.current?.focus();
+		};
+
+		document.addEventListener("pointerdown", handlePointerDown, true);
+		document.addEventListener("keydown", handleKeyDown, true);
+		return () => {
+			document.removeEventListener("pointerdown", handlePointerDown, true);
+			document.removeEventListener("keydown", handleKeyDown, true);
+		};
+	}, [playlistOpened, setPlaylistOpened]);
+
 	return (
 		<>
 			{/* <Container
@@ -77,17 +111,42 @@ export const NowPlayingBar: FC = () => {
 		 	bottom="0"
 		 	left="0"
 		 	right="0"
-		 > */}
+			> */}
 			{playlistOpened && (
-				<Flex
-					direction="row-reverse"
-					mx="3"
-					position="absolute"
-					right="0"
-					bottom="calc(var(--amll-player-playbar-bottom) + var(--space-3))"
-				>
-					<NowPlaylistCard className={classNames(styles.playlistCard)} />
-				</Flex>
+				<>
+					<button
+						ref={playlistDismissLayerRef}
+						className={styles.playlistDismissLayer}
+						type="button"
+						tabIndex={-1}
+						aria-label="关闭当前播放列表"
+						onPointerDown={(event) => event.preventDefault()}
+						onClick={(event) => {
+							event.preventDefault();
+							event.stopPropagation();
+							setPlaylistOpened(false);
+							playlistToggleButtonRef.current?.focus();
+						}}
+					/>
+					<Flex
+						className={styles.playlistPanel}
+						direction="row-reverse"
+						mx="3"
+						position="absolute"
+						right="0"
+						bottom="calc(var(--amll-player-playbar-bottom) + var(--space-3))"
+						ref={playlistPanelRef}
+					>
+						<NowPlaylistCard
+							id="now-playlist-card"
+							className={classNames(styles.playlistCard)}
+							onRequestClose={() => {
+								setPlaylistOpened(false);
+								playlistToggleButtonRef.current?.focus();
+							}}
+						/>
+					</Flex>
+				</>
 			)}
 			<Flex
 				className={classNames(styles.playBar, hideNowPlayingBar && styles.hide)}
@@ -215,8 +274,15 @@ export const NowPlayingBar: FC = () => {
 						</IconButton>
 					</Flex>
 					<IconButton
+						ref={playlistToggleButtonRef}
 						variant="soft"
 						onClick={() => setPlaylistOpened((v) => !v)}
+						aria-label={
+							playlistOpened ? "关闭当前播放列表" : "打开当前播放列表"
+						}
+						aria-expanded={playlistOpened}
+						aria-controls="now-playlist-card"
+						aria-haspopup="dialog"
 					>
 						<ListBulletIcon />
 					</IconButton>

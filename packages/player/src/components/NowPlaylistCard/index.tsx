@@ -1,9 +1,16 @@
-import { PlayIcon } from "@radix-ui/react-icons";
-import { Avatar, Box, Flex, type FlexProps, Inset } from "@radix-ui/themes";
+import {
+	ChevronDownIcon,
+	ChevronUpIcon,
+	Cross2Icon,
+	SpeakerLoudIcon,
+	TrashIcon,
+} from "@radix-ui/react-icons";
+import { Avatar, Flex, type FlexProps } from "@radix-ui/themes";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import classNames from "classnames";
 import { useAtomValue } from "jotai";
-import { type FC, type HTMLProps, useEffect, useRef } from "react";
+import { type FC, useEffect, useRef } from "react";
 import { Trans } from "react-i18next";
 import { queueManagerAtom } from "../../states/appAtoms.ts";
 import type { Song } from "../../utils/db-client.ts";
@@ -13,117 +20,235 @@ import {
 } from "../../utils/play-queue-manager.ts";
 import styles from "./index.module.css";
 
-const PlaylistSongItem: FC<
-	{
-		song: Song;
-		index: number;
-	} & HTMLProps<HTMLDivElement>
-> = ({ song, className, index, ...props }) => {
-	const playlistIndex = useAtomValue(queueCurrentIndexAtom);
-	const queueManager = useAtomValue(queueManagerAtom);
+export const NOW_PLAYLIST_ROW_HEIGHT = 72;
 
-	const cover = song.coverPath 
-		? (song.coverPath.startsWith("http://") || song.coverPath.startsWith("https://") 
-			? song.coverPath 
-			: convertFileSrc(song.coverPath))
+interface PlaylistSongItemProps {
+	song: Song;
+	index: number;
+	isCurrent: boolean;
+	queueLength: number;
+}
+
+const PlaylistSongItem: FC<PlaylistSongItemProps> = ({
+	song,
+	index,
+	isCurrent,
+	queueLength,
+}) => {
+	const queueManager = useAtomValue(queueManagerAtom);
+	const cover = song.coverPath
+		? song.coverPath.startsWith("http://") ||
+			song.coverPath.startsWith("https://")
+			? song.coverPath
+			: convertFileSrc(song.coverPath)
 		: "";
 	const name = song.songName || "未知歌曲";
 	const artists = song.songArtists || "未知艺术家";
 
 	return (
-		<div className={className} {...props}>
+		<div
+			className={classNames(
+				styles.playlistSongItem,
+				isCurrent && styles.current,
+			)}
+			data-current={isCurrent ? "true" : "false"}
+		>
 			<button
 				type="button"
-				className={styles.playlistSongItem}
-				onDoubleClick={() => {
-					queueManager?.playAt(index);
-				}}
-				aria-label={`播放 ${name} - ${artists}`}
+				className={styles.songMain}
+				onClick={() => queueManager?.playAt(index)}
+				aria-current={isCurrent ? "true" : undefined}
+				aria-label={`${isCurrent ? "重新播放" : "播放"} ${name} - ${artists}`}
 			>
+				<span
+					className={classNames(
+						styles.currentIndicator,
+						isCurrent && styles.currentIndicatorVisible,
+					)}
+					aria-hidden="true"
+				>
+					<SpeakerLoudIcon />
+				</span>
 				<Avatar size="4" fallback={<div />} src={cover} />
-				<div className={styles.musicInfo}>
-					<div className={styles.name}>{name}</div>
-					<div className={styles.artists}>{artists}</div>
-				</div>
-				{playlistIndex === index && <PlayIcon />}
+				<span className={styles.musicInfo}>
+					<span className={styles.titleLine}>
+						<span className={styles.name}>{name}</span>
+						{isCurrent && <span className={styles.currentLabel}>正在播放</span>}
+					</span>
+					<span className={styles.artists}>{artists}</span>
+				</span>
 			</button>
+			<div className={styles.itemActions}>
+				<button
+					type="button"
+					className={styles.itemAction}
+					disabled={index === 0}
+					onClick={(event) => {
+						event.stopPropagation();
+						queueManager?.moveSong(index, index - 1);
+					}}
+					aria-label={`上移 ${name}`}
+					title="上移"
+				>
+					<ChevronUpIcon />
+				</button>
+				<button
+					type="button"
+					className={styles.itemAction}
+					disabled={index === queueLength - 1}
+					onClick={(event) => {
+						event.stopPropagation();
+						queueManager?.moveSong(index, index + 1);
+					}}
+					aria-label={`下移 ${name}`}
+					title="下移"
+				>
+					<ChevronDownIcon />
+				</button>
+				<button
+					type="button"
+					className={classNames(styles.itemAction, styles.removeAction)}
+					onClick={(event) => {
+						event.stopPropagation();
+						queueManager?.removeSong(song.id);
+					}}
+					aria-label={`从播放队列移除 ${name}`}
+					title="移除"
+				>
+					<TrashIcon />
+				</button>
+			</div>
 		</div>
 	);
 };
 
-export const NowPlaylistCard: FC<FlexProps> = (props) => {
+type NowPlaylistCardProps = FlexProps & {
+	onRequestClose?: () => void;
+};
+
+export const NowPlaylistCard: FC<NowPlaylistCardProps> = ({
+	className,
+	onRequestClose,
+	...props
+}) => {
 	const playlist = useAtomValue(queuePlaylistAtom);
 	const playlistIndex = useAtomValue(queueCurrentIndexAtom);
+	const queueManager = useAtomValue(queueManagerAtom);
 	const playlistContainerRef = useRef<HTMLDivElement>(null);
+	const upcomingCount =
+		playlistIndex >= 0 ? Math.max(0, playlist.length - playlistIndex - 1) : 0;
 
 	const rowVirtualizer = useVirtualizer({
 		count: playlist.length,
 		getScrollElement: () => playlistContainerRef.current,
-		estimateSize: () => 55,
+		estimateSize: () => NOW_PLAYLIST_ROW_HEIGHT,
+		getItemKey: (index) => playlist[index]?.id ?? index,
 		overscan: 5,
 	});
 
 	useEffect(() => {
-		if (
-			rowVirtualizer &&
-			playlistIndex >= 0 &&
-			playlistIndex < playlist.length
-		) {
+		if (playlistIndex >= 0 && playlistIndex < playlist.length) {
 			rowVirtualizer.scrollToIndex(playlistIndex, { align: "center" });
 		}
 	}, [playlistIndex, rowVirtualizer, playlist.length]);
 
 	return (
 		<Flex
-			direction="column"
-			maxWidth="400px"
-			maxHeight="500px"
-			style={{
-				height: "50vh",
-				width: "max(10vw, 50vh)",
-				backdropFilter: "blur(1em)",
-				backgroundColor: "var(--black-a8)",
-			}}
 			{...props}
+			direction="column"
+			className={classNames(styles.root, className)}
+			role="dialog"
+			aria-modal="false"
+			aria-label="当前播放列表"
 		>
-			<Box py="3" px="4">
-				<Trans i18nKey="playbar.playlist.title">当前播放列表</Trans>
-			</Box>
-			<Inset
-				clip="padding-box"
-				side="bottom"
-				pb="current"
-				style={{ overflowY: "auto" }}
-				ref={playlistContainerRef}
-			>
-				<div
-					style={{
-						height: `${rowVirtualizer.getTotalSize()}px`,
-						width: "100%",
-						position: "relative",
-					}}
-				>
-					{rowVirtualizer.getVirtualItems().map((virtualItem) => {
-						const song = playlist[virtualItem.index];
-						if (!song) return null;
-						return (
-							<PlaylistSongItem
-								key={virtualItem.key}
-								style={{
-									position: "absolute",
-									top: 0,
-									left: 0,
-									width: "100%",
-									height: `${virtualItem.size}px`,
-									transform: `translateY(${virtualItem.start}px)`,
-								}}
-								song={song}
-								index={virtualItem.index}
-							/>
-						);
-					})}
+			<header className={styles.header}>
+				<div className={styles.heading}>
+					<strong>
+						<Trans i18nKey="playbar.playlist.title">当前播放列表</Trans>
+					</strong>
+					<span
+						className={styles.count}
+						aria-label={`共 ${playlist.length} 首`}
+					>
+						{playlist.length} 首
+					</span>
 				</div>
-			</Inset>
+				<div className={styles.headerActions}>
+					{upcomingCount > 0 && (
+						<button
+							type="button"
+							className={styles.clearUpcoming}
+							onClick={(event) => {
+								event.stopPropagation();
+								queueManager?.clearUpcoming();
+							}}
+							aria-label={`清空 ${upcomingCount} 首待播歌曲`}
+						>
+							清空待播
+						</button>
+					)}
+					{onRequestClose && (
+						<button
+							type="button"
+							className={styles.closeButton}
+							onClick={(event) => {
+								event.stopPropagation();
+								onRequestClose();
+							}}
+							autoFocus
+							aria-label="关闭当前播放列表"
+							title="关闭"
+						>
+							<Cross2Icon />
+						</button>
+					)}
+				</div>
+			</header>
+
+			{playlist.length === 0 ? (
+				<div className={styles.emptyState} role="status">
+					<div>播放队列为空</div>
+					<small>播放歌曲或将歌曲添加到队列后会显示在这里</small>
+				</div>
+			) : (
+				<div
+					className={styles.queueViewport}
+					ref={playlistContainerRef}
+					role="list"
+					aria-label="播放队列"
+				>
+					<div
+						className={styles.virtualCanvas}
+						style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
+					>
+						{rowVirtualizer.getVirtualItems().map((virtualItem) => {
+							const song = playlist[virtualItem.index];
+							if (!song) return null;
+							return (
+								<div
+									key={virtualItem.key}
+									data-index={virtualItem.index}
+									className={styles.queueRowSlot}
+									role="listitem"
+									aria-posinset={virtualItem.index + 1}
+									aria-setsize={playlist.length}
+									style={{
+										height: `${NOW_PLAYLIST_ROW_HEIGHT}px`,
+										transform: `translateY(${virtualItem.start}px)`,
+									}}
+								>
+									<PlaylistSongItem
+										song={song}
+										index={virtualItem.index}
+										isCurrent={playlistIndex === virtualItem.index}
+										queueLength={playlist.length}
+									/>
+								</div>
+							);
+						})}
+					</div>
+				</div>
+			)}
 		</Flex>
 	);
 };

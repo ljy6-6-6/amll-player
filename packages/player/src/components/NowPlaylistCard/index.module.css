@@ -1,52 +1,275 @@
+.root {
+	box-sizing: border-box;
+	width: min(400px, calc(100vw - var(--space-6)));
+	height: min(500px, 50vh);
+	min-height: 220px;
+	overflow: hidden;
+	background-color: var(--black-a9);
+	backdrop-filter: blur(1em);
+	color: var(--gray-12);
+}
+
+.header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--space-3);
+	min-height: 52px;
+	padding: var(--space-2) var(--space-3) var(--space-2) var(--space-4);
+	border-bottom: 1px solid var(--gray-a5);
+}
+
+.heading,
+.headerActions,
+.itemActions,
+.titleLine {
+	display: flex;
+	align-items: center;
+}
+
+.heading {
+	min-width: 0;
+	gap: var(--space-2);
+}
+
+.heading strong {
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.count {
+	flex: none;
+	color: var(--gray-10);
+	font-size: var(--font-size-1);
+}
+
+.headerActions {
+	flex: none;
+	gap: var(--space-1);
+}
+
+.clearUpcoming,
+.closeButton,
+.itemAction {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	box-sizing: border-box;
+	margin: 0;
+	border: 0;
+	border-radius: var(--radius-2);
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
+}
+
+.clearUpcoming {
+	height: 28px;
+	padding: 0 var(--space-2);
+	color: var(--gray-11);
+	font-size: var(--font-size-1);
+}
+
+.closeButton,
+.itemAction {
+	width: 28px;
+	height: 28px;
+	padding: 0;
+}
+
+.clearUpcoming:hover,
+.closeButton:hover,
+.itemAction:hover:not(:disabled) {
+	background-color: var(--gray-a4);
+	color: var(--gray-12);
+}
+
+.clearUpcoming:focus-visible,
+.closeButton:focus-visible,
+.itemAction:focus-visible,
+.songMain:focus-visible {
+	outline: 2px solid var(--accent-9);
+	outline-offset: -2px;
+}
+
+.queueViewport {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	scrollbar-gutter: stable;
+}
+
+.virtualCanvas {
+	position: relative;
+	width: 100%;
+}
+
+.queueRowSlot {
+	position: absolute;
+	top: 0;
+	left: 0;
+	box-sizing: border-box;
+	width: 100%;
+}
+
 .playlistSongItem {
 	display: flex;
 	align-items: center;
-	gap: var(--space-2);
 	box-sizing: border-box;
-	padding: var(--space-2) var(--space-4);
-	height: calc(var(--space-2) * 2 + 50px);
 	width: 100%;
-	max-width: 100%;
-	overflow: hidden;
+	height: 100%;
+	padding: 4px var(--space-2);
+	border-left: 3px solid transparent;
+	transition:
+		background-color 120ms ease,
+		border-color 120ms ease;
+}
 
-	background: none;
-	border: none;
+.playlistSongItem:hover,
+.playlistSongItem:focus-within {
+	background-color: var(--gray-a3);
+}
+
+.playlistSongItem.current {
+	border-left-color: var(--accent-9);
+	background-color: var(--accent-a3);
+}
+
+.songMain {
+	display: flex;
+	align-items: center;
+	flex: 1;
+	gap: var(--space-2);
+	min-width: 0;
+	height: 100%;
 	margin: 0;
-	font: inherit;
+	padding: 0;
+	overflow: hidden;
+	border: 0;
+	background: transparent;
 	color: inherit;
+	font: inherit;
 	text-align: left;
+	cursor: pointer;
+}
 
-	&:hover {
-		background-color: #fff1;
+.currentIndicator {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: none;
+	width: 16px;
+	color: var(--accent-11);
+	opacity: 0;
+}
+
+.currentIndicatorVisible {
+	opacity: 1;
+}
+
+.musicInfo {
+	display: flex;
+	flex: 1;
+	flex-direction: column;
+	justify-content: center;
+	min-width: 0;
+	overflow: hidden;
+	line-height: 1.2;
+}
+
+.titleLine {
+	min-width: 0;
+	gap: var(--space-2);
+}
+
+.name,
+.artists {
+	display: block;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.name {
+	min-width: 0;
+	color: var(--gray-12);
+}
+
+.artists {
+	margin-top: 3px;
+	color: var(--gray-10);
+	font-size: var(--font-size-1);
+}
+
+.currentLabel {
+	flex: none;
+	border-radius: var(--radius-2);
+	padding: 2px 5px;
+	background: var(--accent-a4);
+	color: var(--accent-11);
+	font-size: 10px;
+	line-height: 1;
+}
+
+.itemActions {
+	flex: none;
+	gap: 2px;
+	margin-left: var(--space-1);
+}
+
+.itemAction:disabled {
+	cursor: default;
+	opacity: 0.25;
+}
+
+.removeAction:hover:not(:disabled) {
+	background-color: var(--red-a4);
+	color: var(--red-11);
+}
+
+.emptyState {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex: 1;
+	flex-direction: column;
+	gap: var(--space-2);
+	min-height: 0;
+	padding: var(--space-5);
+	color: var(--gray-11);
+	text-align: center;
+}
+
+.emptyState small {
+	max-width: 260px;
+	color: var(--gray-9);
+}
+
+@media (hover: hover) and (pointer: fine) {
+	.itemActions {
+		opacity: 0;
+		transition: opacity 120ms ease;
 	}
 
-	&:active {
-		background-color: #ffffff15;
+	.playlistSongItem:hover .itemActions,
+	.playlistSongItem:focus-within .itemActions {
+		opacity: 1;
 	}
+}
 
-	.musicInfo {
-		flex-grow: 1;
-		min-width: 0;
-		overflow: hidden;
-		max-lines: 1;
-		white-space: nowrap;
-		text-overflow: ellipsis;
-		line-height: 1em;
+@media (max-height: 520px) {
+	.root {
+		height: calc(100vh - var(--amll-player-playbar-bottom) - var(--space-6));
+		min-height: 160px;
+	}
+}
 
-		> * {
-			overflow: hidden;
-			white-space: nowrap;
-			text-overflow: ellipsis;
-		}
-
-		.name {
-			margin-bottom: 0.1em;
-			max-width: 100%;
-		}
-
-		.artists {
-			opacity: 0.5;
-			max-width: 100%;
-		}
+@media (prefers-reduced-motion: reduce) {
+	.playlistSongItem,
+	.itemActions {
+		transition: none;
 	}
 }
