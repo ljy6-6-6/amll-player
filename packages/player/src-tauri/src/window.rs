@@ -299,6 +299,14 @@ pub async fn recreate_window(app: &AppHandle, label: &str, path: Option<&str>) {
         #[cfg(target_os = "windows")]
         let recovered_legacy_maximized_state = recover_legacy_maximized_state(&win, label);
 
+        // The Windows main window remains hidden until React has painted its
+        // first frame. Focusing it here may implicitly expose the blank native
+        // host, so the frontend shows and focuses it together when ready.
+        #[cfg(target_os = "windows")]
+        if label != "main" {
+            let _ = win.set_focus();
+        }
+        #[cfg(not(target_os = "windows"))]
         let _ = win.set_focus();
 
         // Tao on Windows clears the maximized flag whenever set_size is called.
