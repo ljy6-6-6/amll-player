@@ -98,11 +98,24 @@
 .queueViewport {
 	position: relative;
 	flex: 0 1 auto;
+	width: 100%;
+	height: auto;
 	min-height: 0;
-	overflow-x: hidden;
-	overflow-y: auto;
+	overflow: hidden;
+}
+
+.queueViewport :global(.rt-ScrollAreaViewport) {
 	overscroll-behavior: contain;
-	scrollbar-gutter: stable;
+}
+
+.queueViewport :global(.rt-ScrollAreaScrollbar) {
+	z-index: 4;
+	margin: var(--space-1) 2px;
+	background-color: transparent;
+}
+
+.queueViewport :global(.rt-ScrollAreaThumb) {
+	background-color: var(--gray-a8);
 }
 
 .queueViewport.dragging {
@@ -112,6 +125,7 @@
 
 .virtualCanvas {
 	position: relative;
+	min-width: 100%;
 	width: 100%;
 }
 
@@ -150,7 +164,9 @@
 	box-sizing: border-box;
 	width: 100%;
 	height: 100%;
-	padding: 4px var(--space-2);
+	padding-block: 4px;
+	padding-inline-start: var(--space-2);
+	padding-inline-end: calc(var(--space-3) + var(--space-1));
 	border-left: 3px solid transparent;
 	cursor: grab;
 	touch-action: pan-y;
