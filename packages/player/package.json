@@ -13,6 +13,7 @@
 		"test:play-pause-animation": "node --test tests/play-pause-animation.test.mjs",
 		"test:play-queue": "node --test tests/play-queue-loudness.test.mjs",
 		"test:rhythm-visual": "node --test tests/rhythm-visual-signal.test.mjs",
+		"test:taskbar-hover": "node --test tests/taskbar-hover-state.test.mjs",
 		"tauri": "tauri",
 		"locale:gen": "i18next-cli extract"
 	},

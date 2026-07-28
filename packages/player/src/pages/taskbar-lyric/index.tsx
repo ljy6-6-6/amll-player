@@ -45,19 +45,19 @@ import {
 } from "../../components/TaskbarLyricBridge/types.ts";
 import styles from "./index.module.css";
 import "@applemusic-like-lyrics/react-full/style.css";
+import {
+	hasPointerMoved,
+	isPointerOutsideRect,
+	type PointerPosition,
+	shouldReactivateHover,
+} from "./hover-state.ts";
 import { LyricScroll } from "./LyricScroll.tsx";
 
 const LYRIC_OFFSET = 300;
-const HOVER_REARM_MARGIN = 2;
 const HOVER_LAYOUT_TRANSITION = {
 	type: "tween" as const,
 	duration: 0.24,
 	ease: [0.22, 1, 0.36, 1] as [number, number, number, number],
-};
-
-type PointerPosition = {
-	x: number;
-	y: number;
 };
 
 type LayoutExtents = {
@@ -117,30 +117,6 @@ const PlaybackControls = ({
 		</div>
 	);
 };
-
-function isPointerOutsideRect(
-	pointer: PointerPosition,
-	rect: DOMRect,
-	margin = HOVER_REARM_MARGIN,
-): boolean {
-	return (
-		pointer.x < rect.left - margin ||
-		pointer.x > rect.right + margin ||
-		pointer.y < rect.top - margin ||
-		pointer.y > rect.bottom + margin
-	);
-}
-
-function hasPointerMoved(
-	pointer: PointerPosition,
-	origin: PointerPosition,
-	distance = HOVER_REARM_MARGIN,
-): boolean {
-	return (
-		Math.abs(pointer.x - origin.x) > distance ||
-		Math.abs(pointer.y - origin.y) > distance
-	);
-}
 
 function findCurrentLyricIndex(lines: LyricLine[], position: number): number {
 	let low = 0;
@@ -706,33 +682,64 @@ export const TaskbarLyricApp = () => {
 		hoverUnlockTimerRef.current = null;
 	}, []);
 
+	const activateHover = useCallback(
+		(pointer: PointerPosition) => {
+			latestPointerRef.current = pointer;
+			hoverArmedRef.current = true;
+			isHoveredRef.current = true;
+			hoverTransitionRef.current = true;
+			hoverExitPointerRef.current = null;
+			clearHoverUnlockTimer();
+
+			const surfaceRect = hoverSurfaceRef.current?.getBoundingClientRect();
+			if (surfaceRect) {
+				if (!isPointerOutsideRect(pointer, surfaceRect, 0)) {
+					setClickInterception(true);
+				}
+				const surfaceExtent = isVert ? surfaceRect.height : surfaceRect.width;
+				const measuredLayout =
+					layoutExtents?.orientation === orientation ? layoutExtents : null;
+				setHoverGuardExtent({
+					orientation,
+					value: measuredLayout
+						? Math.max(
+								surfaceExtent,
+								measuredLayout.collapsed,
+								measuredLayout.expanded,
+							)
+						: surfaceExtent,
+				});
+			}
+
+			setIsHovered(true);
+		},
+		[
+			clearHoverUnlockTimer,
+			isVert,
+			layoutExtents,
+			orientation,
+			setClickInterception,
+		],
+	);
+
 	const handleMouseEnter = (event: React.MouseEvent<HTMLDivElement>) => {
-		latestPointerRef.current = { x: event.clientX, y: event.clientY };
-		if (!hoverArmedRef.current) return;
-
-		isHoveredRef.current = true;
-		hoverTransitionRef.current = true;
-		hoverExitPointerRef.current = null;
-		clearHoverUnlockTimer();
-
-		const surfaceRect = hoverSurfaceRef.current?.getBoundingClientRect();
-		if (surfaceRect) {
-			const surfaceExtent = isVert ? surfaceRect.height : surfaceRect.width;
-			const measuredLayout =
-				layoutExtents?.orientation === orientation ? layoutExtents : null;
-			setHoverGuardExtent({
-				orientation,
-				value: measuredLayout
-					? Math.max(
-							surfaceExtent,
-							measuredLayout.collapsed,
-							measuredLayout.expanded,
-						)
-					: surfaceExtent,
-			});
+		const pointer = { x: event.clientX, y: event.clientY };
+		latestPointerRef.current = pointer;
+		if (!hoverArmedRef.current) {
+			const hoverSurface = hoverSurfaceRef.current;
+			if (
+				!hoverSurface ||
+				!shouldReactivateHover(
+					pointer,
+					hoverExitPointerRef.current,
+					hoverSurface.getBoundingClientRect(),
+				)
+			) {
+				return;
+			}
 		}
 
-		setIsHovered(true);
+		activateHover(pointer);
 	};
 
 	const handleMouseLeave = (event: React.MouseEvent<HTMLDivElement>) => {
@@ -824,12 +831,23 @@ export const TaskbarLyricApp = () => {
 			if (exitPointer && !hasPointerMoved(pointer, exitPointer)) return;
 
 			const hoverSurface = hoverSurfaceRef.current;
-			if (
-				!hoverSurface ||
-				isPointerOutsideRect(pointer, hoverSurface.getBoundingClientRect())
-			) {
+			if (!hoverSurface) {
 				hoverArmedRef.current = true;
 				hoverExitPointerRef.current = null;
+				return;
+			}
+
+			const surfaceRect = hoverSurface.getBoundingClientRect();
+			if (isPointerOutsideRect(pointer, surfaceRect, 0)) {
+				hoverArmedRef.current = true;
+				hoverExitPointerRef.current = null;
+				return;
+			}
+
+			if (
+				shouldReactivateHover(pointer, hoverExitPointerRef.current, surfaceRect)
+			) {
+				activateHover(pointer);
 			}
 		};
 
@@ -855,7 +873,7 @@ export const TaskbarLyricApp = () => {
 			window.removeEventListener("mousemove", handlePointerMove);
 			window.removeEventListener("mouseout", handleWindowMouseOut);
 		};
-	}, []);
+	}, [activateHover]);
 
 	useEffect(
 		() => () => {
