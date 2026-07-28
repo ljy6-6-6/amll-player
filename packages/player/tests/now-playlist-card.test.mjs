@@ -95,6 +95,18 @@ test("拖动排序保留稳定身份、平滑反馈和安全取消", () => {
 	assert.match(queueCardStyle, /@media \(prefers-reduced-motion: reduce\)/);
 });
 
+test("拖动卡片保持不透明且不显示正在播放的蓝色边线", () => {
+	assert.match(
+		queueCard,
+		/className=\{styles\.dragOverlay\}[\s\S]*initial=\{false\}[\s\S]*animate=\{\{ opacity: 1 \}\}/,
+	);
+	assert.doesNotMatch(queueCard, /scale:\s*1\.015/);
+	assert.match(
+		queueCardStyle,
+		/\.playlistSongItem\.dragOverlayItem\s*\{[\s\S]*border-left-color:\s*transparent/,
+	);
+});
+
 test("拖动目标按固定行高计算并限制在队列范围内", () => {
 	assert.equal(QUEUE_DRAG_THRESHOLD_PX, 6);
 	assert.equal(getQueueDropIndex(0, -100, 0, 36, 72, 5), 0);

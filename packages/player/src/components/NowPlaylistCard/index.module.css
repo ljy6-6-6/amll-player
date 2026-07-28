@@ -201,7 +201,7 @@
 }
 
 .playlistSongItem.dragOverlayItem {
-	border-left-color: var(--accent-9);
+	border-left-color: transparent;
 	background-color: var(--gray-4);
 	box-shadow: 0 10px 28px #0008;
 }

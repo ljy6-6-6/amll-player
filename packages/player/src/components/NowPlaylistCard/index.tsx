@@ -700,11 +700,8 @@ export const NowPlaylistCard: FC<NowPlaylistCardProps> = ({
 							<motion.div
 								className={styles.dragOverlay}
 								style={{ y: overlayY }}
-								initial={
-									prefersReducedMotion ? false : { opacity: 0.72, scale: 0.985 }
-								}
-								animate={{ opacity: 1, scale: 1.015 }}
-								transition={{ duration: 0.12, ease: "easeOut" }}
+								initial={false}
+								animate={{ opacity: 1 }}
 								aria-hidden="true"
 								inert
 							>
