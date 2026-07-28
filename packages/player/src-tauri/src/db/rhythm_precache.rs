@@ -4,8 +4,8 @@ use std::{
     sync::Mutex,
 };
 
-use amll_player_core::RHYTHM_ANALYZER_VERSION;
-use sea_orm::{EntityTrait, QuerySelect};
+use amll_player_core::{RHYTHM_ANALYZER_VERSION, RhythmAnalysis};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QuerySelect};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tracing::warn;
@@ -14,11 +14,13 @@ use crate::db::{
     DbConnection,
     entity::{song, song_rhythm_analysis},
     rhythm::{
-        RhythmAnalysisState, analyze_and_store, load_valid_cached_analysis, source_signature,
+        RhythmAnalysisState, SourceSignature, analyze_and_store, load_valid_cached_analysis,
+        source_signature,
     },
 };
 
 pub const RHYTHM_PRECACHE_PROGRESS_EVENT: &str = "rhythm-precache-progress";
+const PAYLOAD_VALIDATION_BATCH_SIZE: usize = 64;
 
 /// 推送给前端进度提示的快照。total 只统计本轮真正需要(重新)分析的歌曲,
 /// 缓存完好的歌不会出现在计数里。
@@ -73,6 +75,27 @@ pub struct RhythmPrecacheState {
     queue: Mutex<PrecacheQueue>,
 }
 
+struct CachedAnalysisIndexEntry {
+    analyzer_version: i32,
+    source_modified_at: i64,
+    source_file_size: i64,
+}
+
+impl CachedAnalysisIndexEntry {
+    fn has_matching_signature(&self, signature: SourceSignature, expected_version: i32) -> bool {
+        self.analyzer_version == expected_version
+            && self.source_modified_at == signature.modified_at
+            && self.source_file_size == signature.file_size
+    }
+}
+
+fn payload_has_current_rhythm_and_loudness(payload_json: &str) -> bool {
+    serde_json::from_str::<RhythmAnalysis>(payload_json).is_ok_and(|analysis| {
+        analysis.analyzer_version == RHYTHM_ANALYZER_VERSION
+            && analysis.has_current_loudness_analysis()
+    })
+}
+
 impl RhythmPrecacheState {
     fn snapshot(&self) -> RhythmPrecacheProgress {
         let queue = self
@@ -115,7 +138,7 @@ pub async fn start_rhythm_precache(
         .all(&*db)
         .await
         .map_err(|e| format!("Failed to list songs for rhythm precache: {e}"))?;
-    // 只取签名列,避免把全库分析 JSON 一次性载入内存。
+    // 先只取签名列，避免把全库分析 JSON 一次性载入内存。
     let cached_rows: Vec<(String, i32, i64, i64)> = song_rhythm_analysis::Entity::find()
         .select_only()
         .column(song_rhythm_analysis::Column::SongId)
@@ -126,39 +149,76 @@ pub async fn start_rhythm_precache(
         .all(&*db)
         .await
         .map_err(|e| format!("Failed to list rhythm caches: {e}"))?;
-    let cache_index: HashMap<String, (i32, i64, i64)> = cached_rows
+    let cache_index: HashMap<String, CachedAnalysisIndexEntry> = cached_rows
         .into_iter()
-        .map(|(song_id, version, modified_at, file_size)| {
-            (song_id, (version, modified_at, file_size))
-        })
+        .map(
+            |(song_id, analyzer_version, source_modified_at, source_file_size)| {
+                (
+                    song_id,
+                    CachedAnalysisIndexEntry {
+                        analyzer_version,
+                        source_modified_at,
+                        source_file_size,
+                    },
+                )
+            },
+        )
         .collect();
     let expected_version = i32::try_from(RHYTHM_ANALYZER_VERSION)
         .map_err(|_| "Rhythm analyzer version is out of range".to_string())?;
 
-    // 每首歌都要 stat 一次源文件,放到阻塞线程完成。
-    let needing = tokio::task::spawn_blocking(move || {
-        songs
-            .into_iter()
-            .filter(|(song_id, file_path)| {
-                // 文件暂不可读(已删除/移动/外置盘未挂载):预扫一律不重试,
-                // 否则无缓存的坏路径会每轮入队、每轮失败。交给播放路径按需处理。
-                let Ok(signature) = source_signature(Path::new(file_path)) else {
-                    return false;
-                };
-                match cache_index.get(song_id) {
-                    None => true,
-                    Some(&(version, modified_at, file_size)) => {
-                        version != expected_version
-                            || signature.modified_at != modified_at
-                            || signature.file_size != file_size
-                    }
+    // 每首歌都要 stat 一次源文件，放到阻塞线程完成。签名已匹配的缓存
+    // 还要检查 payload，本阶段只收集编号，稍后分批读取与解析。
+    let (mut needing, payload_candidates) = tokio::task::spawn_blocking(move || {
+        let mut needing = Vec::new();
+        let mut payload_candidates = Vec::new();
+        for (song_id, file_path) in songs {
+            // 文件暂不可读(已删除/移动/外置盘未挂载):预扫一律不重试,
+            // 否则无缓存的坏路径会每轮入队、每轮失败。交给播放路径按需处理。
+            let Ok(signature) = source_signature(Path::new(&file_path)) else {
+                continue;
+            };
+            match cache_index.get(&song_id) {
+                Some(cached) if cached.has_matching_signature(signature, expected_version) => {
+                    payload_candidates.push(song_id);
                 }
-            })
-            .map(|(song_id, _)| song_id)
-            .collect::<Vec<_>>()
+                _ => needing.push(song_id),
+            }
+        }
+        (needing, payload_candidates)
     })
     .await
     .map_err(|e| format!("Rhythm precache scan task failed: {e}"))?;
+
+    // payload 可能包含完整节拍序列，固定小批次读取，既复用权威 serde
+    // 结构校验，又避免大型曲库在预扫时一次性占用过多内存。
+    for song_ids in payload_candidates.chunks(PAYLOAD_VALIDATION_BATCH_SIZE) {
+        let payload_rows: Vec<(String, String)> = song_rhythm_analysis::Entity::find()
+            .select_only()
+            .column(song_rhythm_analysis::Column::SongId)
+            .column(song_rhythm_analysis::Column::PayloadJson)
+            .filter(song_rhythm_analysis::Column::SongId.is_in(song_ids.iter().cloned()))
+            .into_tuple()
+            .all(&*db)
+            .await
+            .map_err(|e| format!("Failed to validate rhythm cache payloads: {e}"))?;
+        let valid_ids = tokio::task::spawn_blocking(move || {
+            payload_rows
+                .into_iter()
+                .filter_map(|(song_id, payload_json)| {
+                    payload_has_current_rhythm_and_loudness(&payload_json).then_some(song_id)
+                })
+                .collect::<HashSet<_>>()
+        })
+        .await
+        .map_err(|e| format!("Rhythm cache payload validation task failed: {e}"))?;
+        needing.extend(
+            song_ids
+                .iter()
+                .filter(|song_id| !valid_ids.contains(*song_id))
+                .cloned(),
+        );
+    }
 
     let mut spawn_worker = false;
     {
@@ -278,6 +338,97 @@ async fn precache_song(app: &AppHandle, song_id: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn current_payload() -> serde_json::Value {
+        serde_json::json!({
+            "analyzerVersion": RHYTHM_ANALYZER_VERSION,
+            "durationMs": 0,
+            "globalBpm": null,
+            "confidence": 0.0,
+            "beats": [],
+            "onsets": [],
+            "tempoSegments": [],
+            "energyEnvelope": [],
+            "loudness": {
+                "analyzerVersion": amll_player_core::LOUDNESS_ANALYZER_VERSION,
+                "integratedLoudnessLufs": null,
+                "samplePeak": 0.0
+            }
+        })
+    }
+
+    fn cached_entry() -> CachedAnalysisIndexEntry {
+        CachedAnalysisIndexEntry {
+            analyzer_version: i32::try_from(RHYTHM_ANALYZER_VERSION).unwrap(),
+            source_modified_at: 1_234,
+            source_file_size: 5_678,
+        }
+    }
+
+    fn matching_signature() -> SourceSignature {
+        SourceSignature {
+            modified_at: 1_234,
+            file_size: 5_678,
+        }
+    }
+
+    #[test]
+    fn current_rhythm_and_loudness_payload_skips_precache() {
+        assert!(cached_entry().has_matching_signature(
+            matching_signature(),
+            i32::try_from(RHYTHM_ANALYZER_VERSION).unwrap()
+        ));
+        assert!(payload_has_current_rhythm_and_loudness(
+            &current_payload().to_string()
+        ));
+    }
+
+    #[test]
+    fn missing_or_stale_loudness_payload_requires_precache() {
+        let mut missing_loudness = current_payload();
+        missing_loudness.as_object_mut().unwrap().remove("loudness");
+        assert!(!payload_has_current_rhythm_and_loudness(
+            &missing_loudness.to_string()
+        ));
+
+        let mut stale_loudness = current_payload();
+        stale_loudness["loudness"]["analyzerVersion"] =
+            serde_json::json!(amll_player_core::LOUDNESS_ANALYZER_VERSION.saturating_sub(1));
+        assert!(!payload_has_current_rhythm_and_loudness(
+            &stale_loudness.to_string()
+        ));
+    }
+
+    #[test]
+    fn stale_or_damaged_rhythm_payload_requires_precache() {
+        let mut stale_rhythm = current_payload();
+        stale_rhythm["analyzerVersion"] =
+            serde_json::json!(RHYTHM_ANALYZER_VERSION.saturating_sub(1));
+        assert!(!payload_has_current_rhythm_and_loudness(
+            &stale_rhythm.to_string()
+        ));
+        assert!(!payload_has_current_rhythm_and_loudness("{}"));
+        assert!(!payload_has_current_rhythm_and_loudness("not-json"));
+    }
+
+    #[test]
+    fn stale_index_signature_requires_precache_even_with_current_payload() {
+        let mut cached = cached_entry();
+        cached.analyzer_version -= 1;
+        assert!(!cached.has_matching_signature(
+            matching_signature(),
+            i32::try_from(RHYTHM_ANALYZER_VERSION).unwrap()
+        ));
+
+        let cached = cached_entry();
+        assert!(!cached.has_matching_signature(
+            SourceSignature {
+                modified_at: matching_signature().modified_at + 1,
+                ..matching_signature()
+            },
+            i32::try_from(RHYTHM_ANALYZER_VERSION).unwrap()
+        ));
+    }
 
     #[test]
     fn in_flight_song_stays_deduplicated_until_completion() {
