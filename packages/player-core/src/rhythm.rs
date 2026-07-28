@@ -12,7 +12,7 @@ use ffmpeg_audio::{AudioError, AudioReader, ResampleOptions};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-pub const RHYTHM_ANALYZER_VERSION: u32 = 4;
+pub const RHYTHM_ANALYZER_VERSION: u32 = 5;
 pub const LOUDNESS_ANALYZER_VERSION: u32 = 1;
 
 const TARGET_SAMPLE_RATE: u32 = 22_050;
@@ -769,9 +769,17 @@ fn estimate_tempo(envelope: &[f32], frames_per_second: f32) -> Option<TempoEstim
         return None;
     }
 
-    let mut correlation = vec![0.0_f32; max_lag * 2 + 1];
-    // Correlations above the allowed tempo range are still useful for
-    // rejecting half/third-tempo interpretations near the upper boundary.
+    // Keep tempo candidates inside the configured range, but retain one real
+    // score on either side so a boundary winner can still be interpolated
+    // against three distinct samples. Reusing the boundary score itself makes
+    // the parabola produce a fixed +/-0.5-frame offset.
+    let score_min_lag = min_lag.saturating_sub(1).max(1);
+    let score_max_lag = max_lag.checked_add(1)?;
+    let correlation_len = score_max_lag.checked_mul(2)?.checked_add(1)?;
+    let mut correlation = vec![0.0_f32; correlation_len];
+    // Correlations outside the candidate range feed the interpolation guards;
+    // faster ones also reject half/third-tempo interpretations near the upper
+    // boundary.
     for lag in (min_lag / 3).max(1)..correlation.len() {
         if lag >= envelope.len() {
             break;
@@ -789,8 +797,8 @@ fn estimate_tempo(envelope: &[f32], frames_per_second: f32) -> Option<TempoEstim
         correlation[lag] = product / (left_power * right_power).sqrt().max(1.0e-8);
     }
 
-    let mut scores = vec![0.0_f32; max_lag + 1];
-    for lag in min_lag..=max_lag {
+    let mut scores = vec![0.0_f32; score_max_lag.checked_add(1)?];
+    for lag in score_min_lag..=score_max_lag {
         let double = correlation.get(lag * 2).copied().unwrap_or(0.0);
         let half = correlation.get(lag / 2).copied().unwrap_or(0.0);
         let third_lag = (lag as f32 / 3.0).round() as usize;
@@ -812,11 +820,15 @@ fn estimate_tempo(envelope: &[f32], frames_per_second: f32) -> Option<TempoEstim
 
     let baseline = percentile(scores[min_lag..=max_lag].iter().copied(), 0.5);
     let contrast = unit((best_score - baseline) / (1.0 - baseline).max(1.0e-6));
-    let left = scores[best_lag.saturating_sub(1).max(min_lag)];
-    let right = scores[(best_lag + 1).min(max_lag)];
-    let denominator = left - 2.0 * best_score + right;
-    let offset = if denominator.abs() > 1.0e-6 {
-        (0.5 * (left - right) / denominator).clamp(-0.5, 0.5)
+    let offset = if best_lag > score_min_lag && best_lag < score_max_lag {
+        let left = scores[best_lag - 1];
+        let right = scores[best_lag + 1];
+        let denominator = left - 2.0 * best_score + right;
+        if denominator.abs() > 1.0e-6 {
+            (0.5 * (left - right) / denominator).clamp(-0.5, 0.5)
+        } else {
+            0.0
+        }
     } else {
         0.0
     };
@@ -1539,6 +1551,146 @@ mod tests {
             (dominant.bpm - MAX_TEMPO_BPM).abs() <= 6.0,
             "210 BPM local segment collapsed to {} BPM",
             dominant.bpm
+        );
+    }
+
+    #[test]
+    fn full_and_local_tempo_windows_distinguish_upper_boundary_tempos() {
+        let full_frames_per_second = TARGET_SAMPLE_RATE as f32 / HOP_SIZE as f32;
+        for frames_per_second in [
+            full_frames_per_second,
+            full_frames_per_second / TEMPO_SEGMENT_DOWNSAMPLE as f32,
+        ] {
+            let window_frames = (frames_per_second * 18.0).round() as usize;
+            let mut detected_bpms = Vec::new();
+
+            for expected_bpm in [207.0_f32, 208.0, 209.0, 210.0] {
+                let interval = frames_per_second * 60.0 / expected_bpm;
+                let envelope = synthetic_tempo_envelope(window_frames * 4, 3.25, interval, 1.0);
+                let mut window_bpms = Vec::new();
+                for (window_index, window) in envelope.chunks(window_frames).enumerate() {
+                    let estimate = estimate_tempo(window, frames_per_second)
+                        .expect("expected a boundary tempo estimate");
+                    assert!(
+                        (estimate.bpm - expected_bpm).abs() <= 0.9,
+                        "window {window_index} at {frames_per_second} FPS of {expected_bpm} BPM \
+                         was estimated as {} BPM",
+                        estimate.bpm
+                    );
+                    window_bpms.push(estimate.bpm);
+                }
+                detected_bpms.push(window_bpms.iter().sum::<f32>() / window_bpms.len() as f32);
+            }
+
+            for pair in detected_bpms.windows(2) {
+                assert!(
+                    pair[1] - pair[0] >= 0.25,
+                    "upper-boundary tempos still stick together at {frames_per_second} FPS: \
+                     {detected_bpms:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lower_boundary_interpolation_also_uses_a_real_guard_score() {
+        let frames_per_second =
+            TARGET_SAMPLE_RATE as f32 / HOP_SIZE as f32 / TEMPO_SEGMENT_DOWNSAMPLE as f32;
+        let window_frames = (frames_per_second * 18.0).round() as usize;
+
+        for expected_bpm in [55.5_f32, 56.0, 56.5] {
+            let envelope = synthetic_tempo_envelope(
+                window_frames,
+                3.25,
+                frames_per_second * 60.0 / expected_bpm,
+                1.0,
+            );
+            let estimate = estimate_tempo(&envelope, frames_per_second)
+                .expect("expected a lower-boundary tempo estimate");
+            assert!(
+                (estimate.bpm - expected_bpm).abs() <= 0.2,
+                "{expected_bpm} BPM was estimated as {} BPM",
+                estimate.bpm
+            );
+        }
+    }
+
+    #[test]
+    fn long_fast_beat_grid_keeps_phase_and_interval() {
+        let frames_per_second = TARGET_SAMPLE_RATE as f32 / HOP_SIZE as f32;
+        let expected_bpm = 207.0_f32;
+        let interval = frames_per_second * 60.0 / expected_bpm;
+        let duration_seconds = 96.0_f32;
+        let envelope_len = (frames_per_second * duration_seconds).round() as usize;
+        let start_frame = 7.25_f32;
+        let envelope = synthetic_tempo_envelope(envelope_len, start_frame, interval, 1.0);
+        let local_frames_per_second = frames_per_second / TEMPO_SEGMENT_DOWNSAMPLE as f32;
+        let local_window_frames = (local_frames_per_second * 18.0).round() as usize;
+        let local_envelope = synthetic_tempo_envelope(
+            local_window_frames,
+            start_frame / TEMPO_SEGMENT_DOWNSAMPLE as f32,
+            local_frames_per_second * 60.0 / expected_bpm,
+            1.0,
+        );
+        let local = estimate_tempo(&local_envelope, local_frames_per_second)
+            .expect("expected a local tempo estimate");
+        let tempo = TempoEstimate {
+            bpm: local.bpm,
+            confidence: local.confidence,
+            period_frames: local.period_frames * TEMPO_SEGMENT_DOWNSAMPLE as f32,
+        };
+        let duration_ms = frame_boundary_to_ms(envelope_len, TARGET_SAMPLE_RATE);
+        let beats = build_beat_grid(&envelope, tempo, &[], TARGET_SAMPLE_RATE, duration_ms);
+        let strong_beats = beats
+            .iter()
+            .filter(|beat| beat.strength >= 0.06)
+            .collect::<Vec<_>>();
+
+        let expected_count = ((envelope_len as f32 - start_frame) / interval).floor() as usize + 1;
+        assert!(
+            strong_beats.len().abs_diff(expected_count) <= 2,
+            "long-grid strong beat count was {}/{} at {} BPM",
+            strong_beats.len(),
+            expected_count,
+            local.bpm
+        );
+
+        let expected_interval_ms = 60_000.0 / expected_bpm;
+        let phase_tolerance_ms = HOP_SIZE as f32 * 2.0 * 1_000.0 / TARGET_SAMPLE_RATE as f32;
+        for expected_index in [0, expected_count / 2, expected_count - 1] {
+            let expected_frame = (start_frame + expected_index as f32 * interval).round();
+            let expected_time_ms = frame_to_ms(expected_frame as f64, TARGET_SAMPLE_RATE);
+            let phase_error_ms = strong_beats
+                .iter()
+                .map(|beat| (beat.time_ms as f32 - expected_time_ms as f32).abs())
+                .fold(f32::INFINITY, f32::min);
+            assert!(
+                phase_error_ms <= phase_tolerance_ms,
+                "beat {expected_index} drifted {phase_error_ms} ms from the long-grid phase"
+            );
+        }
+        for pair in strong_beats.windows(2) {
+            let interval_ms = pair[1].time_ms.saturating_sub(pair[0].time_ms) as f32;
+            assert!(
+                (interval_ms - expected_interval_ms).abs() <= 18.0,
+                "long-grid interval drifted to {interval_ms} ms at {} BPM",
+                local.bpm
+            );
+        }
+        let average_interval_ms = strong_beats
+            .last()
+            .expect("expected a final strong beat")
+            .time_ms
+            .saturating_sub(
+                strong_beats
+                    .first()
+                    .expect("expected an initial strong beat")
+                    .time_ms,
+            ) as f32
+            / (strong_beats.len() - 1) as f32;
+        assert!(
+            (average_interval_ms - expected_interval_ms).abs() <= 0.5,
+            "long-grid average interval drifted to {average_interval_ms} ms"
         );
     }
 
