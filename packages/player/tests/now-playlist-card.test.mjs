@@ -145,6 +145,10 @@ test("播放队列按歌曲数量延展并只在接近播放栏时滚动", () =>
 		/max-height:\s*calc\([\s\S]*100dvh[\s\S]*--amll-player-playbar-bottom/,
 	);
 	assert.match(queueCardStyle, /\.queueViewport\s*\{[\s\S]*flex:\s*0 1 auto/);
+	assert.match(
+		queueCardStyle,
+		/\.queueViewport\s*\{[\s\S]*overflow-x:\s*hidden/,
+	);
 	assert.doesNotMatch(queueCardStyle, /height:\s*min\(500px,\s*50vh\)/);
 });
 
