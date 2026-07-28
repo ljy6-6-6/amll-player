@@ -9,6 +9,8 @@ pub(crate) static ANDROID_NDK_READY: std::sync::OnceLock<()> = std::sync::OnceLo
 #[cfg(not(mobile))]
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, Runtime, path::BaseDirectory};
+#[cfg(desktop)]
+use tauri_plugin_window_state::StateFlags;
 use tokio::sync::RwLock;
 use tracing::*;
 
@@ -189,6 +191,16 @@ fn handle_window_event(_window: &tauri::Window, _event: &tauri::WindowEvent) {
     }
 }
 
+#[cfg(desktop)]
+fn persisted_window_state_flags() -> StateFlags {
+    StateFlags::all() & !StateFlags::VISIBLE
+}
+
+#[cfg(desktop)]
+fn should_persist_window_state(label: &str) -> bool {
+    label != "taskbar-lyric"
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Install ring as the default crypto provider for rustls, because multiple providers
@@ -238,7 +250,12 @@ pub fn run() {
         .plugin(tauri_plugin_http::init());
 
     #[cfg(desktop)]
-    let builder = builder.plugin(tauri_plugin_window_state::Builder::new().build());
+    let builder = builder.plugin(
+        tauri_plugin_window_state::Builder::new()
+            .with_state_flags(persisted_window_state_flags())
+            .with_filter(should_persist_window_state)
+            .build(),
+    );
 
     builder
         .invoke_handler(tauri::generate_handler![
@@ -330,10 +347,37 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             taskbar_lyric::refresh_taskbar_lyric_layout,
             #[cfg(target_os = "windows")]
+            taskbar_lyric::taskbar_lyric_page_ready,
+            #[cfg(target_os = "windows")]
             theme_watcher::get_system_theme
         ])
         .setup(setup_app)
         .on_window_event(handle_window_event)
         .run(context)
         .expect("error while running tauri application");
+}
+
+#[cfg(all(test, desktop))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn window_state_does_not_restore_visibility_before_frontend_is_ready() {
+        let flags = persisted_window_state_flags();
+
+        assert!(flags.contains(StateFlags::SIZE));
+        assert!(flags.contains(StateFlags::POSITION));
+        assert!(flags.contains(StateFlags::MAXIMIZED));
+        assert!(!flags.contains(StateFlags::VISIBLE));
+        assert!(flags.contains(StateFlags::DECORATIONS));
+        assert!(flags.contains(StateFlags::FULLSCREEN));
+    }
+
+    #[test]
+    fn window_state_excludes_the_embedded_taskbar_window() {
+        assert!(should_persist_window_state("main"));
+        assert!(!should_persist_window_state("taskbar-lyric"));
+        assert!(should_persist_window_state("screenshot"));
+        assert!(should_persist_window_state("extension-window"));
+    }
 }

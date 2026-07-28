@@ -21,6 +21,7 @@ import {
 	CMD_GET_SYSTEM_THEME,
 	CMD_REFRESH_TASKBAR_LAYOUT,
 	CMD_SET_CLICK_INTERCEPTION,
+	CMD_TASKBAR_LYRIC_PAGE_READY,
 	CTRL_NEXT_EVENT,
 	CTRL_PLAY_OR_RESUME_EVENT,
 	CTRL_PREV_EVENT,
@@ -443,6 +444,48 @@ export const TaskbarLyricApp = () => {
 			unlistenFadeIn,
 		];
 		let cancelled = false;
+		let pageReadyFrame = 0;
+		let pageReadyTimer = 0;
+		let pageReadyRetryTimer = 0;
+		let pageReadyAttempt = 0;
+		let pageReadyInFlight = false;
+		let pageReadyNotified = false;
+		const generationParam = new URLSearchParams(window.location.search).get(
+			"generation",
+		);
+		const pageGeneration = Number(generationParam);
+		const hasValidPageGeneration =
+			Number.isSafeInteger(pageGeneration) && pageGeneration > 0;
+		const notifyPageReady = () => {
+			if (cancelled || pageReadyNotified || pageReadyInFlight) return;
+			if (!hasValidPageGeneration) {
+				console.error("任务栏歌词页面缺少有效的窗口代际");
+				return;
+			}
+			pageReadyInFlight = true;
+			pageReadyAttempt += 1;
+			invoke<void>(CMD_TASKBAR_LYRIC_PAGE_READY, {
+				generation: pageGeneration,
+			})
+				.then(() => {
+					pageReadyNotified = true;
+				})
+				.catch((err) => {
+					if (cancelled) return;
+					if (pageReadyAttempt >= 4) {
+						console.error("通知任务栏歌词页面已准备失败:", err);
+						return;
+					}
+					console.warn("通知任务栏歌词页面已准备失败，稍后重试:", err);
+					pageReadyRetryTimer = window.setTimeout(
+						notifyPageReady,
+						100 * pageReadyAttempt,
+					);
+				})
+				.finally(() => {
+					pageReadyInFlight = false;
+				});
+		};
 
 		Promise.all(listeners)
 			.then(() => {
@@ -454,6 +497,8 @@ export const TaskbarLyricApp = () => {
 				invoke(CMD_REFRESH_TASKBAR_LAYOUT).catch((err) => {
 					console.error("刷新任务栏歌词布局失败:", err);
 				});
+				pageReadyFrame = window.requestAnimationFrame(notifyPageReady);
+				pageReadyTimer = window.setTimeout(notifyPageReady, 250);
 			})
 			.catch((err) => {
 				console.error("注册任务栏歌词事件监听失败:", err);
@@ -461,6 +506,9 @@ export const TaskbarLyricApp = () => {
 
 		return () => {
 			cancelled = true;
+			window.cancelAnimationFrame(pageReadyFrame);
+			window.clearTimeout(pageReadyTimer);
+			window.clearTimeout(pageReadyRetryTimer);
 			listeners.forEach((listener) => {
 				listener.then((fn) => fn());
 			});
