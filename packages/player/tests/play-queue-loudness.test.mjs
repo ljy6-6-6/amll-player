@@ -835,3 +835,81 @@ test("恢复队列时按当前歌曲 ID 抵消缺失歌曲造成的索引偏移"
 	assert.equal(manager.getCurrentIndex(), 0);
 	assert.equal(store.get(persistedQueueStateAtom).currentSongId, "b");
 });
+
+test("恢复时当前歌曲已删除会优先选择旧队列中的最近后继", {
+	concurrency: false,
+}, async (context) => {
+	const store = createStore({ loudnessEnabled: false });
+	store.set(persistedQueueStateAtom, {
+		songIds: ["missing-before", "a", "missing-current", "c", "d"],
+		originalSongIds: ["missing-before", "a", "missing-current", "c", "d"],
+		currentSongId: "missing-current",
+		currentIndex: 2,
+		repeatMode: 0,
+		shuffleActive: false,
+		playlistId: null,
+		position: 23,
+	});
+
+	mockIPC((command) => {
+		if (command === "get_songs_by_ids") {
+			return [makeSong("a"), makeSong("c"), makeSong("d")];
+		}
+		throw new Error(`Unexpected IPC command: ${command}`);
+	});
+
+	const manager = new PlayQueueManager(store);
+	context.after(() => {
+		manager.dispose();
+		clearMocks();
+	});
+
+	const restored = await manager.restore();
+
+	assert.deepEqual(restored, { restored: true, position: 23 });
+	assert.deepEqual(
+		manager.getPlayList().map((song) => song.id),
+		["a", "c", "d"],
+	);
+	assert.equal(manager.getCurrentSong()?.id, "c");
+	assert.equal(manager.getCurrentIndex(), 1);
+});
+
+test("恢复时当前歌曲及其后继均已删除会回退到最近前驱", {
+	concurrency: false,
+}, async (context) => {
+	const store = createStore({ loudnessEnabled: false });
+	store.set(persistedQueueStateAtom, {
+		songIds: ["a", "b", "missing-current", "missing-after"],
+		originalSongIds: ["a", "b", "missing-current", "missing-after"],
+		currentSongId: "missing-current",
+		currentIndex: 2,
+		repeatMode: 0,
+		shuffleActive: false,
+		playlistId: null,
+		position: 34,
+	});
+
+	mockIPC((command) => {
+		if (command === "get_songs_by_ids") {
+			return [makeSong("a"), makeSong("b")];
+		}
+		throw new Error(`Unexpected IPC command: ${command}`);
+	});
+
+	const manager = new PlayQueueManager(store);
+	context.after(() => {
+		manager.dispose();
+		clearMocks();
+	});
+
+	const restored = await manager.restore();
+
+	assert.deepEqual(restored, { restored: true, position: 34 });
+	assert.deepEqual(
+		manager.getPlayList().map((song) => song.id),
+		["a", "b"],
+	);
+	assert.equal(manager.getCurrentSong()?.id, "b");
+	assert.equal(manager.getCurrentIndex(), 1);
+});

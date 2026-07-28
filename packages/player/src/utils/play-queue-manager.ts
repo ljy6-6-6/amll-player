@@ -852,9 +852,32 @@ export class PlayQueueManager {
 			this.playlistId = persisted.playlistId;
 
 			// 优先按歌曲 ID 恢复，避免前序歌曲缺失后数字索引发生偏移。
-			const currentSongIndex = persisted.currentSongId
+			let currentSongIndex = persisted.currentSongId
 				? this.findInPlayList(persisted.currentSongId)
 				: -1;
+			if (currentSongIndex < 0 && persisted.currentSongId) {
+				const persistedCurrentIndex = persisted.songIds.indexOf(
+					persisted.currentSongId,
+				);
+				if (persistedCurrentIndex >= 0) {
+					// 当前歌曲本身已被删除时，以旧位置为锚：
+					// 优先恢复到最近的后继，没有后继时再选择最近的前驱。
+					for (
+						let index = persistedCurrentIndex + 1;
+						index < persisted.songIds.length;
+						index++
+					) {
+						currentSongIndex = this.findInPlayList(persisted.songIds[index]);
+						if (currentSongIndex >= 0) break;
+					}
+					if (currentSongIndex < 0) {
+						for (let index = persistedCurrentIndex - 1; index >= 0; index--) {
+							currentSongIndex = this.findInPlayList(persisted.songIds[index]);
+							if (currentSongIndex >= 0) break;
+						}
+					}
+				}
+			}
 			if (currentSongIndex >= 0) {
 				this.currentIndex = currentSongIndex;
 			} else {
