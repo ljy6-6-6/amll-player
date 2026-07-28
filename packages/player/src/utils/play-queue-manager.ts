@@ -572,15 +572,18 @@ export class PlayQueueManager {
 
 		this.queueRevision++;
 		const existingIndex = this.findInPlayList(song.id);
+		let queuedSong = song;
 		if (existingIndex >= 0) {
-			this.playList.splice(existingIndex, 1);
+			const [existingSong] = this.playList.splice(existingIndex, 1);
+			if (!existingSong) return;
+			queuedSong = existingSong;
 		} else {
 			this.originalList.push(song);
 		}
 
 		this.currentIndex = this.findInPlayList(currentSongId);
 		const insertAt = Math.min(this.currentIndex + 1, this.playList.length);
-		this.playList.splice(insertAt, 0, song);
+		this.playList.splice(insertAt, 0, queuedSong);
 
 		if (!this.shuffleActive) {
 			this.originalList = [...this.playList];

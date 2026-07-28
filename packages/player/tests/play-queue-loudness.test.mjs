@@ -659,7 +659,10 @@ test("下一首、队尾和拖动排序保持当前歌曲身份且不重新起�
 
 	manager.enqueueNext(makeSong("d"));
 	manager.enqueueTail(makeSong("e"));
-	manager.enqueueNext(makeSong("a"));
+	manager.enqueueNext({
+		...makeSong("a"),
+		songName: "不应替换队列内的原始元数据",
+	});
 	manager.moveSong(4, 0);
 
 	assert.deepEqual(
@@ -668,10 +671,27 @@ test("下一首、队尾和拖动排序保持当前歌曲身份且不重新起�
 	);
 	assert.equal(manager.getCurrentSong()?.id, "b");
 	assert.equal(manager.getCurrentIndex(), 1);
+	assert.equal(
+		manager.getPlayList().find((song) => song.id === "a")?.songName,
+		"a",
+	);
 	manager.toggleShuffleOn();
+	manager.enqueueNext({
+		...makeSong("c"),
+		songName: "随机队列也不应替换原始元数据",
+	});
+	assert.equal(
+		manager.getPlayList().find((song) => song.id === "c")?.songName,
+		"c",
+	);
 	manager.enqueueTail(makeSong("f"));
 	assert.equal(manager.getPlayList().at(-1)?.id, "f");
 	assert.equal(manager.getCurrentSong()?.id, "b");
+	manager.toggleShuffleOff();
+	assert.equal(
+		manager.getPlayList().find((song) => song.id === "c")?.songName,
+		"c",
+	);
 	await drainAsyncWork();
 	assert.equal(getPlayMessages(calls).length, 1);
 });
