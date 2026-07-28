@@ -8,6 +8,7 @@ use amll_player_core::{RHYTHM_ANALYZER_VERSION, RhythmAnalysis};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QuerySelect};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
+use tokio::sync::OwnedSemaphorePermit;
 use tracing::warn;
 
 use crate::db::{
@@ -322,22 +323,55 @@ async fn run_worker(app: AppHandle) {
 }
 
 async fn precache_song(app: &AppHandle, song_id: &str) -> Result<(), String> {
-    let semaphore = app.state::<RhythmAnalysisState>().semaphore();
-    let _permit = semaphore
-        .acquire_owned()
-        .await
-        .map_err(|_| "Rhythm analysis queue has been closed".to_string())?;
+    let analysis_state = app.state::<RhythmAnalysisState>();
+    let _permit = acquire_background_permit(&analysis_state).await?;
     let db = app.state::<DbConnection>();
     // 权威复查:播放路径或上一轮扫描可能已经补好缓存。
-    if load_valid_cached_analysis(&db, song_id, true).await?.is_some() {
+    if load_valid_cached_analysis(&db, song_id, true)
+        .await?
+        .is_some()
+    {
         return Ok(());
     }
     analyze_and_store(&db, song_id).await.map(|_| ())
 }
 
+async fn acquire_background_permit(
+    state: &RhythmAnalysisState,
+) -> Result<OwnedSemaphorePermit, String> {
+    acquire_background_permit_with_hook(state, || {}).await
+}
+
+async fn acquire_background_permit_with_hook(
+    state: &RhythmAnalysisState,
+    mut before_acquire: impl FnMut(),
+) -> Result<OwnedSemaphorePermit, String> {
+    loop {
+        state.wait_for_foreground_idle().await;
+        before_acquire();
+        let permit = state
+            .semaphore()
+            .acquire_owned()
+            .await
+            .map_err(|_| "Rhythm analysis queue has been closed".to_string())?;
+        // 前台可能在上一次空闲检查与获取许可之间登记。此时立即交还
+        // 许可并重新等待，避免后台解码抢在当前播放歌曲之前启动。
+        if state.has_foreground_pending() {
+            drop(permit);
+            continue;
+        }
+        return Ok(permit);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use tokio::{
+        sync::{mpsc, oneshot},
+        time::{Duration, timeout},
+    };
 
     fn current_payload() -> serde_json::Value {
         serde_json::json!({
@@ -443,5 +477,54 @@ mod tests {
         assert_eq!(queue.done, 1);
         assert!(queue.enqueue("song-a".to_string()));
         assert_eq!(queue.total, 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn background_rechecks_foreground_after_waiting_for_permit() {
+        let state = Arc::new(RhythmAnalysisState::default());
+        let blocking_permit = state.semaphore().acquire_owned().await.unwrap();
+        let (waiting_tx, mut waiting_rx) = mpsc::unbounded_channel();
+        let (background_acquired_tx, background_acquired_rx) = oneshot::channel();
+        let (release_background_tx, release_background_rx) = oneshot::channel();
+        let background_state = state.clone();
+
+        let background = tokio::spawn(async move {
+            let mut first_attempt = true;
+            let permit = acquire_background_permit_with_hook(&background_state, || {
+                if first_attempt {
+                    first_attempt = false;
+                    waiting_tx.send(()).unwrap();
+                }
+            })
+            .await
+            .unwrap();
+            background_acquired_tx.send(()).unwrap();
+            let _ = release_background_rx.await;
+            drop(permit);
+        });
+
+        // 确认后台已经通过第一次空闲检查、正在等待被占用的信号量。
+        timeout(Duration::from_secs(5), waiting_rx.recv())
+            .await
+            .expect("background did not reach the occupied semaphore")
+            .expect("background stopped before waiting for the semaphore");
+        let foreground_guard = state.enter_foreground_for_test();
+        drop(blocking_permit);
+
+        // 后台取得许可后必须复查并交还，前台才能在 guard 存续时取得许可。
+        let foreground_permit = timeout(Duration::from_secs(5), state.semaphore().acquire_owned())
+            .await
+            .expect("background kept the permit after foreground registered")
+            .unwrap();
+        assert!(!background.is_finished());
+
+        drop(foreground_permit);
+        drop(foreground_guard);
+        timeout(Duration::from_secs(5), background_acquired_rx)
+            .await
+            .expect("background did not resume after foreground became idle")
+            .unwrap();
+        release_background_tx.send(()).unwrap();
+        background.await.unwrap();
     }
 }

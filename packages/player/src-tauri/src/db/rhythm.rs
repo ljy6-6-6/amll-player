@@ -74,6 +74,14 @@ impl RhythmAnalysisState {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn enter_foreground_for_test(&self) -> impl Drop + 'static {
+        ForegroundGuard::enter(
+            self.foreground_pending.clone(),
+            self.foreground_idle.clone(),
+        )
+    }
+
     fn register_request(&self, song_id: &str) -> u64 {
         let mut latest = self
             .latest_request
