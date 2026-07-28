@@ -47,7 +47,9 @@ registerHooks({
 	},
 });
 
-const { clearMocks, mockIPC } = await import("@tauri-apps/api/mocks");
+const { clearMocks, mockIPC: installMockIPC } = await import(
+	"@tauri-apps/api/mocks"
+);
 const {
 	PlayQueueManager,
 	persistedQueueStateAtom,
@@ -56,6 +58,13 @@ const {
 	queuePlaylistAtom,
 	shouldSuppressAutomaticLoudnessUpdate,
 } = await import("../src/utils/play-queue-manager.ts");
+
+function mockIPC(handler) {
+	installMockIPC((command, payload) => {
+		if (command === "plugin:event|listen") return 1;
+		return handler(command, payload);
+	});
+}
 
 function createStore({
 	loudnessEnabled = true,
