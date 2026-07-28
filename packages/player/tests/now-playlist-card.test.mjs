@@ -166,6 +166,13 @@ test("播放队列按歌曲数量延展并只在接近播放栏时滚动", () =>
 	assert.doesNotMatch(queueCardStyle, /height:\s*min\(500px,\s*50vh\)/);
 });
 
+test("播放队列封面与卡片左边缘保留足够间距", () => {
+	assert.match(
+		queueCardStyle,
+		/\.playlistSongItem\s*\{[\s\S]*padding-inline-start:\s*var\(--space-3\)/,
+	);
+});
+
 test("标题展示队列计数并覆盖空队列和待播数量", () => {
 	assert.match(queueCard, /playbar\.playlist\.count/);
 	assert.match(queueCard, /playlist\.length === 0/);
