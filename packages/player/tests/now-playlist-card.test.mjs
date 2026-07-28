@@ -71,7 +71,6 @@ test("拖动排序保留稳定身份、平滑反馈和安全取消", () => {
 	assert.match(queueCard, /playlist\[index\]\?\.id !== songId/);
 	assert.match(queueCard, /suppressedClickSongIdRef/);
 	assert.match(queueCard, /activeDragRef\.current/);
-	assert.match(queueCard, /!activeDragRef\.current/);
 	assert.match(queueCard, /className=\{styles\.dragOverlay\}/);
 	assert.match(queueCard, /className=\{classNames\([\s\S]*styles\.rowMotion/);
 	assert.match(queueCard, /style=\{\{ y: overlayY \}\}/);
@@ -113,6 +112,18 @@ test("拖动跨行时只让被跨过的相邻歌曲让位", () => {
 	assert.equal(getQueueDragShift(1, 3, 1, 72), 72);
 	assert.equal(getQueueDragShift(2, 3, 1, 72), 72);
 	assert.equal(getQueueDragShift(3, 3, 1, 72), 0);
+});
+
+test("队列重排只改变当前索引时不会强制滚回正在播放项", () => {
+	assert.match(queueCard, /lastAutoScrolledSongIdRef/);
+	assert.match(
+		queueCard,
+		/lastAutoScrolledSongIdRef\.current === currentSongId/,
+	);
+	assert.match(
+		queueCard,
+		/lastAutoScrolledSongIdRef\.current = currentSongId;[\s\S]*rowVirtualizer\.scrollToIndex/,
+	);
 });
 
 test("拖到可视区边缘时按距离连续调节自动滚动速度", () => {

@@ -181,6 +181,7 @@ export const NowPlaylistCard: FC<NowPlaylistCardProps> = ({
 	const activeDragRef = useRef<ActiveQueueDrag | null>(null);
 	const playlistRef = useRef(playlist);
 	const suppressedClickSongIdRef = useRef<string | null>(null);
+	const lastAutoScrolledSongIdRef = useRef<string | undefined>(undefined);
 	const dropAnimationRef = useRef<{ stop: () => void } | null>(null);
 	const dropGenerationRef = useRef(0);
 	const overlayY = useMotionValue(0);
@@ -189,6 +190,7 @@ export const NowPlaylistCard: FC<NowPlaylistCardProps> = ({
 	const [rowMotionGeneration, setRowMotionGeneration] = useState(0);
 	const upcomingCount =
 		playlistIndex >= 0 ? Math.max(0, playlist.length - playlistIndex - 1) : 0;
+	const currentSongId = playlist[playlistIndex]?.id;
 
 	const releasePointerCapture = useCallback(
 		(pointerId: number, captureTarget?: Element) => {
@@ -510,18 +512,27 @@ export const NowPlaylistCard: FC<NowPlaylistCardProps> = ({
 
 	useEffect(() => {
 		if (
-			!activeDragRef.current &&
-			playlistIndex >= 0 &&
-			playlistIndex < playlist.length
+			activeDrag ||
+			playlistIndex < 0 ||
+			playlistIndex >= playlist.length ||
+			currentSongId === undefined ||
+			lastAutoScrolledSongIdRef.current === currentSongId
 		) {
-			rowVirtualizer.scrollToIndex(playlistIndex, { align: "center" });
+			return;
 		}
-	}, [playlistIndex, rowVirtualizer, playlist.length]);
+		lastAutoScrolledSongIdRef.current = currentSongId;
+		rowVirtualizer.scrollToIndex(playlistIndex, { align: "center" });
+	}, [
+		activeDrag,
+		currentSongId,
+		playlistIndex,
+		rowVirtualizer,
+		playlist.length,
+	]);
 
 	const draggedSong = activeDrag
 		? playlist.find((song) => song.id === activeDrag.songId)
 		: undefined;
-	const currentSongId = playlist[playlistIndex]?.id;
 
 	return (
 		<Flex
