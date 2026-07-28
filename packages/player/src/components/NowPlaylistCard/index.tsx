@@ -190,7 +190,9 @@ export const NowPlaylistCard: FC<NowPlaylistCardProps> = ({
 	const overlayY = useMotionValue(0);
 	const prefersReducedMotion = useReducedMotion();
 	const [activeDrag, setActiveDrag] = useState<ActiveQueueDrag | null>(null);
+	const [suppressHover, setSuppressHover] = useState(false);
 	const [rowMotionGeneration, setRowMotionGeneration] = useState(0);
+	const suppressHoverRef = useRef(false);
 	const upcomingCount =
 		playlistIndex >= 0 ? Math.max(0, playlist.length - playlistIndex - 1) : 0;
 	const currentSongId = playlist[playlistIndex]?.id;
@@ -325,7 +327,14 @@ export const NowPlaylistCard: FC<NowPlaylistCardProps> = ({
 	const handleQueuePointerMove = useCallback(
 		(event: ReactPointerEvent<HTMLDivElement>) => {
 			const candidate = dragCandidateRef.current;
-			if (!candidate || candidate.pointerId !== event.pointerId) return;
+			if (!candidate) {
+				if (suppressHoverRef.current) {
+					suppressHoverRef.current = false;
+					setSuppressHover(false);
+				}
+				return;
+			}
+			if (candidate.pointerId !== event.pointerId) return;
 			candidate.pointerClientY = event.clientY;
 
 			let drag = activeDragRef.current;
@@ -352,6 +361,11 @@ export const NowPlaylistCard: FC<NowPlaylistCardProps> = ({
 					cancelQueueDrag(event.pointerId);
 					return;
 				}
+				if (candidate.captureTarget instanceof HTMLElement) {
+					candidate.captureTarget.blur();
+				}
+				suppressHoverRef.current = true;
+				setSuppressHover(true);
 				activeDragRef.current = drag;
 				suppressedClickSongIdRef.current = candidate.songId;
 				setActiveDrag(drag);
@@ -612,6 +626,7 @@ export const NowPlaylistCard: FC<NowPlaylistCardProps> = ({
 					className={classNames(
 						styles.queueViewport,
 						activeDrag && styles.dragging,
+						suppressHover && styles.suppressHover,
 					)}
 					type="scroll"
 					scrollbars="vertical"

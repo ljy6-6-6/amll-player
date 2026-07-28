@@ -122,6 +122,20 @@ test("拖动卡片松手落位后保留短暂淡出动画", () => {
 	);
 });
 
+test("拖动松手后等待真实鼠标移动再恢复悬停颜色", () => {
+	assert.match(queueCard, /candidate\.captureTarget\.blur\(\)/);
+	assert.match(queueCard, /suppressHoverRef\.current = true/);
+	assert.match(
+		queueCard,
+		/if \(!candidate\) \{[\s\S]*suppressHoverRef\.current = false[\s\S]*setSuppressHover\(false\)/,
+	);
+	assert.match(queueCard, /suppressHover && styles\.suppressHover/);
+	assert.match(
+		queueCardStyle,
+		/\.queueViewport\.suppressHover[\s\S]*\.playlistSongItem:not\(\.current\):not\(\.dragOverlayItem\)[\s\S]*background-color:\s*transparent/,
+	);
+});
+
 test("拖动目标按固定行高计算并限制在队列范围内", () => {
 	assert.equal(QUEUE_DRAG_THRESHOLD_PX, 6);
 	assert.equal(getQueueDropIndex(0, -100, 0, 36, 72, 5), 0);

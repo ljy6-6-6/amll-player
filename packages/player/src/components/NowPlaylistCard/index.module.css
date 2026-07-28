@@ -200,6 +200,11 @@
 	background-color: var(--accent-a3);
 }
 
+.queueViewport.suppressHover
+	.playlistSongItem:not(.current):not(.dragOverlayItem) {
+	background-color: transparent;
+}
+
 .playlistSongItem.dragOverlayItem {
 	border-left-color: transparent;
 	background-color: var(--gray-4);
