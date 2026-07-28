@@ -59,6 +59,7 @@ pub struct AudioPlayer {
 pub struct CpalCallbackState {
     pub volume_bits: Arc<AtomicU32>,
     pub loudness_gain_bits: Arc<AtomicU32>,
+    pub loudness_normalization_enabled: Arc<AtomicBool>,
     pub track_finished: Arc<AtomicBool>,
     pub consumed_frames: Arc<AtomicU64>,
 }
@@ -68,9 +69,36 @@ impl Default for CpalCallbackState {
         Self {
             volume_bits: Arc::new(AtomicU32::new(1.0_f32.to_bits())),
             loudness_gain_bits: Arc::new(AtomicU32::new(1.0_f32.to_bits())),
+            loudness_normalization_enabled: Arc::new(AtomicBool::new(false)),
             track_finished: Arc::new(AtomicBool::new(false)),
             consumed_frames: Arc::new(AtomicU64::new(0)),
         }
+    }
+}
+
+impl CpalCallbackState {
+    fn replace_loudness_normalization(&mut self, enabled: bool, track_gain: f32) {
+        self.loudness_gain_bits = Arc::new(AtomicU32::new(track_gain.to_bits()));
+        self.loudness_normalization_enabled = Arc::new(AtomicBool::new(enabled));
+    }
+
+    fn publish_loudness_normalization(&self, enabled: bool, track_gain: f32) {
+        // Publish the gain first. An enabling callback that still sees `false`
+        // ignores the new gain, while one that sees `true` also observes it.
+        self.loudness_gain_bits
+            .store(track_gain.to_bits(), Ordering::Release);
+        self.loudness_normalization_enabled
+            .store(enabled, Ordering::Release);
+    }
+
+    fn loudness_normalization_snapshot(&self) -> (bool, f32) {
+        let enabled = self.loudness_normalization_enabled.load(Ordering::Acquire);
+        let track_gain = if enabled {
+            f32::from_bits(self.loudness_gain_bits.load(Ordering::Acquire))
+        } else {
+            1.0
+        };
+        (enabled, track_gain)
     }
 }
 
@@ -101,6 +129,11 @@ fn loudness_normalization_gain(enabled: bool, integrated_loudness_lufs: Option<f
     let gain_db =
         (TARGET_TRACK_LOUDNESS_LUFS - loudness).clamp(MIN_TRACK_GAIN_DB, MAX_TRACK_GAIN_DB);
     10.0_f32.powf(gain_db / 20.0)
+}
+
+#[inline]
+fn should_enforce_peak_ceiling(normalization_enabled: bool, applied_track_gain: f32) -> bool {
+    normalization_enabled || applied_track_gain != 1.0
 }
 
 fn smoothing_coefficient(time_ms: f32, sample_rate: u32) -> f32 {
@@ -610,6 +643,9 @@ impl AudioPlayer {
                     playback_id,
                     start_paused,
                 } => {
+                    let normalization_enabled = loudness_normalization
+                        .as_ref()
+                        .is_some_and(|normalization| normalization.enabled);
                     let initial_track_gain =
                         loudness_normalization
                             .as_ref()
@@ -619,9 +655,12 @@ impl AudioPlayer {
                                     normalization.integrated_loudness_lufs,
                                 )
                             });
+                    // Give each output stream its own normalization state. The old
+                    // stream may still finish an in-flight callback while the new
+                    // decoder is starting and must not observe the next track's
+                    // gain or limiter setting.
                     self.cpal_state
-                        .loudness_gain_bits
-                        .store(initial_track_gain.to_bits(), Ordering::Release);
+                        .replace_loudness_normalization(normalization_enabled, initial_track_gain);
                     self.cpal_state
                         .track_finished
                         .store(false, Ordering::Release);
@@ -655,8 +694,7 @@ impl AudioPlayer {
                         let target_gain =
                             loudness_normalization_gain(*enabled, *integrated_loudness_lufs);
                         self.cpal_state
-                            .loudness_gain_bits
-                            .store(target_gain.to_bits(), Ordering::Release);
+                            .publish_loudness_normalization(*enabled, target_gain);
                     }
                 }
                 AudioThreadMessage::SetFFTRange { from_freq, to_freq } => {
@@ -786,8 +824,7 @@ impl AudioPlayer {
 
         let channels = target_channels as u64;
         let channel_count = usize::from(target_channels).max(1);
-        let initial_track_gain =
-            f32::from_bits(cpal_state_clone.loudness_gain_bits.load(Ordering::Acquire));
+        let (_, initial_track_gain) = cpal_state_clone.loudness_normalization_snapshot();
         let mut output_gain_state = OutputGainState::new(target_sample_rate, initial_track_gain);
         let mut peak_limiter = LinkedBlockLimiter::new(target_sample_rate);
 
@@ -796,8 +833,8 @@ impl AudioPlayer {
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                 let current_volume =
                     f32::from_bits(cpal_state_clone.volume_bits.load(Ordering::Relaxed));
-                let target_track_gain =
-                    f32::from_bits(cpal_state_clone.loudness_gain_bits.load(Ordering::Acquire));
+                let (normalization_enabled, target_track_gain) =
+                    cpal_state_clone.loudness_normalization_snapshot();
                 let mut eof_reached = false;
                 let mut local_consumed_samples = 0;
                 let unity_gain = output_gain_state.is_unity(target_track_gain);
@@ -809,7 +846,10 @@ impl AudioPlayer {
                     } else {
                         output_gain_state.advance_frame(target_track_gain)
                     };
-                    enforce_peak_ceiling |= track_gain != 1.0;
+                    // Keep limiting while a previously active gain is smoothing
+                    // back to unity after normalization has been disabled.
+                    enforce_peak_ceiling |=
+                        should_enforce_peak_ceiling(normalization_enabled, track_gain);
                     for sample in frame.iter_mut() {
                         if let Some(s) = audio_iter.next() {
                             let adjusted_sample = s * track_gain;
@@ -1017,6 +1057,20 @@ mod tests {
         output
     }
 
+    fn process_callback_block(
+        samples: &mut [f32],
+        sample_rate: u32,
+        callback_state: &CpalCallbackState,
+    ) {
+        let (enabled, track_gain) = callback_state.loudness_normalization_snapshot();
+        if track_gain != 1.0 {
+            for sample in samples.iter_mut() {
+                *sample *= track_gain;
+            }
+        }
+        LinkedBlockLimiter::new(sample_rate).process_block(samples, 2, enabled);
+    }
+
     #[test]
     fn loudness_target_reaches_minus_twelve_lufs_with_safe_gain_bounds() {
         let attenuated = loudness_normalization_gain(true, Some(-10.0));
@@ -1031,6 +1085,94 @@ mod tests {
         assert_eq!(loudness_normalization_gain(false, Some(-10.0)), 1.0);
         assert_eq!(loudness_normalization_gain(true, None), 1.0);
         assert_eq!(loudness_normalization_gain(true, Some(f64::NAN)), 1.0);
+    }
+
+    #[test]
+    fn enabled_normalization_limits_peaks_at_unity_gain() {
+        let track_gain = loudness_normalization_gain(true, Some(-12.0));
+        let mut callback_state = CpalCallbackState::default();
+        callback_state.replace_loudness_normalization(true, track_gain);
+        let mut samples = [1.2_f32, -1.2];
+
+        process_callback_block(&mut samples, 48_000, &callback_state);
+
+        assert_eq!(track_gain, 1.0);
+        assert!(
+            samples
+                .iter()
+                .all(|sample| sample.abs() <= NORMALIZED_PEAK_CEILING + 1.0e-6)
+        );
+    }
+
+    #[test]
+    fn enabled_normalization_without_loudness_data_still_limits_peaks() {
+        let track_gain = loudness_normalization_gain(true, None);
+        let callback_state = CpalCallbackState::default();
+        callback_state.publish_loudness_normalization(true, track_gain);
+        let mut samples = [1.2_f32, -1.2];
+
+        process_callback_block(&mut samples, 48_000, &callback_state);
+
+        assert_eq!(track_gain, 1.0);
+        assert!(
+            samples
+                .iter()
+                .all(|sample| sample.abs() <= NORMALIZED_PEAK_CEILING + 1.0e-6)
+        );
+    }
+
+    #[test]
+    fn disabled_normalization_at_unity_gain_preserves_pcm_bits() {
+        let callback_state = CpalCallbackState::default();
+        let mut samples = [1.2_f32, -1.2, 0.25, -0.25];
+        let original = samples.map(f32::to_bits);
+
+        process_callback_block(&mut samples, 48_000, &callback_state);
+
+        assert_eq!(samples.map(f32::to_bits), original);
+    }
+
+    #[test]
+    fn disabling_normalization_keeps_limiting_during_gain_smoothing() {
+        let mut callback_state = CpalCallbackState::default();
+        callback_state.replace_loudness_normalization(true, 1.5);
+        let mut output_gain_state = OutputGainState::new(48_000, 1.5);
+        callback_state.publish_loudness_normalization(false, 1.0);
+
+        let (enabled, target_track_gain) = callback_state.loudness_normalization_snapshot();
+        let applied_track_gain = output_gain_state.advance_frame(target_track_gain);
+        let mut samples = [0.8 * applied_track_gain, -0.8 * applied_track_gain];
+        let mut limiter = LinkedBlockLimiter::new(48_000);
+        limiter.process_block(
+            &mut samples,
+            2,
+            should_enforce_peak_ceiling(enabled, applied_track_gain),
+        );
+
+        assert!(!enabled);
+        assert!(applied_track_gain > 1.0);
+        assert!(
+            samples
+                .iter()
+                .all(|sample| sample.abs() <= NORMALIZED_PEAK_CEILING + 1.0e-6)
+        );
+    }
+
+    #[test]
+    fn new_stream_normalization_state_does_not_mutate_the_old_stream() {
+        let mut callback_state = CpalCallbackState::default();
+        let old_stream_state = callback_state.clone();
+
+        callback_state.replace_loudness_normalization(true, 1.5);
+
+        assert_eq!(
+            old_stream_state.loudness_normalization_snapshot(),
+            (false, 1.0)
+        );
+        assert_eq!(
+            callback_state.loudness_normalization_snapshot(),
+            (true, 1.5)
+        );
     }
 
     #[test]
