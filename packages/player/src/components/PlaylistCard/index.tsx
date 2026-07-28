@@ -25,7 +25,10 @@ export const PlaylistCard = forwardRef<
 		<ContextMenu.Root>
 			<ContextMenu.Trigger>
 				<Card asChild size="2" mb="4" key={playlist.id} ref={ref}>
-					<Link to={`/playlist/${playlist.id}`}>
+					<Link
+						to={`/playlist/${playlist.id}`}
+						data-music-drop-playlist-id={playlist.id}
+					>
 						<Flex align="center" gap="4">
 							<PlaylistCover playlistId={playlist.id} />
 							<Flex direction="column" gap="1" flexGrow="1">

@@ -42,7 +42,7 @@ export const Component: FC = () => {
 
 	return (
 		<PageContainer>
-			<Flex direction="column" height="100%">
+			<Flex direction="column" height="100%" data-music-drop-create-playlist="">
 				<Flex direction="row" align="center" wrap="wrap" mt="5">
 					<Box asChild flexGrow="1">
 						<Heading wrap="nowrap" my="4">

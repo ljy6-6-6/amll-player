@@ -9,6 +9,7 @@ import { AppContainer } from "./components/AppContainer/index.tsx";
 import { ExtensionInjectPoint } from "./components/ExtensionInjectPoint/index.tsx";
 import { LocalMusicContext } from "./components/LocalMusicContext/index.tsx";
 import { MigrationDialog } from "./components/MigrationDialog/index.tsx";
+import { MusicDropContext } from "./components/MusicDropContext/index.tsx";
 import { NowPlayingBar } from "./components/NowPlayingBar/index.tsx";
 import { ShotcutContext } from "./components/ShotcutContext/index.tsx";
 import { TaskbarLyricBridge } from "./components/TaskbarLyricBridge/index.tsx";
@@ -62,6 +63,7 @@ function App() {
 
 			<UpdateContext />
 			<ShotcutContext />
+			<MusicDropContext />
 			<ThemeManager />
 			<Suspense>
 				<ExtensionContext />

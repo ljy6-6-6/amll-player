@@ -1,0 +1,8 @@
+.activeDropTarget {
+	outline: 3px solid var(--accent-9);
+	outline-offset: -3px;
+	box-shadow: inset 0 0 0 1px var(--accent-a8);
+	transition:
+		outline-color 120ms ease,
+		box-shadow 120ms ease;
+}

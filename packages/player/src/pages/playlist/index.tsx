@@ -517,7 +517,11 @@ export const Component: FC = () => {
 
 	return (
 		<PageContainer>
-			<Flex direction="column" height="100%">
+			<Flex
+				direction="column"
+				height="100%"
+				data-music-drop-playlist-id={param.id}
+			>
 				<Flex gap="4" direction="column" flexGrow="0" pb="4" mt="5">
 					<Flex align="end" pt="4">
 						<Button variant="soft" onClick={() => history.back()}>

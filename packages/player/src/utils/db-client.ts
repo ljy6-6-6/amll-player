@@ -151,6 +151,26 @@ export interface RefreshResult {
 	failed: number;
 }
 
+export interface ImportPathIssue {
+	path: string;
+	stage: string;
+	message: string;
+}
+
+export interface ImportMusicResult {
+	playlistId: number | null;
+	playlistName: string | null;
+	totalCandidates: number;
+	parsed: number;
+	reused: number;
+	added: number;
+	alreadyPresent: number;
+	addedSongIds: string[];
+	skipped: ImportPathIssue[];
+	failed: ImportPathIssue[];
+	warnings: ImportPathIssue[];
+}
+
 class PlaylistsClient {
 	async getAll(): Promise<Playlist[]> {
 		return invoke("get_all_playlists");
@@ -230,6 +250,37 @@ class PlaylistsClient {
 			playlistId,
 		});
 		void startRhythmPrecache().catch(() => {});
+		return result;
+	}
+
+	async importPaths(
+		playlistId: number,
+		paths: string[],
+	): Promise<ImportMusicResult> {
+		const result = await invoke<ImportMusicResult>(
+			"import_music_paths_to_playlist",
+			{ playlistId, paths },
+		);
+		if (result.added > 0) {
+			void startRhythmPrecache().catch(() => {});
+		}
+		return result;
+	}
+
+	async createFromFolder(
+		folderPath: string,
+		playlistName?: string,
+	): Promise<ImportMusicResult> {
+		const result = await invoke<ImportMusicResult>(
+			"create_playlist_from_music_folder",
+			{
+				folderPath,
+				playlistName: playlistName ?? null,
+			},
+		);
+		if (result.added > 0) {
+			void startRhythmPrecache().catch(() => {});
+		}
 		return result;
 	}
 }
