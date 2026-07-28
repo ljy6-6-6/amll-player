@@ -14,9 +14,8 @@ import {
 	useState,
 } from "react";
 import IconForward from "../../assets/icon_forward.svg?react";
-import IconPause from "../../assets/icon_pause.svg?react";
-import IconPlay from "../../assets/icon_play.svg?react";
 import IconRewind from "../../assets/icon_rewind.svg?react";
+import { AnimatedPlayPauseIcon } from "../../components/AnimatedPlayPauseIcon/index.tsx";
 import {
 	ALIGN_EVENT,
 	CMD_GET_SYSTEM_THEME,
@@ -102,11 +101,10 @@ const PlaybackControls = ({
 				onClick={onTogglePlay}
 				tabIndex={isInteractive ? undefined : -1}
 			>
-				{isPlaying ? (
-					<IconPause className={styles.controlBtnIconPlay} />
-				) : (
-					<IconPlay className={styles.controlBtnIconPlay} />
-				)}
+				<AnimatedPlayPauseIcon
+					playing={isPlaying}
+					className={styles.controlBtnIconPlay}
+				/>
 			</MediaButton>
 			<MediaButton
 				className={styles.controlBtn}

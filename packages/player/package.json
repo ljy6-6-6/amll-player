@@ -10,6 +10,7 @@
 		"fmt": "biome format --write ./src",
 		"preview": "vite preview",
 		"test:lyric-style": "node --test tests/lyric-descender-style.test.mjs",
+		"test:play-pause-animation": "node --test tests/play-pause-animation.test.mjs",
 		"test:play-queue": "node --test tests/play-queue-loudness.test.mjs",
 		"test:rhythm-visual": "node --test tests/rhythm-visual-signal.test.mjs",
 		"tauri": "tauri",
