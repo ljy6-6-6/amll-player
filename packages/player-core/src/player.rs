@@ -34,6 +34,8 @@ pub struct AudioPlayer {
     cpal_device: cpal::Device,
     cpal_config: cpal::StreamConfig,
     current_stream: Option<cpal::Stream>,
+    stream_is_running: bool,
+    transport_intent_playing: bool,
     cpal_state: CpalCallbackState,
     target_channels: u16,
     target_sample_rate: u32,
@@ -60,6 +62,9 @@ pub struct CpalCallbackState {
     pub volume_bits: Arc<AtomicU32>,
     pub loudness_gain_bits: Arc<AtomicU32>,
     pub loudness_normalization_enabled: Arc<AtomicBool>,
+    pub transport_target_gain_bits: Arc<AtomicU32>,
+    pub transport_current_gain_bits: Arc<AtomicU32>,
+    pub transport_pause_ready: Arc<AtomicBool>,
     pub track_finished: Arc<AtomicBool>,
     pub consumed_frames: Arc<AtomicU64>,
 }
@@ -70,6 +75,9 @@ impl Default for CpalCallbackState {
             volume_bits: Arc::new(AtomicU32::new(1.0_f32.to_bits())),
             loudness_gain_bits: Arc::new(AtomicU32::new(1.0_f32.to_bits())),
             loudness_normalization_enabled: Arc::new(AtomicBool::new(false)),
+            transport_target_gain_bits: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
+            transport_current_gain_bits: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
+            transport_pause_ready: Arc::new(AtomicBool::new(false)),
             track_finished: Arc::new(AtomicBool::new(false)),
             consumed_frames: Arc::new(AtomicU64::new(0)),
         }
@@ -100,6 +108,57 @@ impl CpalCallbackState {
         };
         (enabled, track_gain)
     }
+
+    fn replace_transport_fade(&mut self, current_gain: f32, target_gain: f32) {
+        let current_gain = sanitize_transport_gain(current_gain);
+        let target_gain = sanitize_transport_gain(target_gain);
+        self.transport_current_gain_bits = Arc::new(AtomicU32::new(current_gain.to_bits()));
+        self.transport_target_gain_bits = Arc::new(AtomicU32::new(target_gain.to_bits()));
+        self.transport_pause_ready = Arc::new(AtomicBool::new(false));
+    }
+
+    fn replace_stream_lifecycle(&mut self, current_gain: f32, target_gain: f32) {
+        self.replace_transport_fade(current_gain, target_gain);
+        self.track_finished = Arc::new(AtomicBool::new(false));
+        self.consumed_frames = Arc::new(AtomicU64::new(0));
+    }
+
+    fn publish_transport_target(&self, target_gain: f32) {
+        let target_gain_bits = sanitize_transport_gain(target_gain).to_bits();
+        if self.transport_target_gain_bits.load(Ordering::Acquire) == target_gain_bits {
+            return;
+        }
+        self.transport_pause_ready.store(false, Ordering::Release);
+        self.transport_target_gain_bits
+            .store(target_gain_bits, Ordering::Release);
+    }
+
+    fn publish_transport_current(&self, current_gain: f32) {
+        self.transport_current_gain_bits.store(
+            sanitize_transport_gain(current_gain).to_bits(),
+            Ordering::Release,
+        );
+    }
+
+    fn transport_fade_snapshot(&self) -> (f32, f32) {
+        let target_gain = f32::from_bits(self.transport_target_gain_bits.load(Ordering::Acquire));
+        let current_gain = f32::from_bits(self.transport_current_gain_bits.load(Ordering::Acquire));
+        (
+            sanitize_transport_gain(target_gain),
+            sanitize_transport_gain(current_gain),
+        )
+    }
+
+    fn publish_transport_pause_ready(&self) {
+        self.transport_pause_ready.store(true, Ordering::Release);
+    }
+
+    fn transport_is_silent_and_ready(&self) -> bool {
+        let (target_gain, current_gain) = self.transport_fade_snapshot();
+        target_gain == 0.0
+            && current_gain == 0.0
+            && self.transport_pause_ready.load(Ordering::Acquire)
+    }
 }
 
 const TARGET_TRACK_LOUDNESS_LUFS: f32 = -12.0;
@@ -109,6 +168,7 @@ const MAX_TRACK_GAIN: f32 = 2.511_886_4;
 const NORMALIZED_PEAK_CEILING: f32 = 0.891_250_9;
 const TRACK_GAIN_RISE_MS: f32 = 250.0;
 const TRACK_GAIN_FALL_MS: f32 = 50.0;
+const TRANSPORT_FADE_DURATION_MS: u32 = 120;
 const PEAK_LIMITER_LOOKAHEAD_MS: u32 = 5;
 const PEAK_LIMITER_ATTACK_MS: f32 = 1.0;
 const PEAK_LIMITER_RELEASE_MS: f32 = 100.0;
@@ -142,6 +202,90 @@ fn smoothing_coefficient(time_ms: f32, sample_rate: u32) -> f32 {
 
 fn frames_for_duration(sample_rate: u32, duration_ms: u32) -> usize {
     ((u64::from(sample_rate) * u64::from(duration_ms)).div_ceil(1_000)) as usize
+}
+
+fn sanitize_transport_gain(gain: f32) -> f32 {
+    if gain.is_finite() {
+        gain.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+struct TransportFadeState {
+    position_frame: u64,
+    fade_frames: u64,
+}
+
+impl TransportFadeState {
+    fn new(sample_rate: u32, initial_position: f32) -> Self {
+        let fade_frames =
+            frames_for_duration(sample_rate, TRANSPORT_FADE_DURATION_MS).max(1) as u64;
+        Self {
+            position_frame: (sanitize_transport_gain(initial_position) * fade_frames as f32).round()
+                as u64,
+            fade_frames,
+        }
+    }
+
+    fn gain_for_position(position: f32) -> f32 {
+        let position = sanitize_transport_gain(position);
+        position * position * (3.0 - 2.0 * position)
+    }
+
+    fn advance_frame(&mut self, target_position: f32) -> f32 {
+        let target_frame =
+            (sanitize_transport_gain(target_position) * self.fade_frames as f32).round() as u64;
+        if self.position_frame < target_frame {
+            self.position_frame += 1;
+        } else if self.position_frame > target_frame {
+            self.position_frame -= 1;
+        }
+        self.current_gain()
+    }
+
+    fn current_gain(&self) -> f32 {
+        Self::gain_for_position(self.position_frame as f32 / self.fade_frames as f32)
+    }
+}
+
+fn fill_source_frame<I: Iterator<Item = f32>>(
+    frame: &mut [f32],
+    audio_iter: &mut I,
+    track_gain: f32,
+    consume_source: bool,
+) -> (usize, bool) {
+    if !consume_source {
+        frame.fill(0.0);
+        return (0, false);
+    }
+
+    let mut consumed_samples = 0;
+    let mut eof_reached = false;
+    for sample in frame {
+        if let Some(source_sample) = audio_iter.next() {
+            let adjusted_sample = source_sample * track_gain;
+            *sample = if adjusted_sample.is_finite() {
+                adjusted_sample
+            } else {
+                0.0
+            };
+            consumed_samples += 1;
+        } else {
+            *sample = 0.0;
+            eof_reached = true;
+        }
+    }
+    (consumed_samples, eof_reached)
+}
+
+fn apply_output_gain(frame: &mut [f32], transport_gain: f32, volume: f32) {
+    let output_gain = sanitize_transport_gain(transport_gain) * volume;
+    if output_gain != 1.0 {
+        for sample in frame {
+            *sample *= output_gain;
+        }
+    }
 }
 
 struct OutputGainState {
@@ -470,6 +614,8 @@ impl AudioPlayer {
             cpal_device: device,
             cpal_config,
             current_stream: None,
+            stream_is_running: false,
+            transport_intent_playing: false,
             cpal_state,
             target_channels,
             target_sample_rate,
@@ -498,8 +644,87 @@ impl AudioPlayer {
         AudioPlayerEventEmitter::new(self.evt_sender.clone())
     }
 
+    async fn set_transport_playing(
+        &mut self,
+        should_play: bool,
+        emitter: &AudioPlayerEventEmitter,
+    ) {
+        let intent_changed = self.transport_intent_playing != should_play;
+        self.transport_intent_playing = should_play;
+        self.cpal_state
+            .publish_transport_target(if should_play { 1.0 } else { 0.0 });
+
+        if should_play && !self.stream_is_running {
+            if let Some(stream) = &self.current_stream {
+                match stream.play() {
+                    Ok(()) => {
+                        self.stream_is_running = true;
+                        let _ = self.is_playing_tx.send(true);
+                    }
+                    Err(error) => warn!("恢复 Cpal 音频流失败：{error:?}"),
+                }
+            }
+        } else if self.current_stream.is_none() {
+            self.stream_is_running = false;
+            let _ = self.is_playing_tx.send(false);
+        }
+
+        if !intent_changed {
+            return;
+        }
+
+        self.media_manager.update_play_state(should_play);
+        let _ = emitter
+            .emit(AudioThreadEvent::PlayStatus {
+                is_playing: should_play,
+            })
+            .await;
+    }
+
+    async fn publish_current_position(&self) {
+        let (base_time, counter) = {
+            let state = self.playback_state.read();
+            (state.base_time_sec, state.samples_counter.clone())
+        };
+        let duration = self.current_audio_info.read().await.duration;
+        if duration <= 0.0 {
+            return;
+        }
+
+        let played_time = counter.map_or(0.0, |counter| {
+            let samples = counter.load(Ordering::Relaxed) as f64;
+            samples / (self.target_sample_rate as f64 * self.target_channels as f64)
+        });
+        let position = (base_time + played_time).min(duration);
+        let _ = self
+            .emitter()
+            .emit(AudioThreadEvent::PlayPosition { position })
+            .await;
+        self.media_manager.update_timeline(position, duration);
+    }
+
+    async fn pause_stream_after_fade_if_ready(&mut self) {
+        if self.transport_intent_playing
+            || !self.stream_is_running
+            || !self.cpal_state.transport_is_silent_and_ready()
+        {
+            return;
+        }
+
+        if let Some(stream) = &self.current_stream {
+            if let Err(error) = stream.pause() {
+                warn!("暂停 Cpal 音频流失败：{error:?}");
+                return;
+            }
+        }
+        self.stream_is_running = false;
+        let _ = self.is_playing_tx.send(false);
+        self.publish_current_position().await;
+    }
+
     pub async fn run(mut self) {
         let mut check_end_interval = tokio::time::interval(Duration::from_millis(50));
+        check_end_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
             tokio::select! {
@@ -520,6 +745,7 @@ impl AudioPlayer {
                     }
                 },
                 _ = check_end_interval.tick() => {
+                    self.pause_stream_after_fade_if_ready().await;
                     if self.cpal_state.track_finished.load(Ordering::Acquire) && self.current_song.is_some() {
                         let music_id = self
                             .current_song
@@ -528,6 +754,9 @@ impl AudioPlayer {
                             .unwrap_or_default();
                         let playback_id = self.current_playback_id.clone();
                         self.current_stream = None;
+                        self.stream_is_running = false;
+                        self.transport_intent_playing = false;
+                        self.cpal_state.replace_stream_lifecycle(0.0, 0.0);
 
                         {
                             let mut state = self.playback_state.write();
@@ -566,43 +795,14 @@ impl AudioPlayer {
         if let Some(ref data) = msg.data {
             match data {
                 AudioThreadMessage::ResumeAudio => {
-                    if let Some(stream) = &self.current_stream {
-                        let _ = stream.play();
-                    }
-                    let _ = self.is_playing_tx.send(true);
-                    self.media_manager.update_play_state(true);
-                    let _ = emitter
-                        .emit(AudioThreadEvent::PlayStatus { is_playing: true })
-                        .await;
+                    self.set_transport_playing(true, &emitter).await;
                 }
                 AudioThreadMessage::PauseAudio => {
-                    if let Some(stream) = &self.current_stream {
-                        let _ = stream.pause();
-                    }
-                    let _ = self.is_playing_tx.send(false);
-                    self.media_manager.update_play_state(false);
-                    let _ = emitter
-                        .emit(AudioThreadEvent::PlayStatus { is_playing: false })
-                        .await;
+                    self.set_transport_playing(false, &emitter).await;
                 }
                 AudioThreadMessage::ResumeOrPauseAudio => {
-                    let is_playing_now = !*self.is_playing_rx.borrow();
-
-                    if let Some(stream) = &self.current_stream {
-                        if is_playing_now {
-                            let _ = stream.play();
-                        } else {
-                            let _ = stream.pause();
-                        }
-                    }
-
-                    let _ = self.is_playing_tx.send(is_playing_now);
-                    self.media_manager.update_play_state(is_playing_now);
-                    let _ = emitter
-                        .emit(AudioThreadEvent::PlayStatus {
-                            is_playing: is_playing_now,
-                        })
-                        .await;
+                    let should_play = !self.transport_intent_playing;
+                    self.set_transport_playing(should_play, &emitter).await;
                 }
                 AudioThreadMessage::SeekAudio { position } => {
                     if let Some(handle) = &self.current_decoder_handle {
@@ -622,7 +822,7 @@ impl AudioPlayer {
                             })
                             .await?;
 
-                            let is_playing = *self.is_playing_rx.borrow();
+                            let is_playing = self.transport_intent_playing;
                             {
                                 let mut state = self.playback_state.write();
                                 state.base_time_sec = *position;
@@ -710,6 +910,9 @@ impl AudioPlayer {
                 }
                 AudioThreadMessage::StopAudio => {
                     self.current_stream = None;
+                    self.stream_is_running = false;
+                    self.transport_intent_playing = false;
+                    self.cpal_state.replace_stream_lifecycle(0.0, 0.0);
 
                     {
                         let mut state = self.playback_state.write();
@@ -757,8 +960,11 @@ impl AudioPlayer {
         clear_sink: bool,
         start_paused: bool,
     ) -> anyhow::Result<()> {
+        self.cpal_state
+            .replace_stream_lifecycle(0.0, if start_paused { 0.0 } else { 1.0 });
         if clear_sink {
             self.current_stream = None;
+            self.stream_is_running = false;
             self.current_decoder_handle = None;
             let fft_player_clone = self.fft_player.clone();
             tokio::task::spawn_blocking(move || {
@@ -776,7 +982,9 @@ impl AudioPlayer {
             .await?;
 
         let source_stream: Box<dyn CustomMediaSource> =
-            if song_data.file_path.starts_with("http://") || song_data.file_path.starts_with("https://") {
+            if song_data.file_path.starts_with("http://")
+                || song_data.file_path.starts_with("https://")
+            {
                 let bytes = reqwest::get(&song_data.file_path)
                     .await
                     .with_context(|| format!("下载 {} 失败", song_data.file_path))?
@@ -822,11 +1030,17 @@ impl AudioPlayer {
             .volume_bits
             .store(self.volume.to_bits(), Ordering::Relaxed);
 
-        let channels = target_channels as u64;
         let channel_count = usize::from(target_channels).max(1);
         let (_, initial_track_gain) = cpal_state_clone.loudness_normalization_snapshot();
+        let (_, initial_transport_gain) = cpal_state_clone.transport_fade_snapshot();
         let mut output_gain_state = OutputGainState::new(target_sample_rate, initial_track_gain);
+        let mut transport_fade_state =
+            TransportFadeState::new(target_sample_rate, initial_transport_gain);
         let mut peak_limiter = LinkedBlockLimiter::new(target_sample_rate);
+        let transport_scratch_frames =
+            frames_for_duration(target_sample_rate, PEAK_LIMITER_SCRATCH_MS).max(1);
+        let mut transport_gains = vec![1.0; transport_scratch_frames];
+        let callback_chunk_samples = transport_scratch_frames * channel_count;
 
         let stream = self.cpal_device.build_output_stream(
             &self.cpal_config,
@@ -835,46 +1049,65 @@ impl AudioPlayer {
                     f32::from_bits(cpal_state_clone.volume_bits.load(Ordering::Relaxed));
                 let (normalization_enabled, target_track_gain) =
                     cpal_state_clone.loudness_normalization_snapshot();
+                let target_transport_gain = sanitize_transport_gain(f32::from_bits(
+                    cpal_state_clone
+                        .transport_target_gain_bits
+                        .load(Ordering::Acquire),
+                ));
+                let callback_started_silent =
+                    target_transport_gain == 0.0 && transport_fade_state.current_gain() == 0.0;
+                let callback_has_frames = !data.is_empty();
                 let mut eof_reached = false;
                 let mut local_consumed_samples = 0;
                 let unity_gain = output_gain_state.is_unity(target_track_gain);
-                let mut enforce_peak_ceiling = false;
 
-                for frame in data.chunks_mut(channel_count) {
-                    let track_gain = if unity_gain {
-                        1.0
-                    } else {
-                        output_gain_state.advance_frame(target_track_gain)
-                    };
-                    // Keep limiting while a previously active gain is smoothing
-                    // back to unity after normalization has been disabled.
-                    enforce_peak_ceiling |=
-                        should_enforce_peak_ceiling(normalization_enabled, track_gain);
-                    for sample in frame.iter_mut() {
-                        if let Some(s) = audio_iter.next() {
-                            let adjusted_sample = s * track_gain;
-                            *sample = if adjusted_sample.is_finite() {
-                                adjusted_sample
-                            } else {
-                                0.0
-                            };
-                            local_consumed_samples += 1;
+                for output_chunk in data.chunks_mut(callback_chunk_samples) {
+                    let mut enforce_peak_ceiling = false;
+                    for (frame_index, frame) in output_chunk.chunks_mut(channel_count).enumerate() {
+                        let transport_gain =
+                            transport_fade_state.advance_frame(target_transport_gain);
+                        transport_gains[frame_index] = transport_gain;
+                        let track_gain = if unity_gain {
+                            1.0
                         } else {
-                            *sample = 0.0;
-                            eof_reached = true;
-                        }
+                            output_gain_state.advance_frame(target_track_gain)
+                        };
+                        // Keep limiting while a previously active gain is smoothing
+                        // back to unity after normalization has been disabled.
+                        enforce_peak_ceiling |=
+                            should_enforce_peak_ceiling(normalization_enabled, track_gain);
+                        let (consumed_samples, frame_eof_reached) = fill_source_frame(
+                            frame,
+                            &mut audio_iter,
+                            track_gain,
+                            transport_gain != 0.0,
+                        );
+                        local_consumed_samples += consumed_samples;
+                        eof_reached |= frame_eof_reached;
+                    }
+
+                    peak_limiter.process_block(output_chunk, channel_count, enforce_peak_ceiling);
+                    for (frame_index, frame) in output_chunk.chunks_mut(channel_count).enumerate() {
+                        apply_output_gain(frame, transport_gains[frame_index], current_volume);
                     }
                 }
-
-                peak_limiter.process_block(data, channel_count, enforce_peak_ceiling);
-                if current_volume != 1.0 {
-                    for sample in data {
-                        *sample *= current_volume;
-                    }
+                cpal_state_clone.publish_transport_current(transport_fade_state.current_gain());
+                let target_still_paused = sanitize_transport_gain(f32::from_bits(
+                    cpal_state_clone
+                        .transport_target_gain_bits
+                        .load(Ordering::Acquire),
+                )) == 0.0;
+                if callback_has_frames
+                    && callback_started_silent
+                    && target_still_paused
+                    && transport_fade_state.current_gain() == 0.0
+                    && local_consumed_samples == 0
+                {
+                    cpal_state_clone.publish_transport_pause_ready();
                 }
 
                 if local_consumed_samples > 0 {
-                    let frames_played = local_consumed_samples / channels;
+                    let frames_played = (local_consumed_samples / channel_count) as u64;
                     cpal_state_clone
                         .consumed_frames
                         .fetch_add(frames_played, Ordering::Relaxed);
@@ -892,6 +1125,9 @@ impl AudioPlayer {
 
         if !start_paused {
             stream.play()?;
+            self.stream_is_running = true;
+        } else {
+            self.stream_is_running = false;
         }
 
         self.current_stream = Some(stream);
@@ -900,6 +1136,7 @@ impl AudioPlayer {
 
         self.media_manager.update_metadata(&info);
         self.media_manager.update_play_state(!start_paused);
+        self.transport_intent_playing = !start_paused;
         let _ = self.is_playing_tx.send(!start_paused);
 
         self.emitter()
@@ -1069,6 +1306,161 @@ mod tests {
             }
         }
         LinkedBlockLimiter::new(sample_rate).process_block(samples, 2, enabled);
+    }
+
+    #[test]
+    fn transport_fade_reaches_both_endpoints_at_each_sample_rate() {
+        for sample_rate in [44_100, 48_000, 96_000] {
+            let fade_frames = frames_for_duration(sample_rate, TRANSPORT_FADE_DURATION_MS);
+            let mut fade_in = TransportFadeState::new(sample_rate, 0.0);
+            let mut previous_gain = 0.0;
+            for frame_index in 0..fade_frames {
+                let gain = fade_in.advance_frame(1.0);
+                assert!(gain >= previous_gain);
+                assert!((0.0..=1.0).contains(&gain));
+                if frame_index + 1 < fade_frames {
+                    assert!(gain < 1.0);
+                }
+                previous_gain = gain;
+            }
+            assert_eq!(fade_in.current_gain(), 1.0);
+
+            let mut fade_out = TransportFadeState::new(sample_rate, 1.0);
+            previous_gain = 1.0;
+            for frame_index in 0..fade_frames {
+                let gain = fade_out.advance_frame(0.0);
+                assert!(gain <= previous_gain);
+                assert!((0.0..=1.0).contains(&gain));
+                if frame_index + 1 < fade_frames {
+                    assert!(gain > 0.0);
+                }
+                previous_gain = gain;
+            }
+            assert_eq!(fade_out.current_gain(), 0.0);
+        }
+    }
+
+    #[test]
+    fn transport_fade_reverses_from_its_current_gain_without_a_jump() {
+        let sample_rate = 48_000;
+        let fade_frames = frames_for_duration(sample_rate, TRANSPORT_FADE_DURATION_MS);
+        let mut fade = TransportFadeState::new(sample_rate, 1.0);
+        for _ in 0..fade_frames / 2 {
+            fade.advance_frame(0.0);
+        }
+
+        let gain_before_resume = fade.current_gain();
+        let first_resumed_gain = fade.advance_frame(1.0);
+
+        assert!(gain_before_resume > 0.45 && gain_before_resume < 0.55);
+        assert!(first_resumed_gain > gain_before_resume);
+        assert!(first_resumed_gain - gain_before_resume < 0.001);
+    }
+
+    #[test]
+    fn repeated_transport_targets_do_not_restart_the_envelope() {
+        let mut repeated = TransportFadeState::new(48_000, 1.0);
+        let mut uninterrupted = TransportFadeState::new(48_000, 1.0);
+
+        for _ in 0..1_000 {
+            repeated.advance_frame(0.0);
+        }
+        for _ in 0..1_000 {
+            repeated.advance_frame(0.0);
+        }
+        for _ in 0..2_000 {
+            uninterrupted.advance_frame(0.0);
+        }
+
+        assert_eq!(
+            repeated.current_gain().to_bits(),
+            uninterrupted.current_gain().to_bits()
+        );
+    }
+
+    #[test]
+    fn silent_transport_frames_do_not_consume_or_advance_the_source() {
+        let mut source = [0.25_f32, 0.5].into_iter();
+        let mut frame = [1.0_f32, 1.0];
+
+        let result = fill_source_frame(&mut frame, &mut source, 2.0, false);
+
+        assert_eq!(result, (0, false));
+        assert_eq!(frame, [0.0, 0.0]);
+        assert_eq!(source.next(), Some(0.25));
+    }
+
+    #[test]
+    fn replacing_stream_lifecycle_isolates_old_callback_completion() {
+        let mut current_stream_state = CpalCallbackState::default();
+        let old_stream_state = current_stream_state.clone();
+
+        current_stream_state.replace_stream_lifecycle(0.0, 1.0);
+        old_stream_state.publish_transport_target(0.0);
+        old_stream_state.publish_transport_current(0.4);
+        old_stream_state.publish_transport_pause_ready();
+        old_stream_state
+            .track_finished
+            .store(true, Ordering::Release);
+        old_stream_state
+            .consumed_frames
+            .store(128, Ordering::Release);
+
+        assert_eq!(current_stream_state.transport_fade_snapshot(), (1.0, 0.0));
+        assert!(!current_stream_state.track_finished.load(Ordering::Acquire));
+        assert_eq!(
+            current_stream_state.consumed_frames.load(Ordering::Acquire),
+            0
+        );
+        assert_eq!(old_stream_state.transport_fade_snapshot(), (0.0, 0.4));
+        assert!(
+            old_stream_state
+                .transport_pause_ready
+                .load(Ordering::Acquire)
+        );
+        assert!(
+            !current_stream_state
+                .transport_pause_ready
+                .load(Ordering::Acquire)
+        );
+    }
+
+    #[test]
+    fn changing_transport_target_revokes_a_completed_pause() {
+        let callback_state = CpalCallbackState::default();
+        callback_state.publish_transport_pause_ready();
+        assert!(callback_state.transport_is_silent_and_ready());
+
+        callback_state.publish_transport_target(0.0);
+        assert!(callback_state.transport_is_silent_and_ready());
+
+        callback_state.publish_transport_target(1.0);
+
+        assert!(!callback_state.transport_is_silent_and_ready());
+    }
+
+    #[test]
+    fn transport_gain_is_applied_after_peak_limiting_and_independent_of_volume() {
+        let mut frame = [2.0_f32, -2.0];
+        let mut limiter = LinkedBlockLimiter::new(48_000);
+        limiter.process_block(&mut frame, 2, true);
+        let limited_peak = frame[0].abs();
+
+        apply_output_gain(&mut frame, 0.25, 0.8);
+
+        assert!((frame[0].abs() - limited_peak * 0.2).abs() < 1.0e-6);
+        assert!((frame[1].abs() - limited_peak * 0.2).abs() < 1.0e-6);
+
+        let callback_state = CpalCallbackState::default();
+        callback_state
+            .volume_bits
+            .store(0.7_f32.to_bits(), Ordering::Release);
+        callback_state.publish_transport_target(1.0);
+        callback_state.publish_transport_current(0.5);
+        assert_eq!(
+            f32::from_bits(callback_state.volume_bits.load(Ordering::Acquire)),
+            0.7
+        );
     }
 
     #[test]
