@@ -85,6 +85,14 @@ test("拖动排序保留稳定身份、平滑反馈和安全取消", () => {
 	assert.match(queueCard, /rowMotionGeneration/);
 	assert.match(queueCardStyle, /\.dragOverlay[\s\S]*pointer-events:\s*none/);
 	assert.match(queueCardStyle, /\.dragSource\s*\{[\s\S]*opacity:\s*0/);
+	assert.match(
+		queueCardStyle,
+		/\.playlistSongItem\.dragOverlayItem\s*\{[\s\S]*background-color:\s*var\(--gray-4\)/,
+	);
+	assert.match(
+		queueCardStyle,
+		/\.playlistSongItem\.dragOverlayItem\.current\s*\{[\s\S]*background-color:\s*var\(--accent-4\)/,
+	);
 	assert.match(queueCardStyle, /@media \(prefers-reduced-motion: reduce\)/);
 });
 
