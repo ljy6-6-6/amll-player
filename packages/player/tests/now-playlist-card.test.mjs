@@ -130,6 +130,16 @@ test("虚拟列表估算行高与实际行盒保持一致", () => {
 	assert.match(queueCardStyle, /\.playlistSongItem[\s\S]*height:\s*100%/);
 });
 
+test("播放队列按歌曲数量延展并只在接近播放栏时滚动", () => {
+	assert.match(queueCardStyle, /\.root\s*\{[\s\S]*height:\s*auto/);
+	assert.match(
+		queueCardStyle,
+		/max-height:\s*calc\([\s\S]*100dvh[\s\S]*--amll-player-playbar-bottom/,
+	);
+	assert.match(queueCardStyle, /\.queueViewport\s*\{[\s\S]*flex:\s*0 1 auto/);
+	assert.doesNotMatch(queueCardStyle, /height:\s*min\(500px,\s*50vh\)/);
+});
+
 test("标题展示队列计数并覆盖空队列和待播数量", () => {
 	assert.match(queueCard, /playbar\.playlist\.count/);
 	assert.match(queueCard, /playlist\.length === 0/);

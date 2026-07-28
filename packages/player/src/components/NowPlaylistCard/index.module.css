@@ -1,8 +1,9 @@
 .root {
 	box-sizing: border-box;
 	width: min(400px, calc(100vw - var(--space-6)));
-	height: min(500px, 50vh);
-	min-height: 220px;
+	height: auto;
+	max-height: calc(100dvh - var(--amll-player-playbar-bottom) - var(--space-6));
+	min-height: 0;
 	overflow: hidden;
 	background-color: var(--black-a9);
 	backdrop-filter: blur(1em);
@@ -96,7 +97,7 @@
 
 .queueViewport {
 	position: relative;
-	flex: 1;
+	flex: 0 1 auto;
 	min-height: 0;
 	overflow-y: auto;
 	overscroll-behavior: contain;
@@ -265,10 +266,11 @@
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	flex: 1;
+	box-sizing: border-box;
+	flex: none;
 	flex-direction: column;
 	gap: var(--space-2);
-	min-height: 0;
+	min-height: 168px;
 	padding: var(--space-5);
 	color: var(--gray-11);
 	text-align: center;
@@ -288,13 +290,6 @@
 	.playlistSongItem:hover .itemActions,
 	.playlistSongItem:focus-within .itemActions {
 		opacity: 1;
-	}
-}
-
-@media (max-height: 520px) {
-	.root {
-		height: calc(100vh - var(--amll-player-playbar-bottom) - var(--space-6));
-		min-height: 160px;
 	}
 }
 
