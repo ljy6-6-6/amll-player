@@ -276,9 +276,10 @@ test("起播前分析失败会继续播放但禁止后台结果中途改变增�
 	assert.equal(warnings.length, 1);
 });
 
-test("解码器临时忙时立即起播并允许播放后补齐音量平衡", {
+test("解码器临时忙时等待阻塞分析并用响度结果起播", {
 	concurrency: false,
 }, async (context) => {
+	const analysis = deferred();
 	const calls = [];
 	mockIPC((command, payload) => {
 		calls.push({ command, payload });
@@ -286,7 +287,8 @@ test("解码器临时忙时立即起播并允许播放后补齐音量平衡", {
 			case "get_cached_song_loudness":
 				return null;
 			case "get_or_analyze_song_rhythm":
-				throw new Error("DECODER_BUSY");
+				if (payload.nonBlocking) throw new Error("DECODER_BUSY");
+				return analysis.promise;
 			case "local_player_send_msg":
 				return undefined;
 			default:
@@ -303,23 +305,96 @@ test("解码器临时忙时立即起播并允许播放后补齐音量平衡", {
 
 	manager.replaceQueueAndPlay(makeSong("busy"));
 	await waitFor(
-		() => getPlayMessages(calls).length === 1,
-		"解码器忙时没有立即回退播放",
+		() =>
+			calls.filter(({ command }) => command === "get_or_analyze_song_rhythm")
+				.length === 2,
+		"解码器忙后未进入阻塞响度分析",
 	);
 
-	const analysisCall = calls.find(
-		({ command }) => command === "get_or_analyze_song_rhythm",
+	assert.equal(
+		getPlayMessages(calls).length,
+		0,
+		"阻塞响度分析完成前不应按原始音量起播",
 	);
-	assert.equal(analysisCall?.payload.nonBlocking, true);
+	assert.deepEqual(
+		calls
+			.filter(({ command }) => command === "get_or_analyze_song_rhythm")
+			.map(({ payload }) => payload.nonBlocking),
+		[true, false],
+	);
+
+	analysis.resolve(makeAnalysis(makeLoudness(-12.4, 0.72)));
+	await waitFor(
+		() => getPlayMessages(calls).length === 1,
+		"阻塞响度分析完成后未启动播放",
+	);
+
 	assert.deepEqual(getPlayMessages(calls)[0]?.loudnessNormalization, {
 		enabled: true,
-		integratedLoudnessLufs: null,
-		samplePeak: null,
+		integratedLoudnessLufs: -12.4,
+		samplePeak: 0.72,
 	});
 	assert.equal(
 		store.get(queueLoudnessUpdatePolicyAtom),
 		null,
-		"临时忙态不应永久禁止播放后的平滑响度更新",
+		"起播已携带响度时不应留下后台更新抑制策略",
+	);
+});
+
+test("解码器忙后的阻塞分析返回时不会播放已快速切走的歌曲", {
+	concurrency: false,
+}, async (context) => {
+	const firstBlockingAnalysis = deferred();
+	const calls = [];
+	mockIPC((command, payload) => {
+		calls.push({ command, payload });
+		switch (command) {
+			case "get_cached_song_loudness":
+				if (payload.songId === "first") return null;
+				return makeLoudness(-10.2, 0.74);
+			case "get_or_analyze_song_rhythm":
+				if (payload.songId !== "first") {
+					throw new Error(`Unexpected analysis song: ${payload.songId}`);
+				}
+				if (payload.nonBlocking) throw new Error("DECODER_BUSY");
+				return firstBlockingAnalysis.promise;
+			case "local_player_send_msg":
+				return undefined;
+			default:
+				throw new Error(`Unexpected IPC command: ${command}`);
+		}
+	});
+
+	const manager = new PlayQueueManager(createStore());
+	context.after(() => {
+		manager.dispose();
+		clearMocks();
+	});
+
+	manager.setQueue([makeSong("first"), makeSong("second")]);
+	await waitFor(
+		() =>
+			calls.some(
+				({ command, payload }) =>
+					command === "get_or_analyze_song_rhythm" &&
+					payload.songId === "first" &&
+					payload.nonBlocking === false,
+			),
+		"第一首歌曲未进入阻塞响度分析",
+	);
+
+	manager.playAt(1);
+	await waitFor(
+		() => getPlayMessages(calls).some(({ song }) => song.songId === "second"),
+		"快速切换后的第二首歌曲未启动播放",
+	);
+	firstBlockingAnalysis.resolve(makeAnalysis(makeLoudness(-13.2, 0.66)));
+	await drainAsyncWork();
+
+	assert.deepEqual(
+		getPlayMessages(calls).map(({ song }) => song.songId),
+		["second"],
+		"过期的阻塞分析结果不能启动已被切走的歌曲",
 	);
 });
 

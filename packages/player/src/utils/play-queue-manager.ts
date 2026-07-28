@@ -243,26 +243,51 @@ export class PlayQueueManager {
 			};
 		} catch (error) {
 			const decoderBusy = String(error).includes("DECODER_BUSY");
-			if (this.isCurrentPlayRequest(requestGeneration)) {
-				if (decoderBusy) {
-					console.log(
-						"[VolumeBalance] Decoder busy, deferring loudness update for",
-						songId,
-					);
-				} else {
-					console.warn(
-						"[VolumeBalance] Failed to analyze track loudness before playback",
-						songId,
-						error,
-					);
-				}
+			if (!this.isCurrentPlayRequest(requestGeneration)) {
+				return { loudness: null, suppressAutomaticUpdate: false };
 			}
-			return {
-				loudness: null,
-				// 临时忙态会由播放后的节奏请求补齐，并通过音频线程平滑更新；
-				// 真正的分析失败仍禁止本曲中途改变增益。
-				suppressAutomaticUpdate: !decoderBusy,
-			};
+			if (!decoderBusy) {
+				console.warn(
+					"[VolumeBalance] Failed to analyze track loudness before playback",
+					songId,
+					error,
+				);
+				return { loudness: null, suppressAutomaticUpdate: true };
+			}
+
+			console.log(
+				"[VolumeBalance] Decoder busy, waiting for pre-play loudness analysis",
+				songId,
+			);
+			try {
+				const analysis = await db.songs.getOrAnalyzeRhythm(
+					songId,
+					false,
+					true,
+					false,
+				);
+				if (!this.isCurrentPlayRequest(requestGeneration)) {
+					return { loudness: null, suppressAutomaticUpdate: false };
+				}
+				return {
+					loudness: getCurrentTrackLoudness(analysis),
+					suppressAutomaticUpdate: false,
+				};
+			} catch (blockingError) {
+				if (!this.isCurrentPlayRequest(requestGeneration)) {
+					return { loudness: null, suppressAutomaticUpdate: false };
+				}
+				console.warn(
+					"[VolumeBalance] Failed to analyze track loudness after waiting for the decoder",
+					songId,
+					blockingError,
+				);
+				return {
+					loudness: null,
+					// 真正的分析失败仍禁止本曲中途改变增益。
+					suppressAutomaticUpdate: true,
+				};
+			}
 		}
 	}
 
