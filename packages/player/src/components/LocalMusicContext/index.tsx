@@ -77,6 +77,10 @@ import {
 	listenAudioThreadEvent,
 } from "../../utils/player.ts";
 import { useDbQuery } from "../../utils/use-db-query.ts";
+import {
+	type RhythmAnalysisRequestIdentity,
+	RhythmAnalysisRetryController,
+} from "./rhythm-analysis-retry.ts";
 import { LocalRhythmVisualContext } from "./rhythm-visual.tsx";
 
 export const FFTToLowPassContext: FC = () => {
@@ -395,14 +399,19 @@ export const LocalMusicContext: FC = () => {
 		timestamp: performance.now(),
 	});
 	const rhythmGenerationRef = useRef(0);
-	const failedRhythmAnalysisRef = useRef<{
-		musicId: string;
-		generation: number;
-	} | null>(null);
+	const rhythmAnalysisRetryRef = useRef<RhythmAnalysisRetryController | null>(
+		null,
+	);
+	if (!rhythmAnalysisRetryRef.current) {
+		rhythmAnalysisRetryRef.current = new RhythmAnalysisRetryController();
+	}
 
 	const beginRhythmGeneration = useCallback(
 		(musicId: string | null): number => {
 			const generation = ++rhythmGenerationRef.current;
+			rhythmAnalysisRetryRef.current?.begin(
+				musicId ? { musicId, generation } : null,
+			);
 			store.set(
 				currentRhythmAnalysisAtom,
 				musicId ? { musicId, generation, analysis: null } : null,
@@ -413,11 +422,12 @@ export const LocalMusicContext: FC = () => {
 	);
 
 	const requestRhythmAnalysis = useCallback(
-		async (
+		async function requestCurrentRhythmAnalysis(
 			musicId: string,
 			generation: number,
 			requireLoudness = store.get(enableLoudnessNormalizationAtom),
-		) => {
+		) {
+			const identity: RhythmAnalysisRequestIdentity = { musicId, generation };
 			try {
 				const analysis = await db.songs.getOrAnalyzeRhythm(
 					musicId,
@@ -433,24 +443,61 @@ export const LocalMusicContext: FC = () => {
 				) {
 					return;
 				}
-				failedRhythmAnalysisRef.current = null;
+				rhythmAnalysisRetryRef.current?.succeed(identity);
 				store.set(currentRhythmAnalysisAtom, {
 					musicId,
 					generation,
 					analysis,
 				});
 			} catch (error) {
-				if (generation === rhythmGenerationRef.current) {
-					failedRhythmAnalysisRef.current = { musicId, generation };
-					console.warn(
-						"[RhythmAnalysis] Failed to analyze song",
-						musicId,
-						error,
-					);
+				const current = store.get(currentRhythmAnalysisAtom);
+				if (
+					generation !== rhythmGenerationRef.current ||
+					current?.generation !== generation ||
+					current.musicId !== musicId ||
+					store.get(musicIdAtom) !== musicId
+				) {
+					return;
 				}
+
+				const schedule = rhythmAnalysisRetryRef.current?.scheduleFailure(
+					identity,
+					error,
+					(retryIdentity) => {
+						const retryState = store.get(currentRhythmAnalysisAtom);
+						if (
+							retryIdentity.generation !== rhythmGenerationRef.current ||
+							retryState?.generation !== retryIdentity.generation ||
+							retryState.musicId !== retryIdentity.musicId ||
+							store.get(musicIdAtom) !== retryIdentity.musicId
+						) {
+							return;
+						}
+						void requestCurrentRhythmAnalysis(
+							retryIdentity.musicId,
+							retryIdentity.generation,
+							requireLoudness || store.get(enableLoudnessNormalizationAtom),
+						);
+					},
+				);
+				console.warn(
+					"[RhythmAnalysis] Failed to analyze song",
+					musicId,
+					error,
+					schedule
+						? `Retry ${schedule.retryNumber} in ${schedule.delayMs} ms`
+						: "Retry limit reached",
+				);
 			}
 		},
 		[store],
+	);
+
+	useEffect(
+		() => () => {
+			rhythmAnalysisRetryRef.current?.cancel();
+		},
+		[],
 	);
 
 	useEffect(() => {
@@ -480,19 +527,6 @@ export const LocalMusicContext: FC = () => {
 						error,
 					);
 				});
-			} else if (!suppressAutomaticUpdate) {
-				const failed = failedRhythmAnalysisRef.current;
-				if (
-					failed?.musicId === currentRhythmAnalysis.musicId &&
-					failed.generation === currentRhythmAnalysis.generation
-				) {
-					failedRhythmAnalysisRef.current = null;
-					void requestRhythmAnalysis(
-						currentRhythmAnalysis.musicId,
-						currentRhythmAnalysis.generation,
-						true,
-					);
-				}
 			}
 			return;
 		}
