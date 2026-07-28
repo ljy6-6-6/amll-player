@@ -95,11 +95,17 @@
 }
 
 .queueViewport {
+	position: relative;
 	flex: 1;
 	min-height: 0;
 	overflow-y: auto;
 	overscroll-behavior: contain;
 	scrollbar-gutter: stable;
+}
+
+.queueViewport.dragging {
+	cursor: grabbing;
+	user-select: none;
 }
 
 .virtualCanvas {
@@ -115,6 +121,27 @@
 	width: 100%;
 }
 
+.rowMotion {
+	width: 100%;
+	height: 100%;
+	will-change: transform;
+}
+
+.dragSource {
+	opacity: 0;
+}
+
+.dragOverlay {
+	position: absolute;
+	z-index: 3;
+	top: 0;
+	left: 0;
+	width: 100%;
+	height: 72px;
+	pointer-events: none;
+	will-change: transform;
+}
+
 .playlistSongItem {
 	display: flex;
 	align-items: center;
@@ -123,9 +150,27 @@
 	height: 100%;
 	padding: 4px var(--space-2);
 	border-left: 3px solid transparent;
+	cursor: grab;
+	touch-action: pan-y;
 	transition:
 		background-color 120ms ease,
 		border-color 120ms ease;
+}
+
+.dragOverlayItem {
+	border-left-color: var(--accent-9);
+	background-color: var(--gray-a5);
+	box-shadow: 0 10px 28px #0008;
+}
+
+.dragging .playlistSongItem {
+	cursor: grabbing;
+}
+
+.playlistSongItem img {
+	pointer-events: none;
+	user-select: none;
+	-webkit-user-drag: none;
 }
 
 .playlistSongItem:hover,
@@ -153,21 +198,7 @@
 	color: inherit;
 	font: inherit;
 	text-align: left;
-	cursor: pointer;
-}
-
-.currentIndicator {
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
-	flex: none;
-	width: 16px;
-	color: var(--accent-11);
-	opacity: 0;
-}
-
-.currentIndicatorVisible {
-	opacity: 1;
+	cursor: inherit;
 }
 
 .musicInfo {
@@ -269,7 +300,8 @@
 
 @media (prefers-reduced-motion: reduce) {
 	.playlistSongItem,
-	.itemActions {
+	.itemActions,
+	.rowMotion {
 		transition: none;
 	}
 }

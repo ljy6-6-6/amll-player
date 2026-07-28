@@ -2,6 +2,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import {
+	getQueueAutoScrollSpeed,
+	getQueueDragShift,
+	getQueueDropIndex,
+	QUEUE_DRAG_THRESHOLD_PX,
+} from "../src/components/NowPlaylistCard/queue-drag.ts";
 
 const readProjectFile = (path) =>
 	readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf8");
@@ -17,10 +23,8 @@ const nowPlayingBar = readProjectFile(
 );
 
 test("队列行单击即可播放且当前歌曲有明确状态", () => {
-	assert.match(
-		queueCard,
-		/onClick=\{\(\) => queueManager\?\.playAt\(index\)\}/,
-	);
+	assert.match(queueCard, /onClick=\{onPlay\}/);
+	assert.match(queueCard, /queueManager\?\.playAt\(virtualItem\.index\)/);
 	assert.doesNotMatch(queueCard, /onDoubleClick/);
 	assert.match(queueCard, /aria-current=\{isCurrent \? "true" : undefined\}/);
 	assert.match(queueCard, /data-current=\{isCurrent \? "true" : "false"\}/);
@@ -33,20 +37,82 @@ test("队列行单击即可播放且当前歌曲有明确状态", () => {
 	assert.match(queueCardStyle, /border-left-color:\s*var\(--accent-9\)/);
 });
 
-test("队列弹层提供逐项移除、上下移动和清空待播操作", () => {
+test("队列弹层只保留逐项移除并通过整行拖动调整顺序", () => {
 	assert.match(queueCard, /queueManager\?\.removeSong\(song\.id\)/);
-	assert.match(queueCard, /queueManager\?\.moveSong\(index, index - 1\)/);
-	assert.match(queueCard, /queueManager\?\.moveSong\(index, index \+ 1\)/);
-	assert.match(queueCard, /queueManager\?\.clearUpcoming\(\)/);
-	assert.match(queueCard, /disabled=\{index === 0\}/);
-	assert.match(queueCard, /disabled=\{index === queueLength - 1\}/);
-	assert.match(queueCard, /playbar\.playlist\.moveUp/);
-	assert.match(queueCard, /playbar\.playlist\.moveDown/);
-	assert.match(queueCard, /playbar\.playlist\.removeSong/);
-	assert.ok(
-		(queueCard.match(/event\.stopPropagation\(\)/g) ?? []).length >= 5,
-		"队列操作按钮应拦截点击，避免误触歌曲播放",
+	assert.match(
+		queueCard,
+		/beginQueueDrag\(event, song\.id, virtualItem\.index\)/,
 	);
+	assert.match(
+		queueCard,
+		/captureTarget\.setPointerCapture\(event\.pointerId\)/,
+	);
+	assert.match(queueCard, /viewport\.setPointerCapture\(event\.pointerId\)/);
+	assert.match(queueCard, /QUEUE_DRAG_THRESHOLD_PX/);
+	assert.match(queueCard, /getQueueDropIndex/);
+	assert.match(queueCard, /getQueueDragShift/);
+	assert.match(queueCard, /getQueueAutoScrollSpeed/);
+	assert.match(queueCard, /queueManager\.moveSong\(fromIndex, toIndex\)/);
+	assert.match(queueCard, /queueManager\?\.clearUpcoming\(\)/);
+	assert.match(queueCard, /playbar\.playlist\.removeSong/);
+	assert.match(queueCard, /data-queue-action/);
+	assert.match(
+		queueCard,
+		/onPointerDown=\{\(event\) => event\.stopPropagation\(\)\}/,
+	);
+	assert.doesNotMatch(queueCard, /SpeakerLoudIcon/);
+	assert.doesNotMatch(queueCard, /ChevronUpIcon/);
+	assert.doesNotMatch(queueCard, /ChevronDownIcon/);
+	assert.doesNotMatch(queueCard, /disabled=\{index === 0\}/);
+});
+
+test("拖动排序保留稳定身份、平滑反馈和安全取消", () => {
+	assert.match(queueCard, /itemIds: playlistRef\.current\.map/);
+	assert.match(queueCard, /playlist\[index\]\?\.id !== songId/);
+	assert.match(queueCard, /suppressedClickSongIdRef/);
+	assert.match(queueCard, /activeDragRef\.current/);
+	assert.match(queueCard, /!activeDragRef\.current/);
+	assert.match(queueCard, /className=\{styles\.dragOverlay\}/);
+	assert.match(queueCard, /className=\{classNames\([\s\S]*styles\.rowMotion/);
+	assert.match(queueCard, /style=\{\{ y: overlayY \}\}/);
+	assert.match(queueCard, /requestAnimationFrame\(scrollAtEdge\)/);
+	assert.match(queueCard, /event\.key !== "Escape"/);
+	assert.match(queueCard, /cancelQueueDrag/);
+	assert.match(queueCard, /event\.altKey/);
+	assert.match(queueCard, /"Alt\+ArrowUp Alt\+ArrowDown"/);
+	assert.match(queueCard, /event\.target === event\.currentTarget/);
+	assert.match(queueCard, /flushSync/);
+	assert.match(queueCard, /rowMotionGeneration/);
+	assert.match(queueCardStyle, /\.dragOverlay[\s\S]*pointer-events:\s*none/);
+	assert.match(queueCardStyle, /\.dragSource\s*\{[\s\S]*opacity:\s*0/);
+	assert.match(queueCardStyle, /@media \(prefers-reduced-motion: reduce\)/);
+});
+
+test("拖动目标按固定行高计算并限制在队列范围内", () => {
+	assert.equal(QUEUE_DRAG_THRESHOLD_PX, 6);
+	assert.equal(getQueueDropIndex(0, -100, 0, 36, 72, 5), 0);
+	assert.equal(getQueueDropIndex(0, 100, 0, 36, 72, 5), 1);
+	assert.equal(getQueueDropIndex(144, 36, 0, 36, 72, 5), 2);
+	assert.equal(getQueueDropIndex(0, 1_000, 0, 36, 72, 5), 4);
+	assert.equal(getQueueDropIndex(0, 100, 0, 36, 72, 0), -1);
+});
+
+test("拖动跨行时只让被跨过的相邻歌曲让位", () => {
+	assert.equal(getQueueDragShift(1, 1, 3, 72), 0);
+	assert.equal(getQueueDragShift(2, 1, 3, 72), -72);
+	assert.equal(getQueueDragShift(3, 1, 3, 72), -72);
+	assert.equal(getQueueDragShift(4, 1, 3, 72), 0);
+	assert.equal(getQueueDragShift(1, 3, 1, 72), 72);
+	assert.equal(getQueueDragShift(2, 3, 1, 72), 72);
+	assert.equal(getQueueDragShift(3, 3, 1, 72), 0);
+});
+
+test("拖到可视区边缘时按距离连续调节自动滚动速度", () => {
+	assert.equal(getQueueAutoScrollSpeed(100, 100, 400), -16);
+	assert.equal(getQueueAutoScrollSpeed(124, 100, 400), -8);
+	assert.equal(getQueueAutoScrollSpeed(250, 100, 400), 0);
+	assert.equal(getQueueAutoScrollSpeed(376, 100, 400), 8);
+	assert.equal(getQueueAutoScrollSpeed(400, 100, 400), 16);
 });
 
 test("虚拟列表估算行高与实际行盒保持一致", () => {
