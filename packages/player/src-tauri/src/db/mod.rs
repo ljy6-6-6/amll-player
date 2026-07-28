@@ -1,6 +1,7 @@
 pub mod cleanup;
 pub mod commands;
 pub mod entity;
+pub mod import;
 pub mod migrate;
 pub mod migration;
 pub mod refresh;

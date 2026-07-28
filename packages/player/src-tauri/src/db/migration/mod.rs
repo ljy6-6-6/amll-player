@@ -1,9 +1,10 @@
 pub mod m20260614_000001_init;
 pub mod m20260614_000002_add_modified_at_and_playlist_song_sources;
 pub mod m20260721_000003_add_song_rhythm_analyses;
+pub mod m20260728_000004_add_playlist_import_constraints;
 
-use sea_orm_migration::prelude::*;
 use sea_orm::{ConnectionTrait, DatabaseConnection, TransactionTrait};
+use sea_orm_migration::prelude::*;
 
 const RHYTHM_MIGRATION_NAME: &str = "m20260721_000003_add_song_rhythm_analyses";
 
@@ -41,6 +42,12 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), DbErr> {
         // version in the legacy migration ledger.
         let manager = SchemaManager::new(&transaction);
         m20260721_000003_add_song_rhythm_analyses::Migration
+            .up(&manager)
+            .await?;
+
+        // These indexes are compatible with the legacy schema, but keeping
+        // them out of seaql_migrations lets older player builds reopen the DB.
+        m20260728_000004_add_playlist_import_constraints::Migration
             .up(&manager)
             .await?;
 
@@ -321,5 +328,105 @@ mod tests {
                 .await
                 .contains(&RHYTHM_MIGRATION_NAME.to_owned())
         );
+    }
+
+    #[tokio::test]
+    async fn import_constraints_deduplicate_legacy_rows_and_remain_downgrade_safe() {
+        let db = Database::connect("sqlite::memory:")
+            .await
+            .expect("in-memory SQLite should open");
+        LegacyMigrator::up(&db, None)
+            .await
+            .expect("legacy migrations should initialize the database");
+
+        db.execute_unprepared(
+            "INSERT INTO playlists
+             (id, name, create_time, update_time, play_time)
+             VALUES (1, 'Playlist', 0, 0, 0);
+             INSERT INTO songs
+             (id, file_path, song_name, song_artists, song_album, duration, lyric_format, lyric)
+             VALUES ('song-1', 'song.flac', 'Song', '', '', 1.0, '', '');
+             INSERT INTO playlist_songs (id, playlist_id, song_id, added_at)
+             VALUES (2, 1, 'song-1', 100), (9, 1, 'song-1', 50);
+             INSERT INTO playlist_song_sources
+             (id, playlist_id, song_id, source_type, source_id)
+             VALUES
+                 (2, 1, 'song-1', 'manual', NULL),
+                 (9, 1, 'song-1', 'manual', NULL);",
+        )
+        .await
+        .expect("duplicate legacy fixtures should insert");
+
+        run_migrations(&db)
+            .await
+            .expect("new migrations should add import constraints");
+        run_migrations(&db)
+            .await
+            .expect("import constraints should remain idempotent");
+
+        assert_eq!(
+            scalar_i64(
+                &db,
+                "SELECT COUNT(*) AS value FROM playlist_songs
+                 WHERE playlist_id = 1 AND song_id = 'song-1'",
+            )
+            .await,
+            1,
+        );
+        assert_eq!(
+            scalar_i64(
+                &db,
+                "SELECT added_at AS value FROM playlist_songs
+                 WHERE playlist_id = 1 AND song_id = 'song-1'",
+            )
+            .await,
+            50,
+        );
+        assert_eq!(
+            scalar_i64(
+                &db,
+                "SELECT COUNT(*) AS value FROM playlist_song_sources
+                 WHERE playlist_id = 1 AND song_id = 'song-1'
+                   AND source_type = 'manual' AND source_id IS NULL",
+            )
+            .await,
+            1,
+        );
+        assert_eq!(
+            scalar_i64(
+                &db,
+                "SELECT COUNT(*) AS value FROM sqlite_master
+                 WHERE type = 'index'
+                   AND name IN (
+                       'uq_playlist_songs_playlist_song',
+                       'uq_playlist_song_sources_manual'
+                   )",
+            )
+            .await,
+            2,
+        );
+
+        assert!(
+            db.execute_unprepared(
+                "INSERT INTO playlist_songs (playlist_id, song_id, added_at)
+                 VALUES (1, 'song-1', 200)",
+            )
+            .await
+            .is_err(),
+        );
+        assert!(
+            db.execute_unprepared(
+                "INSERT INTO playlist_song_sources
+                 (playlist_id, song_id, source_type, source_id)
+                 VALUES (1, 'song-1', 'manual', NULL)",
+            )
+            .await
+            .is_err(),
+        );
+
+        assert_legacy_ledger(&db).await;
+        LegacyMigrator::up(&db, None)
+            .await
+            .expect("legacy migrator should accept the constraint-only upgrade");
     }
 }

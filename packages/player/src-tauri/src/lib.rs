@@ -289,6 +289,8 @@ pub fn run() {
             db::commands::save_playlist_cover,
             db::commands::clear_playlist_cover,
             db::commands::scan_and_create_playlist,
+            db::import::import_music_paths_to_playlist,
+            db::import::create_playlist_from_music_folder,
             db::commands::get_playlist_folders,
             db::commands::link_playlist_folder,
             db::commands::unlink_playlist_folder,
