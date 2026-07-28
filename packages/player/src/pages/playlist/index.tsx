@@ -484,7 +484,7 @@ export const Component: FC = () => {
 	}, [playlist, param.id, t, queueManager]);
 
 	const onPlayList = useCallback(
-		async (songIndex = 0, shuffle = false) => {
+		async (songIndex: number | undefined = 0, shuffle = false) => {
 			if (playlist === undefined || !queueManager) return;
 			const collected = await db.playlists.getSongs(Number(param.id));
 			if (shuffle) {
@@ -492,11 +492,7 @@ export const Component: FC = () => {
 			} else {
 				queueManager.toggleShuffleOff();
 			}
-			queueManager.setQueue(collected, Number(param.id));
-
-			if (songIndex > 0 && songIndex < collected.length) {
-				queueManager.playAt(songIndex);
-			}
+			queueManager.setQueue(collected, Number(param.id), songIndex);
 		},
 		[playlist, param.id, queueManager],
 	);
@@ -515,7 +511,7 @@ export const Component: FC = () => {
 
 	const onPlaylistDefault = useCallback(onPlayList.bind(null, 0), [onPlayList]);
 	const onPlaylistShuffle = useMemo(
-		() => onPlayList.bind(null, 0, true),
+		() => onPlayList.bind(null, undefined, true),
 		[onPlayList],
 	);
 
