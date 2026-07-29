@@ -56,6 +56,7 @@ import { LyricScroll } from "./LyricScroll.tsx";
 import {
 	findCurrentLyricIndex,
 	findMetadataLyricIndex,
+	metadataJumpState,
 } from "./lyric-timeline.ts";
 
 const LYRIC_OFFSET = 300;
@@ -159,6 +160,7 @@ type Action =
 			type: "SYNC_METADATA";
 			payload: TaskbarLyricMetadataPayload;
 			currentLyricIndex: number;
+			trackChanged: boolean;
 	  }
 	| { type: "UPDATE_INDEX"; payload: number }
 	| { type: "UPDATE_PLAY_STATUS"; payload: boolean }
@@ -181,7 +183,11 @@ function reducer(state: AppState, action: Action): AppState {
 				musicCoverIsVideo: data.musicCoverIsVideo,
 				lyricLines: data.lyricLines,
 				currentLyricIndex: action.currentLyricIndex,
-				jumpState: { lastIndex: action.currentLyricIndex, jumpId: 0 },
+				jumpState: metadataJumpState(
+					state.jumpState,
+					action.currentLyricIndex,
+					action.trackChanged,
+				),
 			};
 		}
 
@@ -356,6 +362,8 @@ export const TaskbarLyricApp = () => {
 			METADATA_EVENT,
 			(evt) => {
 				const previousMusicId = musicIdRef.current;
+				const trackChanged =
+					previousMusicId !== null && previousMusicId !== evt.payload.musicId;
 				musicIdRef.current = evt.payload.musicId;
 				lyricLinesRef.current = evt.payload.lyricLines;
 				dispatch({
@@ -367,6 +375,7 @@ export const TaskbarLyricApp = () => {
 						evt.payload.lyricLines,
 						positionRef.current + LYRIC_OFFSET,
 					),
+					trackChanged,
 				});
 			},
 		);

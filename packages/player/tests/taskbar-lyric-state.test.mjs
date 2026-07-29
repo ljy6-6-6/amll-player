@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import {
 	findCurrentLyricIndex,
 	findMetadataLyricIndex,
+	metadataJumpState,
 } from "../src/pages/taskbar-lyric/lyric-timeline.ts";
 
 const taskbarSource = readFileSync(
@@ -33,6 +34,19 @@ test("暂停时再次同步元数据仍按缓存进度恢复当前歌词", () =>
 test("新歌元数据不会复用上一首的播放位置", () => {
 	assert.equal(findMetadataLyricIndex("song-a", "song-b", lines, 3_000), -1);
 	assert.equal(findMetadataLyricIndex(null, "song-b", lines, 3_000), 1);
+});
+
+test("同曲封面等元数据更新不会重置歌词动画代次", () => {
+	const previous = { lastIndex: 8, jumpId: 3 };
+
+	assert.deepEqual(metadataJumpState(previous, 8, false), {
+		lastIndex: 8,
+		jumpId: 3,
+	});
+	assert.deepEqual(metadataJumpState(previous, -1, true), {
+		lastIndex: -1,
+		jumpId: 0,
+	});
 });
 
 test("进度事件即使被节流也会先更新请求快照并在暂停时立即发送", () => {

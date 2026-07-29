@@ -1,5 +1,10 @@
 import type { LyricLine } from "@applemusic-like-lyrics/core";
 
+export type LyricJumpState = {
+	lastIndex: number;
+	jumpId: number;
+};
+
 export function findCurrentLyricIndex(
 	lines: LyricLine[],
 	position: number,
@@ -30,4 +35,15 @@ export function findMetadataLyricIndex(
 		return -1;
 	}
 	return findCurrentLyricIndex(lines, position);
+}
+
+export function metadataJumpState(
+	previous: LyricJumpState,
+	currentLyricIndex: number,
+	trackChanged: boolean,
+): LyricJumpState {
+	return {
+		lastIndex: currentLyricIndex,
+		jumpId: trackChanged ? 0 : previous.jumpId,
+	};
 }
