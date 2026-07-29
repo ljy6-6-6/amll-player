@@ -98,6 +98,8 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
     #[cfg(not(mobile))]
     {
+        #[cfg(target_os = "windows")]
+        app.manage(window::MainWindowPresentationState::default());
         tauri::async_runtime::block_on(window::recreate_window(app.handle(), "main", None));
     }
 
@@ -174,6 +176,9 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn handle_window_event(_window: &tauri::Window, _event: &tauri::WindowEvent) {
+    #[cfg(target_os = "windows")]
+    window::track_main_window_restore_bounds(_window, _event);
+
     #[cfg(desktop)]
     if let tauri::WindowEvent::Destroyed = _event {
         extension_window::cleanup_destroyed_window(_window.app_handle(), _window.label());
@@ -250,14 +255,15 @@ pub fn run() {
         .plugin(tauri_plugin_http::init());
 
     #[cfg(desktop)]
-    let builder = builder.plugin(
-        tauri_plugin_window_state::Builder::new()
-            .with_state_flags(persisted_window_state_flags())
-            .with_filter(should_persist_window_state)
-            .build(),
-    );
+    let window_state_builder = tauri_plugin_window_state::Builder::new()
+        .with_state_flags(persisted_window_state_flags())
+        .with_filter(should_persist_window_state);
+    #[cfg(target_os = "windows")]
+    let window_state_builder = window_state_builder.skip_initial_state("main");
+    #[cfg(desktop)]
+    let builder = builder.plugin(window_state_builder.build());
 
-    builder
+    let app = builder
         .invoke_handler(tauri::generate_handler![
             server::ws_reopen_connection,
             server::ws_get_connections,
@@ -335,6 +341,8 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             window::set_window_always_on_top,
             #[cfg(target_os = "windows")]
+            window::present_main_window,
+            #[cfg(target_os = "windows")]
             taskbar_lyric::mouse_forward::set_click_interception,
             #[cfg(target_os = "windows")]
             taskbar_lyric::mouse_forward::set_forwarding_enabled,
@@ -355,8 +363,16 @@ pub fn run() {
         ])
         .setup(setup_app)
         .on_window_event(handle_window_event)
-        .run(context)
+        .build(context)
         .expect("error while running tauri application");
+    app.run(|app_handle, event| {
+        #[cfg(target_os = "windows")]
+        if matches!(event, tauri::RunEvent::Exit) {
+            // window-state's plugin callback runs first and writes its cache.
+            // Repair the main restore rectangle after that final save.
+            window::sanitize_persisted_main_window_state(app_handle);
+        }
+    });
 }
 
 #[cfg(all(test, desktop))]
