@@ -53,7 +53,10 @@ import {
 	shouldReactivateHover,
 } from "./hover-state.ts";
 import { LyricScroll } from "./LyricScroll.tsx";
-import { findCurrentLyricIndex } from "./lyric-timeline.ts";
+import {
+	findCurrentLyricIndex,
+	findMetadataLyricIndex,
+} from "./lyric-timeline.ts";
 
 const LYRIC_OFFSET = 300;
 const HOVER_LAYOUT_TRANSITION = {
@@ -283,6 +286,7 @@ export const TaskbarLyricApp = () => {
 	}, []);
 
 	const lyricLinesRef = useRef<LyricLine[]>([]);
+	const musicIdRef = useRef<string | null>(null);
 	useEffect(() => {
 		lyricLinesRef.current = state.lyricLines;
 	}, [state.lyricLines]);
@@ -351,11 +355,15 @@ export const TaskbarLyricApp = () => {
 		const unlistenMetadata = listen<TaskbarLyricMetadataPayload>(
 			METADATA_EVENT,
 			(evt) => {
+				const previousMusicId = musicIdRef.current;
+				musicIdRef.current = evt.payload.musicId;
 				lyricLinesRef.current = evt.payload.lyricLines;
 				dispatch({
 					type: "SYNC_METADATA",
 					payload: evt.payload,
-					currentLyricIndex: findCurrentLyricIndex(
+					currentLyricIndex: findMetadataLyricIndex(
+						previousMusicId,
+						evt.payload.musicId,
 						evt.payload.lyricLines,
 						positionRef.current + LYRIC_OFFSET,
 					),

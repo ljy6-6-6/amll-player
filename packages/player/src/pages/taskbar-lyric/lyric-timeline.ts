@@ -19,3 +19,15 @@ export function findCurrentLyricIndex(
 	}
 	return index;
 }
+
+export function findMetadataLyricIndex(
+	previousMusicId: string | null,
+	nextMusicId: string,
+	lines: LyricLine[],
+	position: number,
+): number {
+	if (previousMusicId !== null && previousMusicId !== nextMusicId) {
+		return -1;
+	}
+	return findCurrentLyricIndex(lines, position);
+}

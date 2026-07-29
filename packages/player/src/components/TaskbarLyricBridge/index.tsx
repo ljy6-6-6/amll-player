@@ -4,6 +4,7 @@ import {
 	musicCoverAtom,
 	musicCoverIsVideoAtom,
 	musicDurationAtom,
+	musicIdAtom,
 	musicLyricLinesAtom,
 	musicNameAtom,
 	musicPlayingAtom,
@@ -41,6 +42,7 @@ import {
 } from "./types";
 
 export const TaskbarLyricBridge: FC = () => {
+	const musicId = useAtomValue(musicIdAtom);
 	const musicName = useAtomValue(musicNameAtom);
 	const musicArtists = useAtomValue(musicArtistsAtom);
 	const musicAlbumName = useAtomValue(musicAlbumNameAtom);
@@ -77,6 +79,7 @@ export const TaskbarLyricBridge: FC = () => {
 
 	useEffect(() => {
 		const payload: TaskbarLyricMetadataPayload = {
+			musicId,
 			musicName,
 			musicArtists,
 			musicAlbumName,
@@ -88,6 +91,7 @@ export const TaskbarLyricBridge: FC = () => {
 		stateCache.current.metadata = payload;
 		emit(METADATA_EVENT, payload).catch(console.error);
 	}, [
+		musicId,
 		musicName,
 		musicArtists,
 		musicAlbumName,

@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { findCurrentLyricIndex } from "../src/pages/taskbar-lyric/lyric-timeline.ts";
+import {
+	findCurrentLyricIndex,
+	findMetadataLyricIndex,
+} from "../src/pages/taskbar-lyric/lyric-timeline.ts";
 
 const taskbarSource = readFileSync(
 	fileURLToPath(
@@ -20,11 +23,16 @@ const bridgeSource = readFileSync(
 const lines = [{ startTime: 500 }, { startTime: 2_000 }, { startTime: 4_000 }];
 
 test("暂停时再次同步元数据仍按缓存进度恢复当前歌词", () => {
-	assert.equal(findCurrentLyricIndex(lines, 3_000), 1);
+	assert.equal(findMetadataLyricIndex("song-a", "song-a", lines, 3_000), 1);
 	assert.match(
 		taskbarSource,
-		/lyricLinesRef\.current = evt\.payload\.lyricLines[\s\S]*currentLyricIndex: findCurrentLyricIndex\([\s\S]*positionRef\.current \+ LYRIC_OFFSET/,
+		/const previousMusicId = musicIdRef\.current[\s\S]*musicIdRef\.current = evt\.payload\.musicId[\s\S]*currentLyricIndex: findMetadataLyricIndex\([\s\S]*positionRef\.current \+ LYRIC_OFFSET/,
 	);
+});
+
+test("新歌元数据不会复用上一首的播放位置", () => {
+	assert.equal(findMetadataLyricIndex("song-a", "song-b", lines, 3_000), -1);
+	assert.equal(findMetadataLyricIndex(null, "song-b", lines, 3_000), 1);
 });
 
 test("进度事件即使被节流也会先更新请求快照并在暂停时立即发送", () => {
