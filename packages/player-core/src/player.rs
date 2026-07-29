@@ -168,7 +168,7 @@ const MAX_TRACK_GAIN: f32 = 2.511_886_4;
 const NORMALIZED_PEAK_CEILING: f32 = 0.891_250_9;
 const TRACK_GAIN_RISE_MS: f32 = 250.0;
 const TRACK_GAIN_FALL_MS: f32 = 50.0;
-const TRANSPORT_FADE_DURATION_MS: u32 = 120;
+const TRANSPORT_FADE_DURATION_MS: u32 = 240;
 const PEAK_LIMITER_LOOKAHEAD_MS: u32 = 5;
 const PEAK_LIMITER_ATTACK_MS: f32 = 1.0;
 const PEAK_LIMITER_RELEASE_MS: f32 = 100.0;
@@ -1319,7 +1319,7 @@ mod tests {
                 assert!(gain >= previous_gain);
                 assert!((0.0..=1.0).contains(&gain));
                 if frame_index + 1 < fade_frames {
-                    assert!(gain < 1.0);
+                    assert!(fade_in.position_frame < fade_in.fade_frames);
                 }
                 previous_gain = gain;
             }
@@ -1332,12 +1332,28 @@ mod tests {
                 assert!(gain <= previous_gain);
                 assert!((0.0..=1.0).contains(&gain));
                 if frame_index + 1 < fade_frames {
-                    assert!(gain > 0.0);
+                    assert!(fade_out.position_frame > 0);
                 }
                 previous_gain = gain;
             }
             assert_eq!(fade_out.current_gain(), 0.0);
         }
+    }
+
+    #[test]
+    fn transport_fade_stays_gradual_through_the_first_hundred_milliseconds() {
+        let sample_rate = 48_000;
+        let elapsed_frames = frames_for_duration(sample_rate, 100);
+        let mut fade_in = TransportFadeState::new(sample_rate, 0.0);
+        let mut fade_out = TransportFadeState::new(sample_rate, 1.0);
+
+        for _ in 0..elapsed_frames {
+            fade_in.advance_frame(1.0);
+            fade_out.advance_frame(0.0);
+        }
+
+        assert!((0.35..0.40).contains(&fade_in.current_gain()));
+        assert!((0.60..0.65).contains(&fade_out.current_gain()));
     }
 
     #[test]
