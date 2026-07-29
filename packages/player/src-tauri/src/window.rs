@@ -7,6 +7,7 @@ use std::{
     sync::{
         Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc,
     },
     time::Duration,
 };
@@ -21,7 +22,10 @@ use tracing::*;
 #[cfg(target_os = "windows")]
 use windows::Win32::{
     Foundation::HWND,
-    Graphics::Dwm::{DWMWA_CLOAK, DwmFlush, DwmSetWindowAttribute},
+    Graphics::{
+        Dwm::{DWMWA_CLOAK, DwmFlush, DwmSetWindowAttribute},
+        Gdi::{RDW_INTERNALPAINT, RDW_UPDATENOW, RedrawWindow},
+    },
     UI::WindowsAndMessaging::{SW_SHOWMAXIMIZED, ShowWindow},
 };
 #[cfg(target_os = "windows")]
@@ -413,6 +417,30 @@ fn set_dwm_cloaked(hwnd: HWND, cloaked: bool) -> windows::core::Result<()> {
             std::mem::size_of_val(&value) as u32,
         )
     }
+}
+
+#[cfg(target_os = "windows")]
+fn redraw_main_window_surface(hwnd: HWND) {
+    let redrawn =
+        unsafe { RedrawWindow(Some(hwnd), None, None, RDW_INTERNALPAINT | RDW_UPDATENOW) };
+    if !redrawn.as_bool() {
+        warn!("Failed to synchronously redraw main window before reveal");
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn run_window_state_task_on_main_thread(
+    app: &AppHandle,
+    task: impl FnOnce() -> Result<(), String> + Send + 'static,
+) -> Result<(), String> {
+    let (result_tx, result_rx) = mpsc::sync_channel(1);
+    app.run_on_main_thread(move || {
+        if result_tx.send(task()).is_err() {
+            warn!("Main-window presentation stopped before a window-state task completed");
+        }
+    })
+    .map_err(|err| err.to_string())?;
+    result_rx.recv().map_err(|err| err.to_string())?
 }
 
 #[cfg(target_os = "windows")]
@@ -857,7 +885,7 @@ pub fn set_window_always_on_top(enabled: bool, app: AppHandle) -> Result<(), Str
 }
 
 #[cfg(target_os = "windows")]
-#[tauri::command]
+#[tauri::command(async)]
 pub fn present_main_window(app: AppHandle) -> Result<(), String> {
     let presentation = app.state::<MainWindowPresentationState>();
     if presentation.revealed.swap(true, Ordering::AcqRel) {
@@ -875,7 +903,12 @@ pub fn present_main_window(app: AppHandle) -> Result<(), String> {
         // Refresh the cached normal bounds immediately before the native
         // presentation, then normalize the disk fallback independently of
         // the plugin's maximized Moved events.
-        if let Err(err) = app.save_window_state(StateFlags::SIZE | StateFlags::POSITION) {
+        let state_app = app.clone();
+        if let Err(err) = run_window_state_task_on_main_thread(&app, move || {
+            state_app
+                .save_window_state(StateFlags::SIZE | StateFlags::POSITION)
+                .map_err(|err| err.to_string())
+        }) {
             warn!("Failed to refresh normal bounds before presenting main window: {err}");
         }
         rewrite_persisted_main_window_state(&app, Some((should_maximize, should_fullscreen)));
@@ -890,12 +923,17 @@ pub fn present_main_window(app: AppHandle) -> Result<(), String> {
             }
         };
 
-        let configure_result = (|| {
+        let configure_result: Result<(), String> = (|| {
             // Synchronize Tao's VISIBLE flag while DWM still withholds the
             // window. If cloaking was unavailable, this is the visible fallback.
             window.show().map_err(|err| err.to_string())?;
             if should_maximize {
-                if let Err(err) = window.restore_state(StateFlags::MAXIMIZED) {
+                let state_window = window.clone();
+                if let Err(err) = run_window_state_task_on_main_thread(&app, move || {
+                    state_window
+                        .restore_state(StateFlags::MAXIMIZED)
+                        .map_err(|err| err.to_string())
+                }) {
                     warn!("Failed to restore guarded maximized state: {err}");
                 }
                 if !window.is_maximized().map_err(|err| err.to_string())? {
@@ -908,9 +946,12 @@ pub fn present_main_window(app: AppHandle) -> Result<(), String> {
             if should_fullscreen {
                 // Reuse the plugin's restoring lock so its fullscreen move
                 // cannot overwrite the normal prev_x/prev_y captured above.
-                window
-                    .restore_state(StateFlags::FULLSCREEN)
-                    .map_err(|err| err.to_string())?;
+                let state_window = window.clone();
+                run_window_state_task_on_main_thread(&app, move || {
+                    state_window
+                        .restore_state(StateFlags::FULLSCREEN)
+                        .map_err(|err| err.to_string())
+                })?;
                 if !window.is_fullscreen().map_err(|err| err.to_string())? {
                     warn!(
                         "Window-state cache did not contain fullscreen state; using direct fallback"
@@ -926,9 +967,22 @@ pub fn present_main_window(app: AppHandle) -> Result<(), String> {
                     position: Position::Physical(PhysicalPosition::new(0, 0)),
                     size: Size::Physical(client_size),
                 })
-                .map_err(|err| err.to_string())
+                .map_err(|err| err.to_string())?;
+
+            // This command runs outside Tao's UI callback. Reading the bounds
+            // after setting them is a dispatcher barrier: the UI thread has
+            // applied the final WebView size before RedrawWindow asks Tao to
+            // rebuild its transparent softbuffer at that same client size.
+            window.as_ref().bounds().map_err(|err| err.to_string())?;
+            Ok(())
         })();
 
+        if configure_result.is_ok() {
+            // Force Tao's transparent host surface to resize and present while
+            // DWM still cloaks the window. INTERNALPAINT does not explicitly
+            // invalidate the frameless edge or erase the WebView children.
+            redraw_main_window_surface(hwnd);
+        }
         let uncloak_result = if let Some(guard) = cloak_guard.as_mut() {
             // Let WebView2 submit the final hidden surface before DWM exposes it.
             let _ = unsafe { DwmFlush() };

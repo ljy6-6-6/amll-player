@@ -32,6 +32,10 @@ test("隐藏阶段恢复窗口时明确排除最大化和可见状态", () => {
 });
 
 test("最终呈现按最大化意图原子显示并校准 WebView 客户区", () => {
+	assert.match(
+		nativeWindow,
+		/#\[tauri::command\(async\)\][\s\S]*present_main_window/,
+	);
 	assert.match(nativeWindow, /set_dwm_cloaked\(hwnd, true\)/);
 	assert.match(nativeWindow, /DwmCloakGuard/);
 	assert.match(nativeWindow, /uncloak_dwm_with_retry/);
@@ -46,6 +50,33 @@ test("最终呈现按最大化意图原子显示并校准 WebView 客户区", ()
 		/should_fullscreen[\s\S]*restore_state\(StateFlags::FULLSCREEN\)/,
 	);
 	assert.match(nativeWindow, /revealed\.swap\(true, Ordering::AcqRel\)/);
+});
+
+test("工作线程等待 WebView 尺寸落地后重建透明窗口表面", () => {
+	assert.match(nativeWindow, /RDW_INTERNALPAINT\s*\|\s*RDW_UPDATENOW/);
+	assert.doesNotMatch(
+		nativeWindow,
+		/RDW_(?:ERASE|FRAME|INVALIDATE|ALLCHILDREN)/,
+	);
+	assert.match(
+		nativeWindow,
+		/\.set_bounds\(Rect[\s\S]*\.bounds\(\)[\s\S]*redraw_main_window_surface\(hwnd\)[\s\S]*DwmFlush\(\)[\s\S]*guard[\s\S]*\.release\(\)/,
+	);
+});
+
+test("窗口状态插件调用回到 Tao 主线程避免缓存锁反转", () => {
+	assert.match(
+		nativeWindow,
+		/run_window_state_task_on_main_thread[\s\S]*run_on_main_thread/,
+	);
+	assert.match(
+		nativeWindow,
+		/run_window_state_task_on_main_thread\(&app,[\s\S]*save_window_state/,
+	);
+	assert.match(
+		nativeWindow,
+		/run_window_state_task_on_main_thread\(&app,[\s\S]*restore_state\(StateFlags::MAXIMIZED\)/,
+	);
 });
 
 test("退出时在窗口状态插件保存后归一化主窗口还原坐标", () => {
