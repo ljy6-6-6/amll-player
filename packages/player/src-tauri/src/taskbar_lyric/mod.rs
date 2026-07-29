@@ -12,9 +12,12 @@ use windows::Win32::{
     Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromRect},
     UI::{
         Shell::{ABM_GETSTATE, ABM_GETTASKBARPOS, ABS_AUTOHIDE, APPBARDATA, SHAppBarMessage},
-        WindowsAndMessaging::{GetParent, HWND_TOP, SWP_NOZORDER, SetWindowPos},
+        WindowsAndMessaging::{
+            FindWindowW, GA_PARENT, GetAncestor, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos,
+        },
     },
 };
+use windows::core::w;
 
 pub mod mouse_forward;
 pub mod webview_finder;
@@ -502,6 +505,12 @@ const TASKBAR_LAYOUT_RETRY_BASE_DELAY_MS: u64 = 50;
 const MAX_WEBVIEW_HWND_LOOKUP_ATTEMPTS: u8 = 7;
 const WEBVIEW_HWND_RETRY_BASE_DELAY_MS: u64 = 50;
 
+fn primary_taskbar_hwnd() -> Option<HWND> {
+    unsafe { FindWindowW(w!("Shell_TrayWnd"), None) }
+        .ok()
+        .filter(|hwnd| !hwnd.0.is_null())
+}
+
 fn webview_hwnd_retry_delay(attempt: u8) -> Option<Duration> {
     if attempt + 1 >= MAX_WEBVIEW_HWND_LOOKUP_ATTEMPTS {
         return None;
@@ -976,18 +985,19 @@ pub fn open_taskbar_lyric(app: tauri::AppHandle) {
                 if !state.visibility.window_matches(generation, hwnd.0 as usize) {
                     return;
                 }
-                let is_embedded =
-                    unsafe { GetParent(top_hwnd) }.is_ok_and(|parent| !parent.0.is_null());
+                let is_embedded = primary_taskbar_hwnd().is_some_and(|taskbar_hwnd| {
+                    unsafe { GetAncestor(top_hwnd, GA_PARENT) }.0 == taskbar_hwnd.0
+                });
                 let position_updated = is_embedded
                     && unsafe {
                         SetWindowPos(
                             top_hwnd,
-                            Some(HWND_TOP),
+                            None,
                             current_rect.x,
                             current_rect.y,
                             current_rect.width,
                             current_rect.height,
-                            SWP_NOZORDER,
+                            SWP_NOACTIVATE | SWP_NOZORDER,
                         )
                     }
                     .is_ok();
@@ -1048,11 +1058,23 @@ pub fn open_taskbar_lyric(app: tauri::AppHandle) {
         let url =
             tauri::WebviewUrl::App(format!("taskbar-lyric.html?generation={generation}").into());
 
+        let Some(taskbar_hwnd) = primary_taskbar_hwnd() else {
+            warn!("找不到主任务栏窗口，无法创建任务栏歌词");
+            invalidate_taskbar_generation(&app_clone, generation);
+            return;
+        };
+        let tauri_taskbar_hwnd = windows_061::Win32::Foundation::HWND(taskbar_hwnd.0.cast());
         let win_builder = tauri::WebviewWindowBuilder::new(&app_clone, "taskbar-lyric", url)
-            .decorations(true)
+            // Create a real child window from the outset. SetParent alone does
+            // not replace WS_POPUP with WS_CHILD, which leaves a non-client
+            // frame that can consume the lyric surface and cover the taskbar's
+            // auto-hide trigger band.
+            .parent_raw(tauri_taskbar_hwnd)
+            .decorations(false)
+            .shadow(false)
             .transparent(true)
             .always_on_top(true)
-            .skip_taskbar(false)
+            .skip_taskbar(true)
             .resizable(false)
             .maximizable(false)
             .minimizable(false)
@@ -1153,6 +1175,7 @@ pub fn open_taskbar_lyric(app: tauri::AppHandle) {
             }
         } else {
             tracing::warn!("Failed to build taskbar-lyric window");
+            invalidate_taskbar_generation(&app_clone, generation);
         }
     });
 }

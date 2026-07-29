@@ -141,6 +141,7 @@ dependencies = [
  "urlencoding",
  "webpki-roots 0.26.11",
  "webview2-com",
+ "windows 0.61.3",
  "windows 0.62.2",
  "ws-protocol",
  "zip 8.6.0",
