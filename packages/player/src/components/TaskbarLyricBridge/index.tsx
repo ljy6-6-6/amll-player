@@ -104,16 +104,17 @@ export const TaskbarLyricBridge: FC = () => {
 	}, [musicPlaying]);
 
 	useEffect(() => {
-		const now = performance.now();
-		if (now - lastEmitTime.current < 200) return;
-		lastEmitTime.current = now;
-
 		const payload: TaskbarLyricPositionPayload = {
 			position: musicPlayingPosition,
 		};
 		stateCache.current.position = payload;
+
+		const now = performance.now();
+		if (musicPlaying && now - lastEmitTime.current < 200) return;
+		lastEmitTime.current = now;
+
 		emit(POSITION_EVENT, payload).catch(console.error);
-	}, [musicPlayingPosition]);
+	}, [musicPlaying, musicPlayingPosition]);
 
 	useEffect(() => {
 		stateCache.current.theme = { theme: taskbarLyricTheme };

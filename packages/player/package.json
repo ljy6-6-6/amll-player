@@ -14,6 +14,7 @@
 		"test:play-queue": "node --test tests/play-queue-loudness.test.mjs",
 		"test:rhythm-visual": "node --test tests/rhythm-visual-signal.test.mjs",
 		"test:taskbar-hover": "node --test tests/taskbar-hover-state.test.mjs",
+		"test:taskbar-lyric-state": "node --test tests/taskbar-lyric-state.test.mjs",
 		"tauri": "tauri",
 		"locale:gen": "i18next-cli extract"
 	},

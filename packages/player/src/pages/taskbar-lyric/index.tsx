@@ -53,6 +53,7 @@ import {
 	shouldReactivateHover,
 } from "./hover-state.ts";
 import { LyricScroll } from "./LyricScroll.tsx";
+import { findCurrentLyricIndex } from "./lyric-timeline.ts";
 
 const LYRIC_OFFSET = 300;
 const HOVER_LAYOUT_TRANSITION = {
@@ -119,23 +120,6 @@ const PlaybackControls = ({
 	);
 };
 
-function findCurrentLyricIndex(lines: LyricLine[], position: number): number {
-	let low = 0;
-	let high = lines.length - 1;
-	let index = -1;
-	while (low <= high) {
-		const mid = Math.floor((low + high) / 2);
-		const lineTime = lines[mid].startTime;
-		if (lineTime <= position) {
-			index = mid;
-			low = mid + 1;
-		} else {
-			high = mid - 1;
-		}
-	}
-	return index;
-}
-
 function getLyricText(line: LyricLine): string {
 	return line.words.map((w) => w.word).join("");
 }
@@ -168,7 +152,11 @@ interface AppState {
 }
 
 type Action =
-	| { type: "SYNC_METADATA"; payload: TaskbarLyricMetadataPayload }
+	| {
+			type: "SYNC_METADATA";
+			payload: TaskbarLyricMetadataPayload;
+			currentLyricIndex: number;
+	  }
 	| { type: "UPDATE_INDEX"; payload: number }
 	| { type: "UPDATE_PLAY_STATUS"; payload: boolean }
 	| { type: "UPDATE_SYSTEM_THEME"; payload: "dark" | "light" }
@@ -189,8 +177,8 @@ function reducer(state: AppState, action: Action): AppState {
 				musicCover: data.musicCover,
 				musicCoverIsVideo: data.musicCoverIsVideo,
 				lyricLines: data.lyricLines,
-				currentLyricIndex: -1,
-				jumpState: { lastIndex: -1, jumpId: 0 },
+				currentLyricIndex: action.currentLyricIndex,
+				jumpState: { lastIndex: action.currentLyricIndex, jumpId: 0 },
 			};
 		}
 
@@ -363,7 +351,15 @@ export const TaskbarLyricApp = () => {
 		const unlistenMetadata = listen<TaskbarLyricMetadataPayload>(
 			METADATA_EVENT,
 			(evt) => {
-				dispatch({ type: "SYNC_METADATA", payload: evt.payload });
+				lyricLinesRef.current = evt.payload.lyricLines;
+				dispatch({
+					type: "SYNC_METADATA",
+					payload: evt.payload,
+					currentLyricIndex: findCurrentLyricIndex(
+						evt.payload.lyricLines,
+						positionRef.current + LYRIC_OFFSET,
+					),
+				});
 			},
 		);
 
