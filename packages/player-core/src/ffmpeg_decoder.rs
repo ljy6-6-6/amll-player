@@ -234,6 +234,60 @@ impl FFmpegDecoder {
                         }
                     }
                     Ok(None) => {
+                        let mut interrupted_for_command = false;
+                        loop {
+                            match audio_resampler.process::<f32>(None) {
+                                Ok(true) => {
+                                    let audio_data = audio_resampler.output_as::<f32>();
+                                    let mut written = 0;
+                                    while written < audio_data.len() {
+                                        if shared_state.is_shutdown.load(Ordering::Acquire) {
+                                            return;
+                                        }
+                                        if !cmd_rx.is_empty() {
+                                            interrupted_for_command = true;
+                                            break;
+                                        }
+
+                                        let pushed =
+                                            audio_producer.push_slice(&audio_data[written..]);
+                                        written += pushed;
+
+                                        if pushed == 0 {
+                                            parker.park();
+                                        }
+                                    }
+
+                                    if interrupted_for_command {
+                                        break;
+                                    }
+                                }
+                                Ok(false) => break,
+                                Err(error) => {
+                                    warn!("排空音频重采样器失败: {error:?}");
+                                    break;
+                                }
+                            }
+                        }
+
+                        if interrupted_for_command {
+                            continue;
+                        }
+
+                        loop {
+                            match fft_resampler.process::<f32>(None) {
+                                Ok(true) => {
+                                    let fft_data = fft_resampler.output_as::<f32>();
+                                    let _ = fft_producer.push_slice(fft_data);
+                                }
+                                Ok(false) => break,
+                                Err(error) => {
+                                    warn!("排空 FFT 重采样器失败: {error:?}");
+                                    break;
+                                }
+                            }
+                        }
+
                         shared_state.is_eof.store(true, Ordering::Release);
                     }
                     Err(e) => {
