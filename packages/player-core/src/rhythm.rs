@@ -8,9 +8,11 @@ use std::{
 
 use anyhow::Context;
 use bs1770::{ChannelLoudnessMeter, gated_mean, reduce_stereo};
-use ffmpeg_audio::{AudioError, AudioReader, ResampleOptions};
+use ffmpeg_audio::{AudioReader, ResampleOptions};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
+
+use crate::utils::can_skip_decode_error;
 
 pub const RHYTHM_ANALYZER_VERSION: u32 = 5;
 pub const LOUDNESS_ANALYZER_VERSION: u32 = 1;
@@ -24,7 +26,6 @@ const BAND_EDGES_HZ: [f32; BAND_COUNT + 1] = [30.0, 150.0, 400.0, 1_200.0, 3_500
 const MIN_TEMPO_BPM: f32 = 55.0;
 const MAX_TEMPO_BPM: f32 = 210.0;
 const TEMPO_SEGMENT_DOWNSAMPLE: usize = 2;
-const MAX_RECOVERABLE_DECODE_ERRORS: usize = 8;
 /// Calibrates `sqrt(sum of squared Hann-windowed bin magnitudes)` back to an
 /// approximate PCM RMS scale so `band_levels` is comparable with `energy_scale`.
 /// Spectral leakage and fixed band edges make it a visual estimate rather than
@@ -37,14 +38,6 @@ const BAND_LEVEL_SCALE: f32 = 2.828_427;
 const SEGMENT_GRID_MIN_CONFIDENCE: f32 = 0.35;
 const SEGMENT_GRID_MIN_DURATION_MS: u64 = 12_000;
 const SEGMENT_GRID_MIN_BPM_DEVIATION: f32 = 0.06;
-
-fn can_skip_decode_error(error: &AudioError, skipped_errors: usize) -> bool {
-    skipped_errors < MAX_RECOVERABLE_DECODE_ERRORS
-        && matches!(
-            error,
-            AudioError::FFmpeg(code, _) if *code == ffmpeg_audio::sys::AVERROR_INVALIDDATA
-        )
-}
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1100,6 +1093,8 @@ fn estimate_tempo_segments(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::MAX_RECOVERABLE_DECODE_ERRORS;
+    use ffmpeg_audio::AudioError;
 
     fn high_frequency_click_track(bpm: f32, seconds: f32) -> Vec<f32> {
         let mut pcm = vec![0.0_f32; (TARGET_SAMPLE_RATE as f32 * seconds) as usize];

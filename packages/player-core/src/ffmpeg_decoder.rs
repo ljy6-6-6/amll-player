@@ -19,7 +19,7 @@ use tracing::warn;
 use crate::{
     audio_quality::AudioQuality,
     player::{AudioInfo, CustomMediaSource},
-    utils::build_audio_info,
+    utils::{build_audio_info, can_skip_decode_error},
 };
 
 const GAPLESS_PREBUFFER_DURATION_MS: u32 = 1_000;
@@ -35,6 +35,7 @@ const TRAILING_RMS_POWER_THRESHOLD: f64 = 0.000_031_622_776_601_683_79; // -45 d
 const TRAILING_PEAK_THRESHOLD: f32 = 0.015_848_932; // -36 dBFS
 const TRAILING_RELATIVE_POWER_RATIO: f64 = 0.001; // -30 dB
 const TRAILING_RELATIVE_AMPLITUDE_RATIO: f32 = 0.031_622_775; // -30 dB
+const RECOVERED_DECODE_DURATION_TOLERANCE: Duration = Duration::from_millis(5);
 
 #[derive(Clone, Default)]
 pub struct DecoderSharedState {
@@ -201,6 +202,42 @@ fn tail_transition_sample(
     }
 
     Some(decoded_samples - trailing_samples + preserved_samples)
+}
+
+fn recovered_decode_covers_declared_duration(
+    first_frame_start: Option<Duration>,
+    last_frame_end: Option<Duration>,
+    decoded_source_samples: u64,
+    source_sample_rate: u32,
+    declared_duration: Option<Duration>,
+) -> bool {
+    let (Some(first_frame_start), Some(last_frame_end), Some(declared_duration)) =
+        (first_frame_start, last_frame_end, declared_duration)
+    else {
+        return false;
+    };
+    if source_sample_rate == 0 || first_frame_start > declared_duration {
+        return false;
+    }
+
+    let covered_duration = declared_duration.saturating_sub(first_frame_start);
+    let expected_samples = samples_for_timeline_duration(covered_duration, source_sample_rate);
+    let tolerance_samples =
+        samples_for_timeline_duration(RECOVERED_DECODE_DURATION_TOLERANCE, source_sample_rate);
+    let sample_coverage_is_complete =
+        decoded_source_samples.abs_diff(expected_samples) <= tolerance_samples;
+
+    last_frame_end.saturating_add(RECOVERED_DECODE_DURATION_TOLERANCE) >= declared_duration
+        && sample_coverage_is_complete
+}
+
+fn samples_for_timeline_duration(duration: Duration, sample_rate: u32) -> u64 {
+    let whole_seconds = duration.as_secs().saturating_mul(u64::from(sample_rate));
+    let fractional_samples = (u64::from(duration.subsec_nanos())
+        .saturating_mul(u64::from(sample_rate))
+        .saturating_add(500_000_000))
+        / 1_000_000_000;
+    whole_seconds.saturating_add(fractional_samples)
 }
 
 fn audio_buffer_layout(target_sample_rate: u32, target_channels: u16) -> (usize, usize, usize) {
@@ -383,6 +420,8 @@ impl FFmpegDecoder {
         let mut reader = AudioReader::new(source)?;
 
         let src_info = reader.source_info();
+        let declared_duration = reader.duration();
+        let source_sample_rate = u32::try_from(src_info.sample_rate).unwrap_or(0);
 
         let info = build_audio_info(&reader);
         let quality = AudioQuality::from_source_info(src_info);
@@ -442,6 +481,10 @@ impl FFmpegDecoder {
         let mut trailing_silence_tracker =
             TrailingSilenceTracker::new(target_channels, target_sample_rate);
         let mut tail_tracking_reliable = true;
+        let mut recoverable_decode_errors = 0;
+        let mut first_decoded_frame_start = None;
+        let mut last_decoded_frame_end = None;
+        let mut decoded_source_samples = 0_u64;
         thread::spawn(move || loop {
             if shared_state.is_shutdown.load(Ordering::Acquire) {
                 break;
@@ -479,6 +522,10 @@ impl FFmpegDecoder {
                         // 歌曲动态参考；否则直接拖到低能量结尾会把尾音误当作安静母带。
                         trailing_silence_tracker.reset_position();
                         tail_tracking_reliable = seek_succeeded && audio_flush_succeeded;
+                        recoverable_decode_errors = 0;
+                        first_decoded_frame_start = None;
+                        last_decoded_frame_end = None;
+                        decoded_source_samples = 0;
                         shared_state
                             .decoded_samples_at_eof
                             .store(0, Ordering::Relaxed);
@@ -500,6 +547,22 @@ impl FFmpegDecoder {
 
             match reader.receive_frame() {
                 Ok(Some(frame)) => {
+                    let frame_start = frame.pts();
+                    if first_decoded_frame_start.is_none() {
+                        first_decoded_frame_start = frame_start;
+                    }
+                    decoded_source_samples = decoded_source_samples
+                        .saturating_add(u64::try_from(frame.samples()).unwrap_or(u64::MAX));
+                    if let Some(frame_end) =
+                        frame_start.and_then(|start| start.checked_add(frame.duration()))
+                    {
+                        last_decoded_frame_end = Some(
+                            last_decoded_frame_end.map_or(frame_end, |previous: Duration| {
+                                previous.max(frame_end)
+                            }),
+                        );
+                    }
+
                     if let Ok(true) = fft_resampler.process::<f32>(Some(&frame)) {
                         let fft_data = fft_resampler.output_as::<f32>();
                         let _ = fft_producer.push_slice(fft_data);
@@ -608,6 +671,23 @@ impl FFmpegDecoder {
                         .store(tail_tracking_reliable, Ordering::Release);
                     shared_state.is_eof.store(true, Ordering::Release);
                 }
+                Err(error)
+                    if can_skip_decode_error(&error, recoverable_decode_errors)
+                        && recovered_decode_covers_declared_duration(
+                            first_decoded_frame_start,
+                            last_decoded_frame_end,
+                            decoded_source_samples,
+                            source_sample_rate,
+                            declared_duration,
+                        ) =>
+                {
+                    recoverable_decode_errors += 1;
+                    warn!(
+                        error = %error,
+                        skipped_errors = recoverable_decode_errors,
+                        "歌曲时间线已完整，跳过末尾可恢复的损坏音频数据并继续排空解码器"
+                    );
+                }
                 Err(e) => {
                     warn!("解码线程发生错误: {e:?}");
                     shared_state
@@ -706,6 +786,63 @@ mod tests {
             fft_buffer_capacity_for_audio(extreme_capacity, u16::MAX),
             extreme_capacity / u16::MAX as usize
         );
+    }
+
+    #[test]
+    fn damaged_tail_is_recoverable_only_after_the_declared_timeline_is_complete() {
+        let declared_duration = Duration::from_secs(222);
+        let sample_rate = 48_000;
+        let expected_samples = 222 * u64::from(sample_rate);
+
+        assert!(recovered_decode_covers_declared_duration(
+            Some(Duration::ZERO),
+            Some(declared_duration),
+            expected_samples,
+            sample_rate,
+            Some(declared_duration)
+        ));
+        assert!(recovered_decode_covers_declared_duration(
+            Some(Duration::ZERO),
+            Some(declared_duration - Duration::from_millis(4)),
+            expected_samples,
+            sample_rate,
+            Some(declared_duration)
+        ));
+        assert!(!recovered_decode_covers_declared_duration(
+            Some(Duration::ZERO),
+            Some(declared_duration - Duration::from_millis(6)),
+            expected_samples,
+            sample_rate,
+            Some(declared_duration)
+        ));
+        assert!(!recovered_decode_covers_declared_duration(
+            Some(Duration::ZERO),
+            Some(declared_duration),
+            expected_samples - 4_096,
+            sample_rate,
+            Some(declared_duration)
+        ));
+        assert!(recovered_decode_covers_declared_duration(
+            Some(Duration::from_secs(200)),
+            Some(declared_duration),
+            22 * u64::from(sample_rate),
+            sample_rate,
+            Some(declared_duration)
+        ));
+        assert!(!recovered_decode_covers_declared_duration(
+            Some(Duration::ZERO),
+            Some(declared_duration),
+            expected_samples,
+            sample_rate,
+            None
+        ));
+        assert!(!recovered_decode_covers_declared_duration(
+            None,
+            None,
+            0,
+            sample_rate,
+            Some(declared_duration)
+        ));
     }
 
     #[test]
