@@ -13,6 +13,7 @@ import { AMLLContextMenuContent } from "../AMLLContextMenu/index.tsx";
 import { AudioQualityDialog } from "../AudioQualityDialog/index.tsx";
 import { BottomLyricInfo } from "../BottomLyricInfo";
 import { RecordPanel } from "../RecordPanel/index.tsx";
+import { shouldPreservePointerFocusMode } from "./focus-modality.ts";
 import styles from "./index.module.css";
 import "@applemusic-like-lyrics/core/style.css";
 import "@applemusic-like-lyrics/react-full/style.css";
@@ -41,7 +42,7 @@ export const AMLLWrapper: FC = () => {
 		if (!isLyricPageOpened) return;
 
 		const handleKeyDown = (e: KeyboardEvent) => {
-			if (lyricPageRef.current) {
+			if (!shouldPreservePointerFocusMode(e) && lyricPageRef.current) {
 				delete lyricPageRef.current.dataset.pointerInput;
 			}
 			if (e.key === " ") {
