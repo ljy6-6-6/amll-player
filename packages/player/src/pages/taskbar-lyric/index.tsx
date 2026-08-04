@@ -56,7 +56,8 @@ import { LyricScroll } from "./LyricScroll.tsx";
 import {
 	findCurrentLyricIndex,
 	findMetadataLyricIndex,
-	metadataJumpState,
+	reconcileMetadataTimeline,
+	taskbarContentGroupKey,
 } from "./lyric-timeline.ts";
 
 const LYRIC_OFFSET = 300;
@@ -65,6 +66,7 @@ const HOVER_LAYOUT_TRANSITION = {
 	duration: 0.24,
 	ease: [0.22, 1, 0.36, 1] as [number, number, number, number],
 };
+const LYRIC_EXIT_EXTENT_HOLD_MS = 360;
 
 type LayoutExtents = {
 	orientation: "horizontal" | "vertical";
@@ -139,6 +141,7 @@ type LyricItem = {
 };
 
 interface AppState {
+	musicId: string;
 	musicName: string;
 	musicArtists: string;
 	musicCover: string;
@@ -175,19 +178,23 @@ function reducer(state: AppState, action: Action): AppState {
 	switch (action.type) {
 		case "SYNC_METADATA": {
 			const data = action.payload;
+			const timeline = reconcileMetadataTimeline(
+				state.currentLyricIndex,
+				state.jumpState,
+				action.currentLyricIndex,
+				action.trackChanged,
+				data.lyricLines.length,
+			);
 			return {
 				...state,
+				musicId: data.musicId,
 				musicName: data.musicName,
 				musicArtists: data.musicArtists.map((a) => a.name).join(" / "),
 				musicCover: data.musicCover,
 				musicCoverIsVideo: data.musicCoverIsVideo,
 				lyricLines: data.lyricLines,
-				currentLyricIndex: action.currentLyricIndex,
-				jumpState: metadataJumpState(
-					state.jumpState,
-					action.currentLyricIndex,
-					action.trackChanged,
-				),
+				currentLyricIndex: timeline.currentLyricIndex,
+				jumpState: timeline.jumpState,
 			};
 		}
 
@@ -230,6 +237,7 @@ function reducer(state: AppState, action: Action): AppState {
 }
 
 const initialState: AppState = {
+	musicId: "",
 	musicName: "未知歌曲",
 	musicArtists: "",
 	musicCover: "",
@@ -271,6 +279,11 @@ export const TaskbarLyricApp = () => {
 	const [layoutExtents, setLayoutExtents] = useState<LayoutExtents | null>(
 		null,
 	);
+	const [collapsedRenderExtent, setCollapsedRenderExtent] = useState<
+		number | null
+	>(null);
+	const collapsedRenderExtentRef = useRef<number | null>(null);
+	const collapsedShrinkTimerRef = useRef<number | null>(null);
 	const hoverTransitionRef = useRef(false);
 	const isHoverEvent = hoverTransitionRef.current;
 	const positionRef = useRef(0);
@@ -362,8 +375,7 @@ export const TaskbarLyricApp = () => {
 			METADATA_EVENT,
 			(evt) => {
 				const previousMusicId = musicIdRef.current;
-				const trackChanged =
-					previousMusicId !== null && previousMusicId !== evt.payload.musicId;
+				const trackChanged = previousMusicId !== evt.payload.musicId;
 				musicIdRef.current = evt.payload.musicId;
 				lyricLinesRef.current = evt.payload.lyricLines;
 				dispatch({
@@ -554,6 +566,7 @@ export const TaskbarLyricApp = () => {
 	}, [state.musicPlaying]);
 
 	const {
+		musicId,
 		musicName,
 		musicArtists,
 		musicCover,
@@ -573,7 +586,9 @@ export const TaskbarLyricApp = () => {
 	const align = alignSetting === "auto" ? systemAlign : alignSetting;
 
 	const hasLyrics = lyricLines.length > 0;
-	const isMetadataMode = currentLyricIndex < 0 || !hasLyrics;
+	const currentLine =
+		currentLyricIndex >= 0 ? lyricLines[currentLyricIndex] : null;
+	const isMetadataMode = currentLyricIndex < 0 || !hasLyrics || !currentLine;
 	const displayAsMetadata = isMetadataMode || isHovered;
 	const isSingleLineMode =
 		modeSetting === "auto" ? systemMode === "single" : modeSetting === "single";
@@ -592,18 +607,16 @@ export const TaskbarLyricApp = () => {
 		opacity: 0,
 		transition: HOVER_LAYOUT_TRANSITION,
 	};
-	const currentLine =
-		currentLyricIndex >= 0 ? lyricLines[currentLyricIndex] : null;
 	const subLyricText = currentLine
 		? currentLine.translatedLyric || currentLine.romanLyric || ""
 		: "";
 	const hasSubLyric = Boolean(subLyricText);
 
-	const groupKey = displayAsMetadata
-		? `meta-${musicName}-${musicArtists}`
-		: hasSubLyric
-			? `lyrics-group-${musicName}-${currentLyricIndex}`
-			: `lyrics-${musicName}-${jumpState.jumpId}`;
+	const groupKey = taskbarContentGroupKey(
+		musicId,
+		displayAsMetadata,
+		jumpState.jumpId,
+	);
 
 	const lyricItems: LyricItem[] = useMemo(() => {
 		const items: LyricItem[] = [];
@@ -736,6 +749,41 @@ export const TaskbarLyricApp = () => {
 		musicArtists,
 		lyricItems,
 	]);
+
+	useEffect(() => {
+		if (collapsedShrinkTimerRef.current !== null) {
+			window.clearTimeout(collapsedShrinkTimerRef.current);
+			collapsedShrinkTimerRef.current = null;
+		}
+
+		const measured =
+			layoutExtents?.orientation === orientation
+				? layoutExtents.collapsed
+				: null;
+		const current = collapsedRenderExtentRef.current;
+		const publish = (extent: number | null) => {
+			collapsedRenderExtentRef.current = extent;
+			setCollapsedRenderExtent(extent);
+		};
+
+		if (measured === null || current === null || measured >= current) {
+			publish(measured);
+			return;
+		}
+		if (isHovered) return;
+
+		collapsedShrinkTimerRef.current = window.setTimeout(() => {
+			collapsedShrinkTimerRef.current = null;
+			publish(measured);
+		}, LYRIC_EXIT_EXTENT_HOLD_MS);
+
+		return () => {
+			if (collapsedShrinkTimerRef.current !== null) {
+				window.clearTimeout(collapsedShrinkTimerRef.current);
+				collapsedShrinkTimerRef.current = null;
+			}
+		};
+	}, [isHovered, layoutExtents, musicId, orientation]);
 
 	const clearHoverUnlockTimer = useCallback(() => {
 		if (hoverUnlockTimerRef.current === null) return;
@@ -982,7 +1030,7 @@ export const TaskbarLyricApp = () => {
 	const targetContainerExtent = measuredLayout
 		? isHovered
 			? measuredLayout.expanded
-			: measuredLayout.collapsed
+			: (collapsedRenderExtent ?? measuredLayout.collapsed)
 		: null;
 	const containerSizeAnimation = isVert
 		? {

@@ -5,7 +5,8 @@ import { fileURLToPath } from "node:url";
 import {
 	findCurrentLyricIndex,
 	findMetadataLyricIndex,
-	metadataJumpState,
+	reconcileMetadataTimeline,
+	taskbarContentGroupKey,
 } from "../src/pages/taskbar-lyric/lyric-timeline.ts";
 
 const taskbarSource = readFileSync(
@@ -39,14 +40,54 @@ test("新歌元数据不会复用上一首的播放位置", () => {
 test("同曲封面等元数据更新不会重置歌词动画代次", () => {
 	const previous = { lastIndex: 8, jumpId: 3 };
 
-	assert.deepEqual(metadataJumpState(previous, 8, false), {
-		lastIndex: 8,
-		jumpId: 3,
+	assert.deepEqual(reconcileMetadataTimeline(8, previous, 9, false, 12), {
+		currentLyricIndex: 8,
+		jumpState: previous,
 	});
-	assert.deepEqual(metadataJumpState(previous, -1, true), {
-		lastIndex: -1,
-		jumpId: 0,
+	assert.deepEqual(reconcileMetadataTimeline(8, previous, -1, true, 12), {
+		currentLyricIndex: -1,
+		jumpState: { lastIndex: -1, jumpId: 0 },
 	});
+	assert.deepEqual(reconcileMetadataTimeline(-1, previous, 1, false, 3), {
+		currentLyricIndex: 1,
+		jumpState: { lastIndex: 1, jumpId: 3 },
+	});
+	assert.deepEqual(reconcileMetadataTimeline(8, previous, 1, false, 3), {
+		currentLyricIndex: 1,
+		jumpState: { lastIndex: 1, jumpId: 3 },
+	});
+	assert.match(
+		taskbarSource,
+		/const trackChanged = previousMusicId !== evt\.payload\.musicId/,
+	);
+});
+
+test("普通切句和副歌词有无变化不会重建外层歌词组", () => {
+	const lyricKey = taskbarContentGroupKey("song-a", false, 4);
+	assert.equal(taskbarContentGroupKey("song-a", false, 4), lyricKey);
+	assert.notEqual(taskbarContentGroupKey("song-a", false, 5), lyricKey);
+	assert.notEqual(taskbarContentGroupKey("song-b", false, 4), lyricKey);
+	assert.notEqual(taskbarContentGroupKey("song-a", true, 4), lyricKey);
+	assert.equal(
+		taskbarContentGroupKey("song-a", true, 9),
+		taskbarContentGroupKey("song-a", true, 0),
+	);
+	assert.match(
+		taskbarSource,
+		/const groupKey = taskbarContentGroupKey\(\s*musicId,\s*displayAsMetadata,\s*jumpState\.jumpId/,
+	);
+});
+
+test("长句切换短句时容器延后收窄以保留退场上滑", () => {
+	assert.match(taskbarSource, /const LYRIC_EXIT_EXTENT_HOLD_MS = 360/);
+	assert.match(
+		taskbarSource,
+		/measured >= current[\s\S]*collapsedShrinkTimerRef\.current = window\.setTimeout/,
+	);
+	assert.match(
+		taskbarSource,
+		/if \(isHovered\) return;[\s\S]*\[isHovered, layoutExtents, musicId, orientation\]/,
+	);
 });
 
 test("进度事件即使被节流也会先更新请求快照并在暂停时立即发送", () => {
@@ -71,4 +112,8 @@ test("进度事件即使被节流也会先更新请求快照并在暂停时立�
 test("歌词尚未开始或列表为空时保持曲目信息态", () => {
 	assert.equal(findCurrentLyricIndex(lines, 100), -1);
 	assert.equal(findCurrentLyricIndex([], 3_000), -1);
+	assert.match(
+		taskbarSource,
+		/const isMetadataMode =\s*currentLyricIndex < 0 \|\| !hasLyrics \|\| !currentLine/,
+	);
 });

@@ -37,13 +37,41 @@ export function findMetadataLyricIndex(
 	return findCurrentLyricIndex(lines, position);
 }
 
-export function metadataJumpState(
-	previous: LyricJumpState,
+export function reconcileMetadataTimeline(
+	previousIndex: number,
+	previousJumpState: LyricJumpState,
 	currentLyricIndex: number,
 	trackChanged: boolean,
-): LyricJumpState {
+	lyricLineCount: number,
+): { currentLyricIndex: number; jumpState: LyricJumpState } {
+	if (trackChanged) {
+		return {
+			currentLyricIndex,
+			jumpState: { lastIndex: currentLyricIndex, jumpId: 0 },
+		};
+	}
+
+	if (previousIndex >= 0 && previousIndex < lyricLineCount) {
+		return {
+			currentLyricIndex: previousIndex,
+			jumpState: previousJumpState,
+		};
+	}
+
 	return {
-		lastIndex: currentLyricIndex,
-		jumpId: trackChanged ? 0 : previous.jumpId,
+		currentLyricIndex,
+		jumpState: {
+			lastIndex: currentLyricIndex,
+			jumpId: previousJumpState.jumpId,
+		},
 	};
+}
+
+export function taskbarContentGroupKey(
+	musicId: string,
+	displayAsMetadata: boolean,
+	jumpId: number,
+): string {
+	const content = displayAsMetadata ? "metadata" : "lyrics";
+	return `${content}-${musicId}-${displayAsMetadata ? 0 : jumpId}`;
 }
