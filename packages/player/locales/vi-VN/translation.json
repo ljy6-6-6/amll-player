@@ -278,7 +278,7 @@
 					"label": "Cân bằng âm lượng"
 				},
 				"gaplessPlayback": {
-					"description": "Chuẩn bị trước bài hát tiếp theo trong hàng đợi và phát liên tục ở ranh giới tự nhiên mà không chèn thêm khoảng lặng.",
+					"description": "Chuẩn bị trước bài hát tiếp theo, bỏ qua đoạn gần như im lặng được mã hóa ở cuối tệp và phát tiếp từ ranh giới nghe được.",
 					"label": "Phát liền mạch"
 				},
 				"windowAlwaysOnTop": {

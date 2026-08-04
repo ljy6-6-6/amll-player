@@ -262,6 +262,7 @@ const TRACK_GAIN_RISE_MS: f32 = 250.0;
 const TRACK_GAIN_FALL_MS: f32 = 50.0;
 const TRANSPORT_FADE_IN_DURATION_MS: u32 = 80;
 const TRANSPORT_FADE_OUT_DURATION_MS: u32 = 240;
+const GAPLESS_TRAILING_PRESERVE_MS: u32 = 100;
 const PEAK_LIMITER_LOOKAHEAD_MS: u32 = 5;
 const PEAK_LIMITER_ATTACK_MS: f32 = 1.0;
 const PEAK_LIMITER_RELEASE_MS: f32 = 100.0;
@@ -1359,6 +1360,7 @@ impl AudioPlayer {
         *self.current_audio_info.write().await = info.clone();
         *self.current_audio_quality.write().await = quality.clone();
 
+        let mut tail_transition_probe = spawned.source.tail_transition_probe();
         let mut audio_iter = spawned.source.peekable();
         let cpal_state_clone = self.cpal_state.clone();
         let (gapless_command_tx, gapless_command_rx): (
@@ -1395,6 +1397,9 @@ impl AudioPlayer {
             frames_for_duration(target_sample_rate, PEAK_LIMITER_SCRATCH_MS).max(1);
         let mut transport_gains = vec![1.0; transport_scratch_frames];
         let callback_chunk_samples = transport_scratch_frames * channel_count;
+        let gapless_trailing_preserve_samples =
+            frames_for_duration(target_sample_rate, GAPLESS_TRAILING_PRESERVE_MS)
+                .saturating_mul(channel_count);
 
         let stream = self.cpal_device.build_output_stream(
             &self.cpal_config,
@@ -1478,16 +1483,28 @@ impl AudioPlayer {
                         let transport_gain =
                             transport_fade_state.advance_frame(target_transport_gain);
                         transport_gains[frame_index] = transport_gain;
+                        let source_is_flushing = tail_transition_probe.is_flushing();
+                        let can_transition_source =
+                            target_transport_gain != 0.0
+                                && transport_gain != 0.0
+                                && !source_is_flushing;
+                        let source_is_in_trimmable_tail = can_transition_source
+                            && tail_transition_probe
+                                .is_in_trimmable_tail(gapless_trailing_preserve_samples);
                         let source_is_exhausted =
-                            transport_gain != 0.0 && audio_iter.peek().is_none();
+                            can_transition_source && audio_iter.peek().is_none();
+                        let source_should_transition =
+                            (source_is_exhausted || source_is_in_trimmable_tail)
+                                && !tail_transition_probe.is_flushing();
                         let hold_for_pending_boundary =
-                            source_is_exhausted && pending_boundary.is_some();
-                        if source_is_exhausted && !hold_for_pending_boundary {
+                            source_should_transition && pending_boundary.is_some();
+                        if source_should_transition && !hold_for_pending_boundary {
                             let prepared_is_ready = prepared_slot
                                 .as_ref()
                                 .is_some_and(|prepared| prepared.spawned.source.is_ready())
                                 && prepared_slot.generation()
-                                    == gapless_prepare_generation.load(Ordering::Acquire);
+                                    == gapless_prepare_generation.load(Ordering::Acquire)
+                                && !tail_transition_probe.is_flushing();
                             if prepared_is_ready {
                                 let prepare_generation = prepared_slot.generation();
                                 let prepared =
@@ -1511,6 +1528,7 @@ impl AudioPlayer {
                                     samples_counter,
                                 } = spawned;
 
+                                tail_transition_probe = source.tail_transition_probe();
                                 audio_iter = source.peekable();
                                 active_music_id = Arc::clone(&music_id);
                                 active_playback_id = Arc::clone(&playback_id);
@@ -1549,7 +1567,7 @@ impl AudioPlayer {
                                         pending_boundary = Some(error.into_inner());
                                     }
                                 }
-                            } else {
+                            } else if source_is_exhausted {
                                 eof_reached = true;
                             }
                         }
@@ -1569,7 +1587,9 @@ impl AudioPlayer {
                             transport_gain != 0.0 && !hold_for_pending_boundary,
                         );
                         local_consumed_samples += consumed_samples;
-                        eof_reached |= frame_eof_reached;
+                        let seek_started_during_frame =
+                            source_is_flushing || tail_transition_probe.is_flushing();
+                        eof_reached |= frame_eof_reached && !seek_started_during_frame;
                     }
 
                     peak_limiter.process_block(output_chunk, channel_count, enforce_peak_ceiling);

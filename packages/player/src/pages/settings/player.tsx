@@ -378,7 +378,7 @@ const GeneralSettings = () => {
 				label={t("page.settings.general.gaplessPlayback.label", "无缝播放")}
 				description={t(
 					"page.settings.general.gaplessPlayback.description",
-					"提前准备队列中的下一首歌曲，并在自然结束时连续播放，不插入额外静音。",
+					"提前准备队列中的下一首歌曲，跳过文件末尾的近静音，并在听感结束处连续播放。",
 				)}
 				configAtom={enableGaplessPlaybackAtom}
 			/>

@@ -278,7 +278,7 @@
 					"label": "音量平衡"
 				},
 				"gaplessPlayback": {
-					"description": "預先準備佇列中的下一首歌曲，並在自然結束時連續播放，不插入額外靜音。",
+					"description": "預先準備佇列中的下一首歌曲，略過檔案末尾的近靜音，並在聽感結束處連續播放。",
 					"label": "無縫播放"
 				},
 				"windowAlwaysOnTop": {

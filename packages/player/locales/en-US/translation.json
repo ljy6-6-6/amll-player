@@ -278,7 +278,7 @@
 					"label": "Volume normalization"
 				},
 				"gaplessPlayback": {
-					"description": "Prepares the next queued track and continues playback at the natural boundary without inserting extra silence.",
+					"description": "Prepares the next queued track, skips near-silent audio encoded at the end, and continues from the audible boundary.",
 					"label": "Gapless playback"
 				},
 				"windowAlwaysOnTop": {
