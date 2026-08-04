@@ -44,6 +44,13 @@ export const enableLoudnessNormalizationAtom = atomWithStorage(
 	{ getOnInit: true },
 );
 
+export const enableGaplessPlaybackAtom = atomWithStorage(
+	"amll-player.enableGaplessPlayback",
+	false,
+	undefined,
+	{ getOnInit: true },
+);
+
 export const enableMediaControlsAtom = atom(
 	(get) => get(enableMediaControlsInternalAtom),
 	(_get, set, enabled: boolean) => {

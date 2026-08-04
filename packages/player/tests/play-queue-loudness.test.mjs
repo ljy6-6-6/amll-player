@@ -5,6 +5,7 @@ import test from "node:test";
 globalThis.window = globalThis;
 
 const testAtoms = {
+	enableGaplessPlayback: {},
 	enableLoudnessNormalization: {},
 	isShuffleActive: {},
 	musicPlaying: {},
@@ -22,6 +23,8 @@ export const repeatModeAtom = atoms.repeatMode;
 export const RepeatMode = { Off: 0, All: 1, One: 2 };
 `;
 const appAtomsStub = `
+export const enableGaplessPlaybackAtom =
+	globalThis.__playQueueTestAtoms.enableGaplessPlayback;
 export const enableLoudnessNormalizationAtom =
 	globalThis.__playQueueTestAtoms.enableLoudnessNormalization;
 `;
@@ -67,11 +70,13 @@ function mockIPC(handler) {
 }
 
 function createStore({
+	gaplessEnabled = false,
 	loudnessEnabled = true,
 	playing = true,
 	position = 0,
 } = {}) {
 	const values = new Map([
+		[testAtoms.enableGaplessPlayback, gaplessEnabled],
 		[testAtoms.enableLoudnessNormalization, loudnessEnabled],
 		[testAtoms.musicPlaying, playing],
 		[testAtoms.musicPlayingPosition, position],
@@ -163,6 +168,12 @@ function getAudioMessages(calls, type) {
 		.filter(({ command }) => command === "local_player_send_msg")
 		.map(({ payload }) => payload.msg.data)
 		.filter((message) => message.type === type);
+}
+
+function getPreparedGaplessMessages(calls) {
+	return getAudioMessages(calls, "setGaplessNext").filter(
+		(message) => message.next,
+	);
 }
 
 test("冷缓存歌曲会在整轨响度分析完成后才发送首个播放请求", {
@@ -921,4 +932,273 @@ test("恢复时当前歌曲及其后继均已删除会回退到最近前驱", {
 	);
 	assert.equal(manager.getCurrentSong()?.id, "b");
 	assert.equal(manager.getCurrentIndex(), 1);
+});
+
+test("无缝边界会接管已预载歌曲且不会重复发送播放请求", {
+	concurrency: false,
+}, async (context) => {
+	const calls = [];
+	mockIPC((command, payload) => {
+		calls.push({ command, payload });
+		if (command === "local_player_send_msg") return undefined;
+		throw new Error(`Unexpected IPC command: ${command}`);
+	});
+
+	const store = createStore({
+		gaplessEnabled: true,
+		loudnessEnabled: false,
+		position: 177_000,
+	});
+	const manager = new PlayQueueManager(store);
+	context.after(async () => {
+		manager.dispose();
+		await drainAsyncWork();
+		clearMocks();
+	});
+
+	manager.setQueue([makeSong("a"), makeSong("b"), makeSong("c")]);
+	await waitFor(
+		() => getPreparedGaplessMessages(calls).length >= 1,
+		"没有预载队列中的下一首歌曲",
+	);
+
+	const firstPlay = getPlayMessages(calls)[0];
+	const preparedB = getPreparedGaplessMessages(calls).at(-1)?.next;
+	assert.equal(firstPlay?.song.songId, "a");
+	assert.equal(preparedB?.song.songId, "b");
+
+	manager.advanceForAutoEnd("a", firstPlay.playbackId, {
+		gapless: true,
+		nextPlaybackId: preparedB.playbackId,
+		nextMusicId: "b",
+	});
+	await waitFor(
+		() => getPreparedGaplessMessages(calls).at(-1)?.next.song.songId === "c",
+		"接管无缝边界后没有预载下下首歌曲",
+	);
+
+	assert.equal(getPlayMessages(calls).length, 1);
+	assert.equal(manager.getCurrentSong()?.id, "b");
+	assert.equal(manager.getCurrentIndex(), 1);
+	assert.equal(store.get(persistedQueueStateAtom).position, 0);
+});
+
+test("无缝候选会在冷缓存响度分析完成后再预载", {
+	concurrency: false,
+}, async (context) => {
+	const analysis = deferred();
+	const calls = [];
+	mockIPC((command, payload) => {
+		calls.push({ command, payload });
+		switch (command) {
+			case "get_cached_song_loudness":
+				return payload.songId === "a" ? makeLoudness(-12, 0.8) : null;
+			case "get_or_analyze_song_rhythm":
+				assert.equal(payload.songId, "b");
+				return analysis.promise;
+			case "local_player_send_msg":
+				return undefined;
+			default:
+				throw new Error(`Unexpected IPC command: ${command}`);
+		}
+	});
+
+	const manager = new PlayQueueManager(
+		createStore({ gaplessEnabled: true, loudnessEnabled: true }),
+	);
+	context.after(async () => {
+		manager.dispose();
+		await drainAsyncWork();
+		clearMocks();
+	});
+
+	manager.setQueue([makeSong("a"), makeSong("b")]);
+	await waitFor(
+		() =>
+			calls.some(
+				({ command, payload }) =>
+					command === "get_or_analyze_song_rhythm" && payload.songId === "b",
+			),
+		"冷缓存下一首没有启动响度分析",
+	);
+	assert.equal(getPreparedGaplessMessages(calls).length, 0);
+
+	analysis.resolve(makeAnalysis(makeLoudness(-15.2, 0.64)));
+	await waitFor(
+		() => getPreparedGaplessMessages(calls).length === 1,
+		"响度分析完成后没有预载下一首",
+	);
+	assert.deepEqual(
+		getPreparedGaplessMessages(calls)[0]?.next.loudnessNormalization,
+		{
+			enabled: true,
+			integratedLoudnessLufs: -15.2,
+			samplePeak: 0.64,
+		},
+	);
+});
+
+test("队列改动后不会接管已经失效的无缝候选", {
+	concurrency: false,
+}, async (context) => {
+	const calls = [];
+	mockIPC((command, payload) => {
+		calls.push({ command, payload });
+		if (command === "local_player_send_msg") return undefined;
+		throw new Error(`Unexpected IPC command: ${command}`);
+	});
+
+	const manager = new PlayQueueManager(
+		createStore({ gaplessEnabled: true, loudnessEnabled: false }),
+	);
+	context.after(async () => {
+		manager.dispose();
+		await drainAsyncWork();
+		clearMocks();
+	});
+
+	manager.setQueue([makeSong("a"), makeSong("b"), makeSong("c")]);
+	await waitFor(
+		() => getPreparedGaplessMessages(calls).at(-1)?.next.song.songId === "b",
+		"没有预载原始下一首歌曲",
+	);
+	const firstPlay = getPlayMessages(calls)[0];
+	const stalePrepared = getPreparedGaplessMessages(calls).at(-1)?.next;
+
+	manager.enqueueNext(makeSong("inserted"));
+	await waitFor(
+		() =>
+			getPreparedGaplessMessages(calls).at(-1)?.next.song.songId === "inserted",
+		"队列改动后没有刷新无缝候选",
+	);
+	manager.advanceForAutoEnd("a", firstPlay.playbackId, {
+		gapless: true,
+		nextPlaybackId: stalePrepared.playbackId,
+		nextMusicId: "b",
+	});
+
+	await waitFor(
+		() => getPlayMessages(calls).at(-1)?.song.songId === "inserted",
+		"失效边界没有退回当前队列的普通下一首",
+	);
+	assert.equal(getPlayMessages(calls).length, 2);
+	assert.equal(manager.getCurrentSong()?.id, "inserted");
+});
+
+test("停止后到达的无缝边界不会复活下一首", {
+	concurrency: false,
+}, async (context) => {
+	const calls = [];
+	mockIPC((command, payload) => {
+		calls.push({ command, payload });
+		if (command === "local_player_send_msg") return undefined;
+		throw new Error(`Unexpected IPC command: ${command}`);
+	});
+
+	const manager = new PlayQueueManager(
+		createStore({ gaplessEnabled: true, loudnessEnabled: false }),
+	);
+	context.after(async () => {
+		manager.dispose();
+		await drainAsyncWork();
+		clearMocks();
+	});
+
+	manager.setQueue([makeSong("a"), makeSong("b")]);
+	await waitFor(
+		() => getPreparedGaplessMessages(calls).length >= 1,
+		"没有预载下一首歌曲",
+	);
+	const firstPlay = getPlayMessages(calls)[0];
+	const preparedB = getPreparedGaplessMessages(calls).at(-1)?.next;
+
+	manager.setExternalStopped();
+	manager.advanceForAutoEnd("a", firstPlay.playbackId, {
+		gapless: true,
+		nextPlaybackId: preparedB.playbackId,
+		nextMusicId: "b",
+	});
+	manager.setPlaybackState(true);
+
+	await waitFor(
+		() => getPlayMessages(calls).length === 2,
+		"停止后重新播放没有重新创建音频流",
+	);
+	assert.equal(getPlayMessages(calls).at(-1)?.song.songId, "a");
+	assert.equal(getAudioMessages(calls, "resumeAudio").length, 0);
+	assert.equal(manager.getCurrentSong()?.id, "a");
+});
+
+test("队列管理器销毁后忽略迟到的无缝边界", {
+	concurrency: false,
+}, async (context) => {
+	const calls = [];
+	mockIPC((command, payload) => {
+		calls.push({ command, payload });
+		if (command === "local_player_send_msg") return undefined;
+		throw new Error(`Unexpected IPC command: ${command}`);
+	});
+	context.after(async () => {
+		await drainAsyncWork();
+		clearMocks();
+	});
+
+	const manager = new PlayQueueManager(
+		createStore({ gaplessEnabled: true, loudnessEnabled: false }),
+	);
+	manager.setQueue([makeSong("a"), makeSong("b")]);
+	await waitFor(
+		() => getPreparedGaplessMessages(calls).length >= 1,
+		"没有预载下一首歌曲",
+	);
+	const firstPlay = getPlayMessages(calls)[0];
+	const preparedB = getPreparedGaplessMessages(calls).at(-1)?.next;
+
+	manager.dispose();
+	manager.advanceForAutoEnd("a", firstPlay.playbackId, {
+		gapless: true,
+		nextPlaybackId: preparedB.playbackId,
+		nextMusicId: "b",
+	});
+
+	assert.equal(manager.getCurrentSong()?.id, "a");
+});
+
+test("暂停时改队列不会积压无缝候选且恢复后预载最新下一首", {
+	concurrency: false,
+}, async (context) => {
+	const calls = [];
+	mockIPC((command, payload) => {
+		calls.push({ command, payload });
+		if (command === "local_player_send_msg") return undefined;
+		throw new Error(`Unexpected IPC command: ${command}`);
+	});
+
+	const manager = new PlayQueueManager(
+		createStore({ gaplessEnabled: true, loudnessEnabled: false }),
+	);
+	context.after(async () => {
+		manager.dispose();
+		await drainAsyncWork();
+		clearMocks();
+	});
+
+	manager.setQueue([makeSong("a"), makeSong("b"), makeSong("c")]);
+	await waitFor(
+		() => getPreparedGaplessMessages(calls).length === 1,
+		"没有预载初始下一首",
+	);
+
+	manager.setPlaybackState(false);
+	manager.enqueueNext(makeSong("inserted"));
+	await drainAsyncWork();
+	assert.equal(getPreparedGaplessMessages(calls).length, 1);
+
+	manager.setPlaybackState(true);
+	await waitFor(
+		() =>
+			getPreparedGaplessMessages(calls).at(-1)?.next.song.songId === "inserted",
+		"恢复播放后没有预载更新后的下一首",
+	);
+	assert.equal(getPreparedGaplessMessages(calls).length, 2);
 });

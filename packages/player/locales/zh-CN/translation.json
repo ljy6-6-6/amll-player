@@ -277,6 +277,10 @@
 					"description": "根据每首本地歌曲的感知响度自动调整播放增益，减少切歌时音量忽大忽小的情况。",
 					"label": "音量平衡"
 				},
+				"gaplessPlayback": {
+					"description": "提前准备队列中的下一首歌曲，并在自然结束时连续播放，不插入额外静音。",
+					"label": "无缝播放"
+				},
 				"windowAlwaysOnTop": {
 					"description": "将应用窗口设置为始终置顶",
 					"label": "启用窗口置顶"

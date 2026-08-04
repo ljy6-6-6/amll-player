@@ -7,10 +7,14 @@ import {
 } from "@applemusic-like-lyrics/react-full";
 import { atom, type createStore, type PrimitiveAtom } from "jotai";
 import { atomWithStorage } from "jotai/utils";
-import { enableLoudnessNormalizationAtom } from "../states/appAtoms.ts";
+import {
+	enableGaplessPlaybackAtom,
+	enableLoudnessNormalizationAtom,
+} from "../states/appAtoms.ts";
 import {
 	db,
 	getCurrentTrackLoudness,
+	type RhythmAnalysis,
 	type Song,
 	type TrackLoudnessAnalysis,
 } from "./db-client.ts";
@@ -21,6 +25,12 @@ type JotaiStore = ReturnType<typeof createStore>;
 interface TrackLoudnessPreparation {
 	loudness: TrackLoudnessAnalysis | null;
 	suppressAutomaticUpdate: boolean;
+}
+
+interface PreparedGaplessCandidate {
+	index: number;
+	songId: string;
+	playbackId: string;
 }
 
 //#region 持久化数据结构
@@ -130,6 +140,9 @@ export class PlayQueueManager {
 	private currentPlaybackEnded = false;
 	private audioDispatchChain: Promise<void> = Promise.resolve();
 	private queueRevision = 0;
+	private gaplessRequestGeneration = 0;
+	private preparedGaplessCandidate: PreparedGaplessCandidate | null = null;
+	private gaplessBackendActive = false;
 	private disposed = false;
 
 	constructor(store: JotaiStore) {
@@ -166,6 +179,8 @@ export class PlayQueueManager {
 
 	/** 组件卸载时调用，把最新状态写入 localStorage */
 	dispose(): void {
+		if (this.disposed) return;
+		const shouldClearGapless = this.gaplessBackendActive;
 		try {
 			this.persistState();
 		} finally {
@@ -173,7 +188,19 @@ export class PlayQueueManager {
 			this.queueRevision++;
 			this.playRequestGeneration++;
 			this.playRequestPending = false;
+			this.gaplessRequestGeneration++;
+			this.preparedGaplessCandidate = null;
+			this.gaplessBackendActive = false;
 			this.store.set(queueLoudnessUpdatePolicyAtom, null);
+
+			if (shouldClearGapless) {
+				const clearDispatch = this.audioDispatchChain.then(() =>
+					emitAudioThread("setGaplessNext", { next: null }),
+				);
+				this.audioDispatchChain = clearDispatch.catch((error) => {
+					console.warn("[Gapless] Failed to clear the prepared track", error);
+				});
+			}
 		}
 	}
 
@@ -201,6 +228,177 @@ export class PlayQueueManager {
 
 	private isCurrentPlayRequest(requestGeneration: number): boolean {
 		return !this.disposed && requestGeneration === this.playRequestGeneration;
+	}
+
+	private getAutoNextIndex(): number | null {
+		if (
+			this.currentIndex < 0 ||
+			this.currentIndex >= this.playList.length ||
+			this.playList.length === 0
+		) {
+			return null;
+		}
+		if (this.repeatMode === RepeatMode.One) return this.currentIndex;
+
+		const nextIndex = this.currentIndex + 1;
+		if (nextIndex < this.playList.length) return nextIndex;
+		return this.repeatMode === RepeatMode.All ? 0 : null;
+	}
+
+	private invalidateGaplessCandidate(): void {
+		this.gaplessRequestGeneration++;
+		this.preparedGaplessCandidate = null;
+		if (!this.gaplessBackendActive) return;
+		this.gaplessBackendActive = false;
+		void this.queueAudioDispatch(async () => {
+			await emitAudioThread("setGaplessNext", { next: null });
+		}).catch((error) => {
+			console.warn("[Gapless] Failed to clear the prepared track", error);
+		});
+	}
+
+	refreshGaplessCandidate(): void {
+		const requestGeneration = ++this.gaplessRequestGeneration;
+		this.preparedGaplessCandidate = null;
+		if (this.gaplessBackendActive) {
+			this.gaplessBackendActive = false;
+			void this.queueAudioDispatch(async () => {
+				await emitAudioThread("setGaplessNext", { next: null });
+			}).catch((error) => {
+				console.warn("[Gapless] Failed to reset the prepared track", error);
+			});
+		}
+
+		if (
+			this.disposed ||
+			!this.desiredPlaying ||
+			this.playRequestPending ||
+			this.currentPlaybackEnded ||
+			!this.currentPlaybackId ||
+			!this.store.get(enableGaplessPlaybackAtom)
+		) {
+			return;
+		}
+
+		const candidateIndex = this.getAutoNextIndex();
+		if (candidateIndex === null) return;
+		const candidate = this.playList[candidateIndex];
+		if (!candidate) return;
+
+		const queueRevision = this.queueRevision;
+		const currentPlaybackId = this.currentPlaybackId;
+		const playbackId = crypto.randomUUID();
+		const normalizationEnabled = this.store.get(
+			enableLoudnessNormalizationAtom,
+		);
+		const isCurrentCandidate = () =>
+			!this.disposed &&
+			requestGeneration === this.gaplessRequestGeneration &&
+			queueRevision === this.queueRevision &&
+			currentPlaybackId === this.currentPlaybackId &&
+			this.store.get(enableGaplessPlaybackAtom) &&
+			this.playList[candidateIndex]?.id === candidate.id;
+
+		void (async () => {
+			let loudness: TrackLoudnessAnalysis | null = null;
+			if (normalizationEnabled) {
+				try {
+					loudness = await db.songs.getCachedLoudness(candidate.id);
+				} catch (error) {
+					if (requestGeneration === this.gaplessRequestGeneration) {
+						console.warn(
+							"[Gapless] Failed to read cached loudness for the prepared track",
+							candidate.id,
+							error,
+						);
+					}
+				}
+				if (!isCurrentCandidate()) return;
+
+				if (!loudness) {
+					try {
+						let analysis: RhythmAnalysis;
+						try {
+							analysis = await db.songs.getOrAnalyzeRhythm(
+								candidate.id,
+								false,
+								true,
+								true,
+							);
+						} catch (error) {
+							if (!String(error).includes("DECODER_BUSY")) throw error;
+							if (!isCurrentCandidate()) return;
+							analysis = await db.songs.getOrAnalyzeRhythm(
+								candidate.id,
+								false,
+								true,
+								false,
+							);
+						}
+						if (!isCurrentCandidate()) return;
+						loudness = getCurrentTrackLoudness(analysis);
+					} catch (error) {
+						if (isCurrentCandidate()) {
+							console.warn(
+								"[Gapless] Failed to analyze loudness for the prepared track",
+								candidate.id,
+								error,
+							);
+						}
+						return;
+					}
+					if (!loudness) return;
+				}
+			}
+
+			if (!isCurrentCandidate()) return;
+
+			await this.queueAudioDispatch(async () => {
+				if (!isCurrentCandidate()) return;
+
+				this.preparedGaplessCandidate = {
+					index: candidateIndex,
+					songId: candidate.id,
+					playbackId,
+				};
+				this.gaplessBackendActive = true;
+				await emitAudioThread("setGaplessNext", {
+					next: {
+						song: {
+							songId: candidate.id,
+							filePath: candidate.filePath,
+						},
+						loudnessNormalization: {
+							enabled: normalizationEnabled,
+							integratedLoudnessLufs:
+								normalizationEnabled && loudness
+									? (loudness.integratedLoudnessLufs ?? null)
+									: null,
+							samplePeak:
+								normalizationEnabled && loudness ? loudness.samplePeak : null,
+						},
+						playbackId,
+					},
+				});
+			});
+		})().catch((error) => {
+			if (requestGeneration === this.gaplessRequestGeneration) {
+				const backendMayHaveCandidate = this.gaplessBackendActive;
+				this.preparedGaplessCandidate = null;
+				this.gaplessBackendActive = false;
+				console.warn("[Gapless] Failed to prepare the next track", error);
+				if (backendMayHaveCandidate) {
+					void this.queueAudioDispatch(async () => {
+						await emitAudioThread("setGaplessNext", { next: null });
+					}).catch((clearError) => {
+						console.warn(
+							"[Gapless] Failed to clear the uncertain prepared track",
+							clearError,
+						);
+					});
+				}
+			}
+		});
 	}
 
 	private async prepareTrackLoudness(
@@ -298,12 +496,14 @@ export class PlayQueueManager {
 		if (this.disposed || index < 0 || index >= this.playList.length)
 			return false;
 		this.queueRevision++;
+		this.invalidateGaplessCandidate();
 		const requestGeneration = ++this.playRequestGeneration;
 		const playbackId = crypto.randomUUID();
 		const song = this.playList[index];
 		this.desiredPlaying = !startPaused;
 		this.currentPlaybackEnded = false;
 		this.playRequestPending = true;
+		let started = false;
 
 		try {
 			this.currentIndex = index;
@@ -329,7 +529,6 @@ export class PlayQueueManager {
 				this.syncToAtoms();
 			}
 
-			let started = false;
 			const dispatch = this.queueAudioDispatch(async () => {
 				if (this.disposed || requestGeneration !== this.playRequestGeneration)
 					return;
@@ -377,6 +576,7 @@ export class PlayQueueManager {
 		} finally {
 			if (requestGeneration === this.playRequestGeneration) {
 				this.playRequestPending = false;
+				if (started) this.refreshGaplessCandidate();
 			}
 		}
 	}
@@ -404,6 +604,9 @@ export class PlayQueueManager {
 				error,
 			);
 		});
+		if (shouldPlay && !this.preparedGaplessCandidate) {
+			this.refreshGaplessCandidate();
+		}
 	}
 
 	setExternalPlaybackState(shouldPlay: boolean): void {
@@ -423,13 +626,18 @@ export class PlayQueueManager {
 				error,
 			);
 		});
+		if (shouldPlay && !this.preparedGaplessCandidate) {
+			this.refreshGaplessCandidate();
+		}
 	}
 
 	setExternalStopped(): void {
 		this.desiredPlaying = false;
 		this.currentPlaybackEnded = this.currentIndex >= 0;
+		this.currentPlaybackId = null;
 		this.playRequestGeneration++;
 		this.playRequestPending = false;
+		this.invalidateGaplessCandidate();
 		void this.queueAudioDispatch(async () => {
 			await emitAudioThread("stopAudio");
 		}).catch((error) => {
@@ -458,6 +666,7 @@ export class PlayQueueManager {
 		this.playlistId = null;
 		this.store.set(queueLoudnessUpdatePolicyAtom, null);
 		this.syncToAtoms();
+		this.invalidateGaplessCandidate();
 
 		void this.queueAudioDispatch(async () => {
 			await emitAudioThread("stopAudio");
@@ -535,6 +744,7 @@ export class PlayQueueManager {
 		this.originalList.push(song);
 		this.playList.push(song);
 		this.syncToAtoms();
+		this.refreshGaplessCandidate();
 	}
 
 	/** 向后兼容旧调用；随机模式下仍沿用插入当前歌曲之后的原有行为。 */
@@ -555,6 +765,7 @@ export class PlayQueueManager {
 		const insertAt = Math.min(this.currentIndex + 1, this.playList.length);
 		this.playList.splice(insertAt, 0, song);
 		this.syncToAtoms();
+		this.refreshGaplessCandidate();
 	}
 
 	/**
@@ -590,6 +801,7 @@ export class PlayQueueManager {
 		}
 		this.currentIndex = this.findInPlayList(currentSongId);
 		this.syncToAtoms();
+		this.refreshGaplessCandidate();
 	}
 	//#endregion
 
@@ -622,12 +834,51 @@ export class PlayQueueManager {
 	 * - 顺序/随机：播放下一首
 	 * - 列表播放完毕（非循环）：停止
 	 */
-	advanceForAutoEnd(endedSongId: string, endedPlaybackId: string): void {
-		if (this.playList.length === 0 || this.playRequestPending) return;
+	advanceForAutoEnd(
+		endedSongId: string,
+		endedPlaybackId: string,
+		transition?: {
+			gapless?: boolean;
+			nextPlaybackId?: string | null;
+			nextMusicId?: string | null;
+		},
+	): void {
+		if (this.disposed || this.playList.length === 0 || this.playRequestPending)
+			return;
 		if (this.getCurrentSong()?.id !== endedSongId) return;
 		if (this.currentPlaybackId !== endedPlaybackId) return;
+
+		const prepared = this.preparedGaplessCandidate;
+		const autoNextIndex = this.getAutoNextIndex();
+		const canAdoptGaplessTransition =
+			this.desiredPlaying &&
+			!this.currentPlaybackEnded &&
+			this.store.get(enableGaplessPlaybackAtom) &&
+			transition?.gapless &&
+			transition.nextPlaybackId &&
+			transition.nextMusicId &&
+			prepared?.playbackId === transition.nextPlaybackId &&
+			prepared.songId === transition.nextMusicId &&
+			autoNextIndex === prepared.index &&
+			this.playList[prepared.index]?.id === prepared.songId;
+
+		if (canAdoptGaplessTransition && prepared) {
+			this.queueRevision++;
+			this.gaplessRequestGeneration++;
+			this.preparedGaplessCandidate = null;
+			this.gaplessBackendActive = false;
+			this.currentIndex = prepared.index;
+			this.currentPlaybackId = prepared.playbackId;
+			this.currentPlaybackEnded = false;
+			this.store.set(musicPlayingPositionAtom, 0);
+			this.syncToAtoms();
+			this.refreshGaplessCandidate();
+			return;
+		}
+
 		if (!this.desiredPlaying) {
 			this.currentPlaybackEnded = true;
+			this.invalidateGaplessCandidate();
 			return;
 		}
 
@@ -647,6 +898,7 @@ export class PlayQueueManager {
 			// RepeatMode.Off
 			this.desiredPlaying = false;
 			this.currentPlaybackEnded = true;
+			this.invalidateGaplessCandidate();
 			void this.queueAudioDispatch(async () => {
 				await emitAudioThread("pauseAudio");
 			}).catch((error) => {
@@ -669,6 +921,7 @@ export class PlayQueueManager {
 		this.repeatMode = mode;
 		this.syncToAtoms();
 		this.syncPlayModeToMediaControls();
+		this.refreshGaplessCandidate();
 	}
 
 	cycleRepeatMode(): void {
@@ -704,6 +957,7 @@ export class PlayQueueManager {
 
 		this.syncToAtoms();
 		this.syncPlayModeToMediaControls();
+		this.refreshGaplessCandidate();
 	}
 
 	toggleShuffleOn(): void {
@@ -746,6 +1000,7 @@ export class PlayQueueManager {
 		}
 		this.currentIndex = currentSongId ? this.findInPlayList(currentSongId) : -1;
 		this.syncToAtoms();
+		this.refreshGaplessCandidate();
 	}
 
 	/**
@@ -775,6 +1030,7 @@ export class PlayQueueManager {
 		}
 
 		this.syncToAtoms();
+		this.refreshGaplessCandidate();
 	}
 
 	/**
@@ -798,6 +1054,7 @@ export class PlayQueueManager {
 			retainedIds.has(song.id),
 		);
 		this.syncToAtoms();
+		this.refreshGaplessCandidate();
 	}
 	//#endregion
 
@@ -890,6 +1147,7 @@ export class PlayQueueManager {
 			}
 
 			this.syncToAtoms();
+			this.refreshGaplessCandidate();
 			return { restored: true, position: persisted.position ?? 0 };
 		} catch (err) {
 			console.error("[PlayQueueManager] 恢复队列失败:", err);

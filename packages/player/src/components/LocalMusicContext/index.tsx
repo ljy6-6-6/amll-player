@@ -50,6 +50,7 @@ import {
 	currentLyricAuthorsAtom,
 	currentRhythmAnalysisAtom,
 	currentSongWritersAtom,
+	enableGaplessPlaybackAtom,
 	enableLoudnessNormalizationAtom,
 	enableMediaControlsAtom,
 	queueManagerAtom,
@@ -698,6 +699,14 @@ export const LocalMusicContext: FC = () => {
 
 		const queueManager = new PlayQueueManager(store);
 		store.set(queueManagerAtom, queueManager);
+		const unsubscribeGaplessPlayback = store.sub(
+			enableGaplessPlaybackAtom,
+			() => queueManager.refreshGaplessCandidate(),
+		);
+		const unsubscribeGaplessLoudness = store.sub(
+			enableLoudnessNormalizationAtom,
+			() => queueManager.refreshGaplessCandidate(),
+		);
 
 		// 恢复上次的队列信息
 		void queueManager
@@ -890,6 +899,11 @@ export const LocalMusicContext: FC = () => {
 					queueManager.advanceForAutoEnd(
 						evtData.data.musicId,
 						evtData.data.playbackId,
+						{
+							gapless: evtData.data.gapless,
+							nextPlaybackId: evtData.data.nextPlaybackId,
+							nextMusicId: evtData.data.nextMusicId,
+						},
 					);
 					break;
 				}
@@ -937,6 +951,8 @@ export const LocalMusicContext: FC = () => {
 
 		return () => {
 			unlistenPromise.then((unlisten) => unlisten());
+			unsubscribeGaplessPlayback();
+			unsubscribeGaplessLoudness();
 
 			window.removeEventListener("beforeunload", onBeforeUnload);
 

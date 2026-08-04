@@ -277,6 +277,10 @@
 					"description": "根據每首本機歌曲的感知響度自動調整播放增益，減少切換歌曲時音量忽大忽小的情況。",
 					"label": "音量平衡"
 				},
+				"gaplessPlayback": {
+					"description": "預先準備佇列中的下一首歌曲，並在自然結束時連續播放，不插入額外靜音。",
+					"label": "無縫播放"
+				},
 				"windowAlwaysOnTop": {
 					"description": "将应用窗口设置为始终置顶",
 					"label": "启用窗口置顶"

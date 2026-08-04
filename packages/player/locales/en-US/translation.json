@@ -277,6 +277,10 @@
 					"description": "Automatically adjusts playback gain based on each local track's perceived loudness to reduce volume jumps between songs.",
 					"label": "Volume normalization"
 				},
+				"gaplessPlayback": {
+					"description": "Prepares the next queued track and continues playback at the natural boundary without inserting extra silence.",
+					"label": "Gapless playback"
+				},
 				"windowAlwaysOnTop": {
 					"description": "将应用窗口设置为始终置顶",
 					"label": "启用窗口置顶"

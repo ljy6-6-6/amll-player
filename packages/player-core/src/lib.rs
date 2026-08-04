@@ -29,6 +29,15 @@ pub struct LoudnessNormalizationData {
     pub sample_peak: Option<f64>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GaplessPlaybackData {
+    pub song: SongData,
+    #[serde(default)]
+    pub loudness_normalization: Option<LoudnessNormalizationData>,
+    pub playback_id: String,
+}
+
 impl SongData {
     fn get_id(&self) -> String {
         self.song_id
@@ -70,6 +79,8 @@ pub enum AudioThreadMessage {
         #[serde(default)]
         start_paused: bool,
     },
+    #[serde(rename_all = "camelCase")]
+    SetGaplessNext { next: Option<GaplessPlaybackData> },
     #[serde(rename_all = "camelCase")]
     SetVolume { volume: f64 },
     #[serde(rename_all = "camelCase")]
@@ -137,6 +148,12 @@ pub enum AudioThreadEvent {
     TrackEnded {
         music_id: String,
         playback_id: String,
+        #[serde(default)]
+        gapless: bool,
+        #[serde(default)]
+        next_playback_id: Option<String>,
+        #[serde(default)]
+        next_music_id: Option<String>,
     },
     #[serde(rename_all = "camelCase")]
     HardwareMediaCommand { command: String },

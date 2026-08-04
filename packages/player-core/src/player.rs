@@ -4,27 +4,111 @@ use std::{
     fs::File,
     io::{Cursor, Read, Seek},
     sync::{
-        Arc,
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+        Arc,
     },
     time::Duration,
 };
 
 use super::fft_player::FFTPlayer;
 use crate::{
+    audio_quality::AudioQuality,
+    ffmpeg_decoder::{FFmpegDecoder, SpawnedDecoder},
+    media_controls::SystemMediaManager,
     AudioPlayerEventSender, AudioPlayerMessageReceiver, AudioPlayerMessageSender, AudioThreadEvent,
-    AudioThreadEventMessage, AudioThreadMessage, SongData, audio_quality::AudioQuality,
-    ffmpeg_decoder::FFmpegDecoder, media_controls::SystemMediaManager,
+    AudioThreadEventMessage, AudioThreadMessage, GaplessPlaybackData, SongData,
 };
 use anyhow::Context;
 use cpal::traits::{DeviceTrait as _, HostTrait as _, StreamTrait as _};
+use crossbeam_channel::{
+    bounded as crossbeam_bounded, unbounded as crossbeam_unbounded, Receiver as CrossbeamReceiver,
+    Sender as CrossbeamSender,
+};
 use now_playing_controls::model::{NowPlayingOptions, SystemMediaEvent};
 use parking_lot::RwLock as ParkingLotRwLock;
-use ringbuf::traits::Consumer;
+use ringbuf::{traits::Consumer, HeapCons};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{RwLock as TokioRwLock, mpsc::UnboundedReceiver, watch};
+use tokio::sync::{mpsc::UnboundedReceiver, watch, Notify, RwLock as TokioRwLock};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
+
+struct PreparedPlayback {
+    song: SongData,
+    music_id: Arc<str>,
+    playback_id: Arc<str>,
+    audio_info: AudioInfo,
+    audio_quality: AudioQuality,
+    normalization_enabled: bool,
+    track_gain: f32,
+    spawned: SpawnedDecoder,
+}
+
+enum GaplessCommand {
+    Clear {
+        generation: u64,
+    },
+    Replace {
+        generation: u64,
+        prepared: PreparedPlayback,
+    },
+}
+
+struct GaplessPreparedSlot<T> {
+    generation: u64,
+    value: Option<T>,
+}
+
+impl<T> GaplessPreparedSlot<T> {
+    fn new(generation: u64) -> Self {
+        Self {
+            generation,
+            value: None,
+        }
+    }
+
+    fn clear(&mut self, generation: u64) -> Option<T> {
+        if generation < self.generation {
+            return None;
+        }
+        self.generation = generation;
+        self.value.take()
+    }
+
+    fn replace(&mut self, generation: u64, value: T) -> Result<Option<T>, T> {
+        if generation != self.generation {
+            return Err(value);
+        }
+        Ok(self.value.replace(value))
+    }
+
+    fn as_ref(&self) -> Option<&T> {
+        self.value.as_ref()
+    }
+
+    fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    fn take(&mut self) -> Option<T> {
+        self.value.take()
+    }
+}
+
+struct GaplessBoundary {
+    stream_generation: u64,
+    prepare_generation: u64,
+    ended_music_id: Arc<str>,
+    ended_playback_id: Arc<str>,
+    next_song: SongData,
+    next_playback_id: Arc<str>,
+    next_audio_info: AudioInfo,
+    next_audio_quality: AudioQuality,
+    next_normalization_enabled: bool,
+    next_track_gain: f32,
+    next_decoder_handle: FFmpegDecoder,
+    next_samples_counter: Arc<AtomicU64>,
+    next_fft_consumer: HeapCons<f32>,
+}
 
 pub struct AudioPlayer {
     evt_sender: AudioPlayerEventSender,
@@ -55,6 +139,14 @@ pub struct AudioPlayer {
     playback_state: Arc<ParkingLotRwLock<PlaybackState>>,
     npc_event_rx: UnboundedReceiver<SystemMediaEvent>,
     fft_player: Arc<ParkingLotRwLock<FFTPlayer>>,
+    gapless_command_tx: Option<CrossbeamSender<GaplessCommand>>,
+    gapless_prepare_generation: Arc<AtomicU64>,
+    gapless_boundary_tx: CrossbeamSender<GaplessBoundary>,
+    gapless_boundary_rx: CrossbeamReceiver<GaplessBoundary>,
+    gapless_retired_tx: CrossbeamSender<PreparedPlayback>,
+    gapless_retired_rx: CrossbeamReceiver<PreparedPlayback>,
+    gapless_notify: Arc<Notify>,
+    stream_generation: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -560,6 +652,12 @@ impl AudioPlayer {
 
         let (is_playing_tx, is_playing_rx) = watch::channel(false);
         let mut is_playing_rx_for_timeline = is_playing_rx.clone();
+        // Fixed-capacity channels keep source promotion allocation-free in the
+        // real-time CPAL callback. A transition is drained immediately after
+        // the accompanying notification, so these slots only cover bursts.
+        let (gapless_boundary_tx, gapless_boundary_rx) = crossbeam_bounded(8);
+        let (gapless_retired_tx, gapless_retired_rx) = crossbeam_bounded(32);
+        let gapless_notify = Arc::new(Notify::new());
 
         let audio_info_reader = current_audio_info.clone();
         let emitter_pos = AudioPlayerEventEmitter::new(evt_sender.clone());
@@ -649,6 +747,14 @@ impl AudioPlayer {
             playback_state,
             npc_event_rx,
             fft_player,
+            gapless_command_tx: None,
+            gapless_prepare_generation: Arc::new(AtomicU64::new(0)),
+            gapless_boundary_tx,
+            gapless_boundary_rx,
+            gapless_retired_tx,
+            gapless_retired_rx,
+            gapless_notify,
+            stream_generation: 0,
         })
     }
 
@@ -719,6 +825,129 @@ impl AudioPlayer {
         self.media_manager.update_timeline(position, duration);
     }
 
+    async fn handle_gapless_boundary(&mut self, boundary: GaplessBoundary) -> anyhow::Result<()> {
+        let is_current_stream = self.stream_generation == boundary.stream_generation
+            && self
+                .current_song
+                .as_ref()
+                .is_some_and(|song| song.get_id() == boundary.ended_music_id.as_ref())
+            && self.current_playback_id == boundary.ended_playback_id.as_ref();
+        if !is_current_stream {
+            return Ok(());
+        }
+        if self.gapless_prepare_generation.load(Ordering::Acquire) != boundary.prepare_generation {
+            self.finish_current_track_legacy(
+                boundary.ended_music_id.to_string(),
+                boundary.ended_playback_id.to_string(),
+            )
+            .await;
+            return Ok(());
+        }
+
+        let next_music_id = boundary.next_song.get_id();
+        self.current_song = Some(boundary.next_song);
+        self.current_playback_id = boundary.next_playback_id.to_string();
+        self.current_decoder_handle = Some(boundary.next_decoder_handle);
+        self.cpal_state.publish_loudness_normalization(
+            boundary.next_normalization_enabled,
+            boundary.next_track_gain,
+        );
+        self.cpal_state
+            .track_finished
+            .store(false, Ordering::Release);
+        self.cpal_state.consumed_frames.store(0, Ordering::Release);
+
+        {
+            let mut state = self.playback_state.write();
+            state.base_time_sec = 0.0;
+            state.samples_counter = Some(boundary.next_samples_counter);
+        }
+        *self.current_audio_info.write().await = boundary.next_audio_info.clone();
+        *self.current_audio_quality.write().await = boundary.next_audio_quality.clone();
+
+        self.spawn_fft_pacemaker(boundary.next_fft_consumer, self.target_sample_rate);
+        self.media_manager
+            .update_metadata(&boundary.next_audio_info);
+        self.media_manager
+            .update_timeline(0.0, boundary.next_audio_info.duration);
+
+        self.emitter()
+            .emit(AudioThreadEvent::TrackEnded {
+                music_id: boundary.ended_music_id.to_string(),
+                playback_id: boundary.ended_playback_id.to_string(),
+                gapless: true,
+                next_playback_id: Some(boundary.next_playback_id.to_string()),
+                next_music_id: Some(next_music_id.clone()),
+            })
+            .await?;
+        self.emitter()
+            .emit(AudioThreadEvent::LoadAudio {
+                music_id: next_music_id,
+                music_info: Box::new(boundary.next_audio_info),
+                quality: boundary.next_audio_quality,
+            })
+            .await?;
+
+        Ok(())
+    }
+
+    async fn finish_current_track_legacy(&mut self, music_id: String, playback_id: String) {
+        self.stream_generation = self.stream_generation.wrapping_add(1);
+        let gapless_generation = self
+            .gapless_prepare_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
+        if let Some(command_tx) = self.gapless_command_tx.take() {
+            let _ = command_tx.send(GaplessCommand::Clear {
+                generation: gapless_generation,
+            });
+        }
+        self.current_stream = None;
+        self.current_decoder_handle = None;
+        self.stream_is_running = false;
+        self.transport_intent_playing = false;
+        self.cpal_state.replace_stream_lifecycle(0.0, 0.0);
+
+        {
+            let mut state = self.playback_state.write();
+            state.base_time_sec = 0.0;
+        }
+
+        self.current_song = None;
+        self.cpal_state
+            .track_finished
+            .store(false, Ordering::Release);
+        let _ = self.is_playing_tx.send(false);
+
+        if let Err(error) = self
+            .emitter()
+            .emit(AudioThreadEvent::TrackEnded {
+                music_id,
+                playback_id,
+                gapless: false,
+                next_playback_id: None,
+                next_music_id: None,
+            })
+            .await
+        {
+            warn!("发送 TrackEnded 事件失败：{error:?}");
+        }
+    }
+
+    async fn drain_gapless_notifications(&mut self) {
+        while let Ok(boundary) = self.gapless_boundary_rx.try_recv() {
+            if let Err(error) = self.handle_gapless_boundary(boundary).await {
+                warn!("处理无缝切歌边界时出错：{error:?}");
+            }
+        }
+
+        // Decoder sources and metadata may own sizable ring buffers and cover
+        // bytes. Drop displaced candidates here instead of in the audio thread.
+        while let Ok(retired) = self.gapless_retired_rx.try_recv() {
+            drop(retired);
+        }
+    }
+
     async fn pause_stream_after_fade_if_ready(&mut self) {
         if self.transport_intent_playing
             || !self.stream_is_running
@@ -741,15 +970,29 @@ impl AudioPlayer {
     pub async fn run(mut self) {
         let mut check_end_interval = tokio::time::interval(Duration::from_millis(50));
         check_end_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let gapless_notify = self.gapless_notify.clone();
 
         loop {
             tokio::select! {
                 biased;
+                _ = gapless_notify.notified() => {
+                    self.drain_gapless_notifications().await;
+                },
                 msg = self.msg_receiver.recv() => {
                     if let Some(msg) = msg {
                         if let Some(AudioThreadMessage::Close) = &msg.data { break; }
+                        let supersedes_current_stream = matches!(
+                            msg.data.as_ref(),
+                            Some(AudioThreadMessage::PlayAudio { .. } | AudioThreadMessage::StopAudio)
+                        );
+                        if !supersedes_current_stream {
+                            self.drain_gapless_notifications().await;
+                        }
                         if let Err(err) = self.process_message(msg).await {
                             warn!("处理音频线程消息时出错：{err:?}");
+                        }
+                        if supersedes_current_stream {
+                            self.drain_gapless_notifications().await;
                         }
                     } else { break; }
                 },
@@ -769,34 +1012,7 @@ impl AudioPlayer {
                             .map(SongData::get_id)
                             .unwrap_or_default();
                         let playback_id = self.current_playback_id.clone();
-                        self.current_stream = None;
-                        self.stream_is_running = false;
-                        self.transport_intent_playing = false;
-                        self.cpal_state.replace_stream_lifecycle(0.0, 0.0);
-
-                        {
-                            let mut state = self.playback_state.write();
-                            state.base_time_sec = 0.0;
-                        }
-
-                        self.current_song = None;
-
-                        self.cpal_state
-                            .track_finished
-                            .store(false, Ordering::Release);
-
-                        let _ = self.is_playing_tx.send(false);
-
-                        if let Err(e) = self
-                            .emitter()
-                            .emit(AudioThreadEvent::TrackEnded {
-                                music_id,
-                                playback_id,
-                            })
-                            .await
-                        {
-                            warn!("发送 TrackEnded 事件失败：{e:?}");
-                        }
+                        self.finish_current_track_legacy(music_id, playback_id).await;
                     }
                 }
             }
@@ -884,6 +1100,9 @@ impl AudioPlayer {
                     self.current_playback_id = playback_id.clone().unwrap_or_default();
                     self.start_playing_song(true, *start_paused).await?;
                 }
+                AudioThreadMessage::SetGaplessNext { next } => {
+                    self.set_gapless_next(next.clone());
+                }
                 AudioThreadMessage::SetVolume { volume } => {
                     self.volume = (*volume as f32).clamp(0.0, 1.0);
                     self.cpal_state
@@ -925,7 +1144,18 @@ impl AudioPlayer {
                     self.media_manager.set_enabled(*enabled);
                 }
                 AudioThreadMessage::StopAudio => {
+                    self.stream_generation = self.stream_generation.wrapping_add(1);
+                    let gapless_generation = self
+                        .gapless_prepare_generation
+                        .fetch_add(1, Ordering::AcqRel)
+                        .wrapping_add(1);
+                    if let Some(command_tx) = self.gapless_command_tx.take() {
+                        let _ = command_tx.send(GaplessCommand::Clear {
+                            generation: gapless_generation,
+                        });
+                    }
                     self.current_stream = None;
+                    self.current_decoder_handle = None;
                     self.stream_is_running = false;
                     self.transport_intent_playing = false;
                     self.cpal_state.replace_stream_lifecycle(0.0, 0.0);
@@ -971,11 +1201,120 @@ impl AudioPlayer {
         Ok(())
     }
 
+    fn set_gapless_next(&mut self, next: Option<GaplessPlaybackData>) {
+        let generation = self
+            .gapless_prepare_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
+        let Some(command_tx) = self.gapless_command_tx.clone() else {
+            return;
+        };
+        let _ = command_tx.send(GaplessCommand::Clear { generation });
+
+        let Some(next) = next else {
+            return;
+        };
+
+        let target_channels = self.target_channels;
+        let target_sample_rate = self.target_sample_rate;
+        let generation_state = self.gapless_prepare_generation.clone();
+        tokio::task::spawn(async move {
+            let source_stream = match Self::open_song_source(&next.song).await {
+                Ok(source) => source,
+                Err(error) => {
+                    warn!("打开无缝播放候选歌曲失败：{error:?}");
+                    return;
+                }
+            };
+            if generation_state.load(Ordering::Acquire) != generation {
+                return;
+            }
+
+            let spawned = match tokio::task::spawn_blocking(move || {
+                FFmpegDecoder::spawn(source_stream, target_channels, target_sample_rate)
+            })
+            .await
+            {
+                Ok(Ok(spawned)) => spawned,
+                Ok(Err(error)) => {
+                    warn!("预解码无缝播放候选歌曲失败：{error:?}");
+                    return;
+                }
+                Err(error) => {
+                    warn!("无缝播放预解码任务异常结束：{error:?}");
+                    return;
+                }
+            };
+            if generation_state.load(Ordering::Acquire) != generation {
+                return;
+            }
+
+            let normalization_enabled = next
+                .loudness_normalization
+                .as_ref()
+                .is_some_and(|normalization| normalization.enabled);
+            let track_gain = next
+                .loudness_normalization
+                .as_ref()
+                .map_or(1.0, |normalization| {
+                    loudness_normalization_gain(
+                        normalization.enabled,
+                        normalization.integrated_loudness_lufs,
+                    )
+                });
+            let audio_info = spawned.source.audio_info();
+            let audio_quality = spawned.source.audio_quality();
+            let music_id = Arc::<str>::from(next.song.get_id());
+            let playback_id = Arc::<str>::from(next.playback_id);
+            let _ = command_tx.send(GaplessCommand::Replace {
+                generation,
+                prepared: PreparedPlayback {
+                    song: next.song,
+                    music_id,
+                    playback_id,
+                    audio_info,
+                    audio_quality,
+                    normalization_enabled,
+                    track_gain,
+                    spawned,
+                },
+            });
+        });
+    }
+
+    async fn open_song_source(song_data: &SongData) -> anyhow::Result<Box<dyn CustomMediaSource>> {
+        if song_data.file_path.starts_with("http://") || song_data.file_path.starts_with("https://")
+        {
+            let bytes = reqwest::get(&song_data.file_path)
+                .await
+                .with_context(|| format!("下载 {} 失败", song_data.file_path))?
+                .bytes()
+                .await
+                .with_context(|| format!("读取 {} 响应失败", song_data.file_path))?;
+            Ok(Box::new(Cursor::new(bytes.to_vec())))
+        } else {
+            let file = File::open(&song_data.file_path)
+                .with_context(|| format!("打开 {} 失败", song_data.file_path))?;
+            Ok(Box::new(file))
+        }
+    }
+
     async fn start_playing_song(
         &mut self,
         clear_sink: bool,
         start_paused: bool,
     ) -> anyhow::Result<()> {
+        self.stream_generation = self.stream_generation.wrapping_add(1);
+        let stream_generation = self.stream_generation;
+        let gapless_generation = self
+            .gapless_prepare_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
+        if let Some(command_tx) = self.gapless_command_tx.take() {
+            let _ = command_tx.send(GaplessCommand::Clear {
+                generation: gapless_generation,
+            });
+        }
         self.cpal_state
             .replace_stream_lifecycle(0.0, if start_paused { 0.0 } else { 1.0 });
         if clear_sink {
@@ -997,22 +1336,7 @@ impl AudioPlayer {
             })
             .await?;
 
-        let source_stream: Box<dyn CustomMediaSource> =
-            if song_data.file_path.starts_with("http://")
-                || song_data.file_path.starts_with("https://")
-            {
-                let bytes = reqwest::get(&song_data.file_path)
-                    .await
-                    .with_context(|| format!("下载 {} 失败", song_data.file_path))?
-                    .bytes()
-                    .await
-                    .with_context(|| format!("读取 {} 响应失败", song_data.file_path))?;
-                Box::new(Cursor::new(bytes.to_vec()))
-            } else {
-                let file = File::open(&song_data.file_path)
-                    .with_context(|| format!("打开 {} 失败", song_data.file_path))?;
-                Box::new(file)
-            };
+        let source_stream = Self::open_song_source(&song_data).await?;
 
         let target_channels = self.target_channels;
         let target_sample_rate = self.target_sample_rate;
@@ -1035,8 +1359,22 @@ impl AudioPlayer {
         *self.current_audio_info.write().await = info.clone();
         *self.current_audio_quality.write().await = quality.clone();
 
-        let mut audio_iter = spawned.source;
+        let mut audio_iter = spawned.source.peekable();
         let cpal_state_clone = self.cpal_state.clone();
+        let (gapless_command_tx, gapless_command_rx): (
+            CrossbeamSender<GaplessCommand>,
+            CrossbeamReceiver<GaplessCommand>,
+        ) = crossbeam_unbounded();
+        self.gapless_command_tx = Some(gapless_command_tx);
+        let gapless_boundary_tx = self.gapless_boundary_tx.clone();
+        let gapless_retired_tx = self.gapless_retired_tx.clone();
+        let gapless_notify = self.gapless_notify.clone();
+        let gapless_prepare_generation = self.gapless_prepare_generation.clone();
+        let mut active_music_id = Arc::<str>::from(song_data.get_id());
+        let mut active_playback_id = Arc::<str>::from(self.current_playback_id.clone());
+        let mut prepared_slot = GaplessPreparedSlot::new(gapless_generation);
+        let mut pending_retired: Option<PreparedPlayback> = None;
+        let mut pending_boundary: Option<GaplessBoundary> = None;
 
         cpal_state_clone
             .track_finished
@@ -1061,9 +1399,66 @@ impl AudioPlayer {
         let stream = self.cpal_device.build_output_stream(
             &self.cpal_config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                if let Some(boundary) = pending_boundary.take() {
+                    match gapless_boundary_tx.try_send(boundary) {
+                        Ok(()) => gapless_notify.notify_one(),
+                        Err(error) => pending_boundary = Some(error.into_inner()),
+                    }
+                }
+
+                let mut can_process_gapless_commands = true;
+                if let Some(retired) = pending_retired.take() {
+                    match gapless_retired_tx.try_send(retired) {
+                        Ok(()) => gapless_notify.notify_one(),
+                        Err(error) => {
+                            pending_retired = Some(error.into_inner());
+                            can_process_gapless_commands = false;
+                        }
+                    }
+                }
+
+                if can_process_gapless_commands {
+                    while let Ok(command) = gapless_command_rx.try_recv() {
+                        let retired = match command {
+                            GaplessCommand::Clear { generation } => prepared_slot.clear(generation),
+                            GaplessCommand::Replace {
+                                generation,
+                                prepared,
+                            } => match prepared_slot.replace(generation, prepared) {
+                                Ok(replaced) => replaced,
+                                Err(stale) => Some(stale),
+                            },
+                        };
+                        let Some(retired) = retired else {
+                            continue;
+                        };
+                        match gapless_retired_tx.try_send(retired) {
+                            Ok(()) => gapless_notify.notify_one(),
+                            Err(error) => {
+                                pending_retired = Some(error.into_inner());
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                let current_gapless_generation = gapless_prepare_generation.load(Ordering::Acquire);
+                if pending_retired.is_none()
+                    && prepared_slot.generation() != current_gapless_generation
+                {
+                    if let Some(retired) = prepared_slot.take() {
+                        match gapless_retired_tx.try_send(retired) {
+                            Ok(()) => gapless_notify.notify_one(),
+                            Err(error) => {
+                                pending_retired = Some(error.into_inner());
+                            }
+                        }
+                    }
+                }
+
                 let current_volume =
                     f32::from_bits(cpal_state_clone.volume_bits.load(Ordering::Relaxed));
-                let (normalization_enabled, target_track_gain) =
+                let (mut normalization_enabled, mut target_track_gain) =
                     cpal_state_clone.loudness_normalization_snapshot();
                 let target_transport_gain = sanitize_transport_gain(f32::from_bits(
                     cpal_state_clone
@@ -1075,7 +1470,7 @@ impl AudioPlayer {
                 let callback_has_frames = !data.is_empty();
                 let mut eof_reached = false;
                 let mut local_consumed_samples = 0;
-                let unity_gain = output_gain_state.is_unity(target_track_gain);
+                let mut unity_gain = output_gain_state.is_unity(target_track_gain);
 
                 for output_chunk in data.chunks_mut(callback_chunk_samples) {
                     let mut enforce_peak_ceiling = false;
@@ -1083,6 +1478,81 @@ impl AudioPlayer {
                         let transport_gain =
                             transport_fade_state.advance_frame(target_transport_gain);
                         transport_gains[frame_index] = transport_gain;
+                        let source_is_exhausted =
+                            transport_gain != 0.0 && audio_iter.peek().is_none();
+                        let hold_for_pending_boundary =
+                            source_is_exhausted && pending_boundary.is_some();
+                        if source_is_exhausted && !hold_for_pending_boundary {
+                            let prepared_is_ready = prepared_slot
+                                .as_ref()
+                                .is_some_and(|prepared| prepared.spawned.source.is_ready())
+                                && prepared_slot.generation()
+                                    == gapless_prepare_generation.load(Ordering::Acquire);
+                            if prepared_is_ready {
+                                let prepare_generation = prepared_slot.generation();
+                                let prepared =
+                                    prepared_slot.take().expect("已确认无缝播放候选存在");
+                                let ended_music_id = Arc::clone(&active_music_id);
+                                let ended_playback_id = Arc::clone(&active_playback_id);
+                                let PreparedPlayback {
+                                    song,
+                                    music_id,
+                                    playback_id,
+                                    audio_info,
+                                    audio_quality,
+                                    normalization_enabled: next_normalization_enabled,
+                                    track_gain: next_track_gain,
+                                    spawned,
+                                } = prepared;
+                                let SpawnedDecoder {
+                                    source,
+                                    fft_consumer,
+                                    handle,
+                                    samples_counter,
+                                } = spawned;
+
+                                audio_iter = source.peekable();
+                                active_music_id = Arc::clone(&music_id);
+                                active_playback_id = Arc::clone(&playback_id);
+                                normalization_enabled = next_normalization_enabled;
+                                target_track_gain = next_track_gain;
+                                unity_gain = output_gain_state.is_unity(target_track_gain);
+                                cpal_state_clone.publish_loudness_normalization(
+                                    normalization_enabled,
+                                    target_track_gain,
+                                );
+                                cpal_state_clone
+                                    .track_finished
+                                    .store(false, Ordering::Release);
+                                cpal_state_clone.consumed_frames.store(0, Ordering::Release);
+                                local_consumed_samples = 0;
+                                eof_reached = false;
+
+                                let boundary = GaplessBoundary {
+                                    stream_generation,
+                                    prepare_generation,
+                                    ended_music_id,
+                                    ended_playback_id,
+                                    next_song: song,
+                                    next_playback_id: playback_id,
+                                    next_audio_info: audio_info,
+                                    next_audio_quality: audio_quality,
+                                    next_normalization_enabled,
+                                    next_track_gain,
+                                    next_decoder_handle: handle,
+                                    next_samples_counter: samples_counter,
+                                    next_fft_consumer: fft_consumer,
+                                };
+                                match gapless_boundary_tx.try_send(boundary) {
+                                    Ok(()) => gapless_notify.notify_one(),
+                                    Err(error) => {
+                                        pending_boundary = Some(error.into_inner());
+                                    }
+                                }
+                            } else {
+                                eof_reached = true;
+                            }
+                        }
                         let track_gain = if unity_gain {
                             1.0
                         } else {
@@ -1096,7 +1566,7 @@ impl AudioPlayer {
                             frame,
                             &mut audio_iter,
                             track_gain,
-                            transport_gain != 0.0,
+                            transport_gain != 0.0 && !hold_for_pending_boundary,
                         );
                         local_consumed_samples += consumed_samples;
                         eof_reached |= frame_eof_reached;
@@ -1248,6 +1718,15 @@ impl AudioPlayer {
 impl Drop for AudioPlayer {
     fn drop(&mut self) {
         self.cancel_token.cancel();
+        let gapless_generation = self
+            .gapless_prepare_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
+        if let Some(command_tx) = self.gapless_command_tx.take() {
+            let _ = command_tx.send(GaplessCommand::Clear {
+                generation: gapless_generation,
+            });
+        }
         if let Some(token) = &self.current_song_token {
             token.cancel();
         }
@@ -1279,7 +1758,20 @@ impl AudioPlayerHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bs1770::{ChannelLoudnessMeter, gated_mean, reduce_stereo};
+    use bs1770::{gated_mean, reduce_stereo, ChannelLoudnessMeter};
+
+    #[test]
+    fn stale_gapless_replace_cannot_restore_a_cleared_candidate() {
+        let mut slot = GaplessPreparedSlot::new(1);
+        assert_eq!(slot.replace(1, "first"), Ok(None));
+        assert_eq!(slot.clear(2), Some("first"));
+        assert_eq!(slot.replace(1, "stale"), Err("stale"));
+        assert!(slot.as_ref().is_none());
+
+        assert_eq!(slot.replace(2, "current"), Ok(None));
+        assert_eq!(slot.clear(1), None);
+        assert_eq!(slot.take(), Some("current"));
+    }
 
     fn integrated_stereo_loudness(samples: &[f32], sample_rate: u32) -> f32 {
         let mut left = ChannelLoudnessMeter::new(sample_rate);
@@ -1449,16 +1941,12 @@ mod tests {
             0
         );
         assert_eq!(old_stream_state.transport_fade_snapshot(), (0.0, 0.4));
-        assert!(
-            old_stream_state
-                .transport_pause_ready
-                .load(Ordering::Acquire)
-        );
-        assert!(
-            !current_stream_state
-                .transport_pause_ready
-                .load(Ordering::Acquire)
-        );
+        assert!(old_stream_state
+            .transport_pause_ready
+            .load(Ordering::Acquire));
+        assert!(!current_stream_state
+            .transport_pause_ready
+            .load(Ordering::Acquire));
     }
 
     #[test]
@@ -1525,11 +2013,9 @@ mod tests {
         process_callback_block(&mut samples, 48_000, &callback_state);
 
         assert_eq!(track_gain, 1.0);
-        assert!(
-            samples
-                .iter()
-                .all(|sample| sample.abs() <= NORMALIZED_PEAK_CEILING + 1.0e-6)
-        );
+        assert!(samples
+            .iter()
+            .all(|sample| sample.abs() <= NORMALIZED_PEAK_CEILING + 1.0e-6));
     }
 
     #[test]
@@ -1542,11 +2028,9 @@ mod tests {
         process_callback_block(&mut samples, 48_000, &callback_state);
 
         assert_eq!(track_gain, 1.0);
-        assert!(
-            samples
-                .iter()
-                .all(|sample| sample.abs() <= NORMALIZED_PEAK_CEILING + 1.0e-6)
-        );
+        assert!(samples
+            .iter()
+            .all(|sample| sample.abs() <= NORMALIZED_PEAK_CEILING + 1.0e-6));
     }
 
     #[test]
@@ -1579,11 +2063,9 @@ mod tests {
 
         assert!(!enabled);
         assert!(applied_track_gain > 1.0);
-        assert!(
-            samples
-                .iter()
-                .all(|sample| sample.abs() <= NORMALIZED_PEAK_CEILING + 1.0e-6)
-        );
+        assert!(samples
+            .iter()
+            .all(|sample| sample.abs() <= NORMALIZED_PEAK_CEILING + 1.0e-6));
     }
 
     #[test]
@@ -1646,11 +2128,9 @@ mod tests {
             samples[0] < 0.1,
             "future peak did not start the attack early"
         );
-        assert!(
-            samples
-                .iter()
-                .all(|sample| sample.abs() <= NORMALIZED_PEAK_CEILING + 1.0e-6)
-        );
+        assert!(samples
+            .iter()
+            .all(|sample| sample.abs() <= NORMALIZED_PEAK_CEILING + 1.0e-6));
         assert!((samples[10] / samples[11] - 2.0).abs() < 1.0e-6);
         assert_eq!(samples.len(), 16);
     }

@@ -74,6 +74,7 @@ import {
 	DarkMode,
 	darkModeAtom,
 	enableAlwaysOnTopAtom,
+	enableGaplessPlaybackAtom,
 	enableLoudnessNormalizationAtom,
 	enableMediaControlsAtom,
 	enableTaskbarLyricAtom,
@@ -372,6 +373,14 @@ const GeneralSettings = () => {
 					"根据每首本地歌曲的感知响度自动调整播放增益，减少切歌时音量忽大忽小的情况。",
 				)}
 				configAtom={enableLoudnessNormalizationAtom}
+			/>
+			<SwitchSettings
+				label={t("page.settings.general.gaplessPlayback.label", "无缝播放")}
+				description={t(
+					"page.settings.general.gaplessPlayback.description",
+					"提前准备队列中的下一首歌曲，并在自然结束时连续播放，不插入额外静音。",
+				)}
+				configAtom={enableGaplessPlaybackAtom}
 			/>
 			{os === "windows" && (
 				<SwitchSettings

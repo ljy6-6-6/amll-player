@@ -1,18 +1,18 @@
 use std::{
     sync::{
-        Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
     },
     thread,
     time::Duration,
 };
 
-use crossbeam_channel::{Sender, unbounded};
+use crossbeam_channel::{unbounded, Sender};
 use crossbeam_utils::sync::{Parker, Unparker};
 use ffmpeg_audio::{AudioReader, ResampleOptions};
 use ringbuf::{
-    HeapRb,
     traits::{Consumer, Producer, Split},
+    HeapCons, HeapRb,
 };
 use tracing::warn;
 
@@ -21,6 +21,8 @@ use crate::{
     player::{AudioInfo, CustomMediaSource},
     utils::build_audio_info,
 };
+
+const GAPLESS_PREBUFFER_DURATION_MS: u32 = 1_000;
 
 #[derive(Clone, Default)]
 pub struct DecoderSharedState {
@@ -42,6 +44,7 @@ pub struct AudioSource<C> {
     shared_state: DecoderSharedState,
 
     watermark: usize,
+    ready_watermark: usize,
 
     samples_counter: Arc<AtomicU64>,
 }
@@ -53,6 +56,14 @@ impl<C> AudioSource<C> {
 
     pub fn audio_quality(&self) -> AudioQuality {
         self.shared_state.quality.clone()
+    }
+}
+
+impl<C: Consumer<Item = f32>> AudioSource<C> {
+    pub fn is_ready(&self) -> bool {
+        let buffered_samples = self.consumer.occupied_len();
+        buffered_samples >= self.ready_watermark
+            || (buffered_samples > 0 && self.shared_state.is_eof.load(Ordering::Acquire))
     }
 }
 
@@ -90,9 +101,9 @@ impl<C> Drop for AudioSource<C> {
     }
 }
 
-pub struct SpawnedDecoder<C, FC> {
-    pub source: AudioSource<C>,
-    pub fft_consumer: FC,
+pub struct SpawnedDecoder {
+    pub source: AudioSource<HeapCons<f32>>,
+    pub fft_consumer: HeapCons<f32>,
     pub handle: FFmpegDecoder,
     pub samples_counter: Arc<AtomicU64>,
 }
@@ -114,12 +125,7 @@ impl FFmpegDecoder {
         source: T,
         target_channels: u16,
         target_sample_rate: u32,
-    ) -> anyhow::Result<
-        SpawnedDecoder<
-            impl Consumer<Item = f32> + Send + 'static,
-            impl Consumer<Item = f32> + Send + 'static,
-        >,
-    > {
+    ) -> anyhow::Result<SpawnedDecoder> {
         let mut reader = AudioReader::new(source)?;
 
         let src_info = reader.source_info();
@@ -165,6 +171,10 @@ impl FFmpegDecoder {
             unparker: unparker.clone(),
             shared_state: shared_state.clone(),
             watermark: buffer_capacity / 2,
+            ready_watermark: (target_sample_rate
+                * target_channels as u32
+                * GAPLESS_PREBUFFER_DURATION_MS
+                / 1_000) as usize,
             samples_counter: samples_counter.clone(),
         };
 
@@ -173,127 +183,124 @@ impl FFmpegDecoder {
             unparker: unparker.clone(),
         };
 
-        thread::spawn(move || {
-            loop {
-                if shared_state.is_shutdown.load(Ordering::Acquire) {
-                    break;
-                }
+        thread::spawn(move || loop {
+            if shared_state.is_shutdown.load(Ordering::Acquire) {
+                break;
+            }
 
-                while let Ok(cmd) = cmd_rx.try_recv() {
-                    match cmd {
-                        DecoderCommand::Seek(target) => {
-                            shared_state.flush_req.store(true, Ordering::Release);
-                            while !shared_state.flush_ack.load(Ordering::Acquire) {
-                                if shared_state.is_shutdown.load(Ordering::Acquire) {
-                                    return;
-                                }
-                                thread::yield_now();
+            while let Ok(cmd) = cmd_rx.try_recv() {
+                match cmd {
+                    DecoderCommand::Seek(target) => {
+                        shared_state.flush_req.store(true, Ordering::Release);
+                        while !shared_state.flush_ack.load(Ordering::Acquire) {
+                            if shared_state.is_shutdown.load(Ordering::Acquire) {
+                                return;
                             }
-
-                            let _ = reader.seek(target, ffmpeg_audio::SeekMode::Accurate);
-                            let _ = audio_resampler.flush();
-                            let _ = fft_resampler.flush();
-
-                            shared_state.flush_req.store(false, Ordering::Release);
-                            shared_state.flush_ack.store(false, Ordering::Release);
-                            shared_state.is_eof.store(false, Ordering::Release);
+                            thread::yield_now();
                         }
+
+                        let _ = reader.seek(target, ffmpeg_audio::SeekMode::Accurate);
+                        let _ = audio_resampler.flush();
+                        let _ = fft_resampler.flush();
+
+                        shared_state.flush_req.store(false, Ordering::Release);
+                        shared_state.flush_ack.store(false, Ordering::Release);
+                        shared_state.is_eof.store(false, Ordering::Release);
                     }
                 }
+            }
 
-                if shared_state.is_eof.load(Ordering::Acquire) {
-                    parker.park();
-                    continue;
-                }
+            if shared_state.is_eof.load(Ordering::Acquire) {
+                parker.park();
+                continue;
+            }
 
-                match reader.receive_frame() {
-                    Ok(Some(frame)) => {
-                        if let Ok(true) = fft_resampler.process::<f32>(Some(&frame)) {
-                            let fft_data = fft_resampler.output_as::<f32>();
-                            let _ = fft_producer.push_slice(fft_data);
-                        }
+            match reader.receive_frame() {
+                Ok(Some(frame)) => {
+                    if let Ok(true) = fft_resampler.process::<f32>(Some(&frame)) {
+                        let fft_data = fft_resampler.output_as::<f32>();
+                        let _ = fft_producer.push_slice(fft_data);
+                    }
 
-                        if let Ok(true) = audio_resampler.process::<f32>(Some(&frame)) {
-                            let audio_data = audio_resampler.output_as::<f32>();
-                            let mut written = 0;
-                            while written < audio_data.len() {
-                                if shared_state.is_shutdown.load(Ordering::Acquire) {
-                                    return;
-                                }
-                                if !cmd_rx.is_empty() {
-                                    break;
-                                }
+                    if let Ok(true) = audio_resampler.process::<f32>(Some(&frame)) {
+                        let audio_data = audio_resampler.output_as::<f32>();
+                        let mut written = 0;
+                        while written < audio_data.len() {
+                            if shared_state.is_shutdown.load(Ordering::Acquire) {
+                                return;
+                            }
+                            if !cmd_rx.is_empty() {
+                                break;
+                            }
 
-                                let pushed = audio_producer.push_slice(&audio_data[written..]);
-                                written += pushed;
+                            let pushed = audio_producer.push_slice(&audio_data[written..]);
+                            written += pushed;
 
-                                if pushed == 0 {
-                                    parker.park();
-                                }
+                            if pushed == 0 {
+                                parker.park();
                             }
                         }
                     }
-                    Ok(None) => {
-                        let mut interrupted_for_command = false;
-                        loop {
-                            match audio_resampler.process::<f32>(None) {
-                                Ok(true) => {
-                                    let audio_data = audio_resampler.output_as::<f32>();
-                                    let mut written = 0;
-                                    while written < audio_data.len() {
-                                        if shared_state.is_shutdown.load(Ordering::Acquire) {
-                                            return;
-                                        }
-                                        if !cmd_rx.is_empty() {
-                                            interrupted_for_command = true;
-                                            break;
-                                        }
-
-                                        let pushed =
-                                            audio_producer.push_slice(&audio_data[written..]);
-                                        written += pushed;
-
-                                        if pushed == 0 {
-                                            parker.park();
-                                        }
+                }
+                Ok(None) => {
+                    let mut interrupted_for_command = false;
+                    loop {
+                        match audio_resampler.process::<f32>(None) {
+                            Ok(true) => {
+                                let audio_data = audio_resampler.output_as::<f32>();
+                                let mut written = 0;
+                                while written < audio_data.len() {
+                                    if shared_state.is_shutdown.load(Ordering::Acquire) {
+                                        return;
                                     }
-
-                                    if interrupted_for_command {
+                                    if !cmd_rx.is_empty() {
+                                        interrupted_for_command = true;
                                         break;
                                     }
+
+                                    let pushed = audio_producer.push_slice(&audio_data[written..]);
+                                    written += pushed;
+
+                                    if pushed == 0 {
+                                        parker.park();
+                                    }
                                 }
-                                Ok(false) => break,
-                                Err(error) => {
-                                    warn!("排空音频重采样器失败: {error:?}");
+
+                                if interrupted_for_command {
                                     break;
                                 }
                             }
-                        }
-
-                        if interrupted_for_command {
-                            continue;
-                        }
-
-                        loop {
-                            match fft_resampler.process::<f32>(None) {
-                                Ok(true) => {
-                                    let fft_data = fft_resampler.output_as::<f32>();
-                                    let _ = fft_producer.push_slice(fft_data);
-                                }
-                                Ok(false) => break,
-                                Err(error) => {
-                                    warn!("排空 FFT 重采样器失败: {error:?}");
-                                    break;
-                                }
+                            Ok(false) => break,
+                            Err(error) => {
+                                warn!("排空音频重采样器失败: {error:?}");
+                                break;
                             }
                         }
+                    }
 
-                        shared_state.is_eof.store(true, Ordering::Release);
+                    if interrupted_for_command {
+                        continue;
                     }
-                    Err(e) => {
-                        warn!("解码线程发生错误: {e:?}");
-                        shared_state.is_eof.store(true, Ordering::Release);
+
+                    loop {
+                        match fft_resampler.process::<f32>(None) {
+                            Ok(true) => {
+                                let fft_data = fft_resampler.output_as::<f32>();
+                                let _ = fft_producer.push_slice(fft_data);
+                            }
+                            Ok(false) => break,
+                            Err(error) => {
+                                warn!("排空 FFT 重采样器失败: {error:?}");
+                                break;
+                            }
+                        }
                     }
+
+                    shared_state.is_eof.store(true, Ordering::Release);
+                }
+                Err(e) => {
+                    warn!("解码线程发生错误: {e:?}");
+                    shared_state.is_eof.store(true, Ordering::Release);
                 }
             }
         });
@@ -304,5 +311,43 @@ impl FFmpegDecoder {
             handle,
             samples_counter,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn source_with_buffered_samples(
+        buffered_samples: usize,
+        ready_watermark: usize,
+        eof: bool,
+    ) -> AudioSource<HeapCons<f32>> {
+        let ring = HeapRb::<f32>::new(32);
+        let (mut producer, consumer) = ring.split();
+        let _ = producer.push_slice(&vec![0.25; buffered_samples]);
+        let parker = Parker::new();
+        let shared_state = DecoderSharedState::default();
+        shared_state.is_eof.store(eof, Ordering::Release);
+        AudioSource {
+            consumer,
+            unparker: parker.unparker().clone(),
+            shared_state,
+            watermark: 16,
+            ready_watermark,
+            samples_counter: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    #[test]
+    fn prepared_source_waits_for_the_prebuffer_watermark() {
+        assert!(!source_with_buffered_samples(4, 5, false).is_ready());
+        assert!(source_with_buffered_samples(5, 5, false).is_ready());
+    }
+
+    #[test]
+    fn short_finished_source_is_ready_but_empty_source_is_not() {
+        assert!(source_with_buffered_samples(2, 5, true).is_ready());
+        assert!(!source_with_buffered_samples(0, 5, true).is_ready());
     }
 }

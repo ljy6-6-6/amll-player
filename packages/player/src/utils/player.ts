@@ -49,6 +49,17 @@ export type AudioThreadMessageMap = {
 		playbackId?: string;
 		startPaused?: boolean;
 	};
+	setGaplessNext: {
+		next: {
+			song: SongData;
+			loudnessNormalization?: {
+				enabled: boolean;
+				integratedLoudnessLufs: number | null;
+				samplePeak: number | null;
+			};
+			playbackId: string;
+		} | null;
+	};
 	setVolume: {
 		volume: number;
 	};
@@ -116,7 +127,13 @@ export type AudioThreadEvent =
 	  }
 	| {
 			type: "trackEnded";
-			data: { musicId: string; playbackId: string };
+			data: {
+				musicId: string;
+				playbackId: string;
+				gapless?: boolean;
+				nextPlaybackId?: string | null;
+				nextMusicId?: string | null;
+			};
 	  }
 	| {
 			type: "hardwareMediaCommand";
