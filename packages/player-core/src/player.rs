@@ -168,7 +168,8 @@ const MAX_TRACK_GAIN: f32 = 2.511_886_4;
 const NORMALIZED_PEAK_CEILING: f32 = 0.891_250_9;
 const TRACK_GAIN_RISE_MS: f32 = 250.0;
 const TRACK_GAIN_FALL_MS: f32 = 50.0;
-const TRANSPORT_FADE_DURATION_MS: u32 = 240;
+const TRANSPORT_FADE_IN_DURATION_MS: u32 = 80;
+const TRANSPORT_FADE_OUT_DURATION_MS: u32 = 240;
 const PEAK_LIMITER_LOOKAHEAD_MS: u32 = 5;
 const PEAK_LIMITER_ATTACK_MS: f32 = 1.0;
 const PEAK_LIMITER_RELEASE_MS: f32 = 100.0;
@@ -213,18 +214,26 @@ fn sanitize_transport_gain(gain: f32) -> f32 {
 }
 
 struct TransportFadeState {
-    position_frame: u64,
-    fade_frames: u64,
+    position_tick: u64,
+    total_ticks: u64,
+    fade_in_step_ticks: u64,
+    fade_out_step_ticks: u64,
 }
 
 impl TransportFadeState {
     fn new(sample_rate: u32, initial_position: f32) -> Self {
-        let fade_frames =
-            frames_for_duration(sample_rate, TRANSPORT_FADE_DURATION_MS).max(1) as u64;
+        let fade_in_frames =
+            frames_for_duration(sample_rate, TRANSPORT_FADE_IN_DURATION_MS).max(1) as u64;
+        let fade_out_frames =
+            frames_for_duration(sample_rate, TRANSPORT_FADE_OUT_DURATION_MS).max(1) as u64;
+        let total_ticks = fade_in_frames.saturating_mul(fade_out_frames).max(1);
         Self {
-            position_frame: (sanitize_transport_gain(initial_position) * fade_frames as f32).round()
-                as u64,
-            fade_frames,
+            position_tick: (f64::from(sanitize_transport_gain(initial_position))
+                * total_ticks as f64)
+                .round() as u64,
+            total_ticks,
+            fade_in_step_ticks: fade_out_frames,
+            fade_out_step_ticks: fade_in_frames,
         }
     }
 
@@ -234,18 +243,25 @@ impl TransportFadeState {
     }
 
     fn advance_frame(&mut self, target_position: f32) -> f32 {
-        let target_frame =
-            (sanitize_transport_gain(target_position) * self.fade_frames as f32).round() as u64;
-        if self.position_frame < target_frame {
-            self.position_frame += 1;
-        } else if self.position_frame > target_frame {
-            self.position_frame -= 1;
+        let target_tick = (f64::from(sanitize_transport_gain(target_position))
+            * self.total_ticks as f64)
+            .round() as u64;
+        if self.position_tick < target_tick {
+            self.position_tick = self
+                .position_tick
+                .saturating_add(self.fade_in_step_ticks)
+                .min(target_tick);
+        } else if self.position_tick > target_tick {
+            self.position_tick = self
+                .position_tick
+                .saturating_sub(self.fade_out_step_ticks)
+                .max(target_tick);
         }
         self.current_gain()
     }
 
     fn current_gain(&self) -> f32 {
-        Self::gain_for_position(self.position_frame as f32 / self.fade_frames as f32)
+        Self::gain_for_position(self.position_tick as f32 / self.total_ticks as f32)
     }
 }
 
@@ -1311,28 +1327,29 @@ mod tests {
     #[test]
     fn transport_fade_reaches_both_endpoints_at_each_sample_rate() {
         for sample_rate in [44_100, 48_000, 96_000] {
-            let fade_frames = frames_for_duration(sample_rate, TRANSPORT_FADE_DURATION_MS);
+            let fade_in_frames = frames_for_duration(sample_rate, TRANSPORT_FADE_IN_DURATION_MS);
             let mut fade_in = TransportFadeState::new(sample_rate, 0.0);
             let mut previous_gain = 0.0;
-            for frame_index in 0..fade_frames {
+            for frame_index in 0..fade_in_frames {
                 let gain = fade_in.advance_frame(1.0);
                 assert!(gain >= previous_gain);
                 assert!((0.0..=1.0).contains(&gain));
-                if frame_index + 1 < fade_frames {
-                    assert!(fade_in.position_frame < fade_in.fade_frames);
+                if frame_index + 1 < fade_in_frames {
+                    assert!(fade_in.position_tick < fade_in.total_ticks);
                 }
                 previous_gain = gain;
             }
             assert_eq!(fade_in.current_gain(), 1.0);
 
+            let fade_out_frames = frames_for_duration(sample_rate, TRANSPORT_FADE_OUT_DURATION_MS);
             let mut fade_out = TransportFadeState::new(sample_rate, 1.0);
             previous_gain = 1.0;
-            for frame_index in 0..fade_frames {
+            for frame_index in 0..fade_out_frames {
                 let gain = fade_out.advance_frame(0.0);
                 assert!(gain <= previous_gain);
                 assert!((0.0..=1.0).contains(&gain));
-                if frame_index + 1 < fade_frames {
-                    assert!(fade_out.position_frame > 0);
+                if frame_index + 1 < fade_out_frames {
+                    assert!(fade_out.position_tick > 0);
                 }
                 previous_gain = gain;
             }
@@ -1341,25 +1358,28 @@ mod tests {
     }
 
     #[test]
-    fn transport_fade_stays_gradual_through_the_first_hundred_milliseconds() {
+    fn transport_fade_uses_short_resume_and_gradual_pause_envelopes() {
         let sample_rate = 48_000;
-        let elapsed_frames = frames_for_duration(sample_rate, 100);
+        let fade_in_frames = frames_for_duration(sample_rate, TRANSPORT_FADE_IN_DURATION_MS);
+        let first_hundred_ms = frames_for_duration(sample_rate, 100);
         let mut fade_in = TransportFadeState::new(sample_rate, 0.0);
         let mut fade_out = TransportFadeState::new(sample_rate, 1.0);
 
-        for _ in 0..elapsed_frames {
+        for _ in 0..fade_in_frames {
             fade_in.advance_frame(1.0);
+        }
+        for _ in 0..first_hundred_ms {
             fade_out.advance_frame(0.0);
         }
 
-        assert!((0.35..0.40).contains(&fade_in.current_gain()));
+        assert_eq!(fade_in.current_gain(), 1.0);
         assert!((0.60..0.65).contains(&fade_out.current_gain()));
     }
 
     #[test]
     fn transport_fade_reverses_from_its_current_gain_without_a_jump() {
         let sample_rate = 48_000;
-        let fade_frames = frames_for_duration(sample_rate, TRANSPORT_FADE_DURATION_MS);
+        let fade_frames = frames_for_duration(sample_rate, TRANSPORT_FADE_OUT_DURATION_MS);
         let mut fade = TransportFadeState::new(sample_rate, 1.0);
         for _ in 0..fade_frames / 2 {
             fade.advance_frame(0.0);
