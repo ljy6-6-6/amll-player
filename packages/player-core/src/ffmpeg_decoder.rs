@@ -23,9 +23,18 @@ use crate::{
 };
 
 const GAPLESS_PREBUFFER_DURATION_MS: u32 = 1_000;
-const AUDIO_BUFFER_DURATION_MS: u32 = 6_000;
+const AUDIO_BUFFER_DURATION_MS: u32 = 8_000;
 const MAX_AUDIO_BUFFER_SAMPLES: usize = 4_000_000;
-const TRAILING_SILENCE_THRESHOLD: f32 = 0.005_623_413;
+const AUDIO_BUFFER_REFILL_NUMERATOR: usize = 3;
+const AUDIO_BUFFER_REFILL_DENOMINATOR: usize = 4;
+const TRAILING_ENERGY_WINDOW_MS: u32 = 250;
+const MINIMUM_TRAILING_LOW_ENERGY_MS: u32 = 600;
+// 绝对阈值用于正常响度的母带；相对阈值保证安静母带至少保留峰值以下 30 dB
+// 的动态，避免仅因整首歌本来就小声而把结尾当作可跳过区域。
+const TRAILING_RMS_POWER_THRESHOLD: f64 = 0.000_031_622_776_601_683_79; // -45 dBFS
+const TRAILING_PEAK_THRESHOLD: f32 = 0.015_848_932; // -36 dBFS
+const TRAILING_RELATIVE_POWER_RATIO: f64 = 0.001; // -30 dB
+const TRAILING_RELATIVE_AMPLITUDE_RATIO: f32 = 0.031_622_775; // -30 dB
 
 #[derive(Clone, Default)]
 pub struct DecoderSharedState {
@@ -126,7 +135,9 @@ impl<C: Consumer<Item = f32>> Iterator for AudioSource<C> {
 
         if let Some(sample) = self.consumer.try_pop() {
             self.samples_counter.fetch_add(1, Ordering::Relaxed);
-            if self.consumer.occupied_len() < self.watermark {
+            if self.consumer.occupied_len() < self.watermark
+                && !self.shared_state.is_eof.load(Ordering::Acquire)
+            {
                 self.unparker.unpark();
             }
             Some(sample)
@@ -192,7 +203,7 @@ fn tail_transition_sample(
     Some(decoded_samples - trailing_samples + preserved_samples)
 }
 
-fn audio_buffer_layout(target_sample_rate: u32, target_channels: u16) -> (usize, usize) {
+fn audio_buffer_layout(target_sample_rate: u32, target_channels: u16) -> (usize, usize, usize) {
     let channels = usize::from(target_channels).max(1);
     let aligned_limit = (MAX_AUDIO_BUFFER_SAMPLES / channels).max(1) * channels;
     let desired_capacity = samples_for_duration(
@@ -208,7 +219,14 @@ fn audio_buffer_layout(target_sample_rate: u32, target_channels: u16) -> (usize,
     )
     .max(channels)
     .min(capacity);
-    (capacity, ready_watermark)
+    let refill_watermark = capacity
+        .saturating_mul(AUDIO_BUFFER_REFILL_NUMERATOR)
+        .saturating_div(AUDIO_BUFFER_REFILL_DENOMINATOR)
+        .saturating_div(channels)
+        .max(1)
+        .saturating_mul(channels)
+        .min(capacity);
+    (capacity, ready_watermark, refill_watermark)
 }
 
 fn fft_buffer_capacity_for_audio(audio_buffer_capacity: usize, target_channels: u16) -> usize {
@@ -217,45 +235,129 @@ fn fft_buffer_capacity_for_audio(audio_buffer_capacity: usize, target_channels: 
 
 struct TrailingSilenceTracker {
     channels: u64,
+    window_samples: u64,
+    minimum_trailing_samples: u64,
     decoded_samples: u64,
     last_audible_sample_end: u64,
+    window_sample_count: u64,
+    window_sum_squares: f64,
+    window_peak: f32,
+    window_has_non_finite: bool,
+    maximum_window_mean_square: f64,
+    maximum_peak: f32,
+    saw_audible_window: bool,
 }
 
 impl TrailingSilenceTracker {
-    fn new(channels: u16) -> Self {
+    fn new(channels: u16, sample_rate: u32) -> Self {
+        let channels_u64 = u64::from(channels).max(1);
         Self {
-            channels: u64::from(channels).max(1),
+            channels: channels_u64,
+            window_samples: samples_for_duration(sample_rate, channels, TRAILING_ENERGY_WINDOW_MS)
+                .max(channels_u64 as usize) as u64,
+            minimum_trailing_samples: samples_for_duration(
+                sample_rate,
+                channels,
+                MINIMUM_TRAILING_LOW_ENERGY_MS,
+            )
+            .max(channels_u64 as usize) as u64,
             decoded_samples: 0,
             last_audible_sample_end: 0,
+            window_sample_count: 0,
+            window_sum_squares: 0.0,
+            window_peak: 0.0,
+            window_has_non_finite: false,
+            maximum_window_mean_square: 0.0,
+            maximum_peak: 0.0,
+            saw_audible_window: false,
         }
     }
 
     fn observe(&mut self, samples: &[f32]) {
-        let decoded_before = self.decoded_samples;
-        for (index, sample) in samples.iter().enumerate() {
-            if !sample.is_finite() || sample.abs() > TRAILING_SILENCE_THRESHOLD {
-                let absolute_sample = decoded_before.saturating_add(index as u64);
-                self.last_audible_sample_end = absolute_sample
-                    .saturating_div(self.channels)
-                    .saturating_add(1)
-                    .saturating_mul(self.channels);
+        for sample in samples {
+            if sample.is_finite() {
+                let magnitude = sample.abs();
+                self.window_peak = self.window_peak.max(magnitude);
+                self.window_sum_squares += f64::from(*sample) * f64::from(*sample);
+            } else {
+                // 与旧实现保持保守语义：异常样本不能帮助提前裁掉结尾。
+                self.window_has_non_finite = true;
+            }
+
+            self.window_sample_count = self.window_sample_count.saturating_add(1);
+            self.decoded_samples = self.decoded_samples.saturating_add(1);
+            if self.window_sample_count == self.window_samples {
+                self.finish_complete_window();
             }
         }
-        self.decoded_samples = self.decoded_samples.saturating_add(samples.len() as u64);
     }
 
     fn trailing_silence_samples(&self) -> u64 {
-        if self.last_audible_sample_end == 0 {
+        let partial_window_is_audible = self.window_sample_count > 0
+            && self.window_is_audible(
+                self.window_sum_squares / self.window_sample_count as f64,
+                self.window_peak,
+                self.window_has_non_finite,
+            );
+        if partial_window_is_audible || !self.saw_audible_window {
             0
         } else {
-            self.decoded_samples
+            let trailing_samples = self
+                .decoded_samples
                 .saturating_sub(self.last_audible_sample_end)
+                .saturating_div(self.channels)
+                .saturating_mul(self.channels);
+            if trailing_samples < self.minimum_trailing_samples {
+                0
+            } else {
+                trailing_samples
+            }
         }
     }
 
+    fn finish_complete_window(&mut self) {
+        let mean_square = self.window_sum_squares / self.window_samples as f64;
+        if self.window_is_audible(mean_square, self.window_peak, self.window_has_non_finite) {
+            self.last_audible_sample_end = self.decoded_samples;
+            self.saw_audible_window = true;
+        }
+        self.maximum_window_mean_square = self.maximum_window_mean_square.max(mean_square);
+        self.maximum_peak = self.maximum_peak.max(self.window_peak);
+        self.window_sample_count = 0;
+        self.window_sum_squares = 0.0;
+        self.window_peak = 0.0;
+        self.window_has_non_finite = false;
+    }
+
+    fn window_is_audible(&self, mean_square: f64, peak: f32, has_non_finite: bool) -> bool {
+        if has_non_finite {
+            return true;
+        }
+
+        let maximum_mean_square = self.maximum_window_mean_square.max(mean_square);
+        let maximum_peak = self.maximum_peak.max(peak);
+        let rms_power_threshold =
+            TRAILING_RMS_POWER_THRESHOLD.min(maximum_mean_square * TRAILING_RELATIVE_POWER_RATIO);
+        let peak_threshold =
+            TRAILING_PEAK_THRESHOLD.min(maximum_peak * TRAILING_RELATIVE_AMPLITUDE_RATIO);
+        mean_square > rms_power_threshold || peak > peak_threshold
+    }
+
+    #[cfg(test)]
     fn reset(&mut self) {
+        self.reset_position();
+        self.maximum_window_mean_square = 0.0;
+        self.maximum_peak = 0.0;
+        self.saw_audible_window = false;
+    }
+
+    fn reset_position(&mut self) {
         self.decoded_samples = 0;
         self.last_audible_sample_end = 0;
+        self.window_sample_count = 0;
+        self.window_sum_squares = 0.0;
+        self.window_peak = 0.0;
+        self.window_has_non_finite = false;
     }
 }
 
@@ -298,7 +400,7 @@ impl FFmpegDecoder {
         let mut audio_resampler = reader.build_resampler(audio_options)?;
         let mut fft_resampler = reader.build_resampler(fft_options)?;
 
-        let (buffer_capacity, ready_watermark) =
+        let (buffer_capacity, ready_watermark, refill_watermark) =
             audio_buffer_layout(target_sample_rate, target_channels);
         let audio_rb = HeapRb::<f32>::new(buffer_capacity);
         let (mut audio_producer, audio_consumer) = audio_rb.split();
@@ -325,7 +427,7 @@ impl FFmpegDecoder {
             consumer: audio_consumer,
             unparker: unparker.clone(),
             shared_state: shared_state.clone(),
-            watermark: buffer_capacity / 2,
+            watermark: refill_watermark,
             ready_watermark,
             samples_counter: samples_counter.clone(),
         };
@@ -337,7 +439,8 @@ impl FFmpegDecoder {
             natural_eof: Arc::clone(&shared_state.natural_eof),
         };
 
-        let mut trailing_silence_tracker = TrailingSilenceTracker::new(target_channels);
+        let mut trailing_silence_tracker =
+            TrailingSilenceTracker::new(target_channels, target_sample_rate);
         let mut tail_tracking_reliable = true;
         thread::spawn(move || loop {
             if shared_state.is_shutdown.load(Ordering::Acquire) {
@@ -372,7 +475,9 @@ impl FFmpegDecoder {
                             warn!("跳转时重置 FFT 重采样器失败: {error:?}");
                         }
 
-                        trailing_silence_tracker.reset();
+                        // seek 仍在同一首歌内，清空位置相关状态，但保留已经观察到的
+                        // 歌曲动态参考；否则直接拖到低能量结尾会把尾音误当作安静母带。
+                        trailing_silence_tracker.reset_position();
                         tail_tracking_reliable = seek_succeeded && audio_flush_succeeded;
                         shared_state
                             .decoded_samples_at_eof
@@ -578,20 +683,25 @@ mod tests {
     }
 
     #[test]
-    fn audio_buffer_keeps_six_seconds_for_common_output_and_caps_large_layouts() {
-        assert_eq!(audio_buffer_layout(48_000, 2), (576_000, 96_000));
-        assert_eq!(fft_buffer_capacity_for_audio(576_000, 2), 288_000);
+    fn audio_buffer_keeps_eight_seconds_and_refills_with_six_seconds_remaining() {
+        assert_eq!(audio_buffer_layout(48_000, 2), (768_000, 96_000, 576_000));
+        assert_eq!(fft_buffer_capacity_for_audio(768_000, 2), 384_000);
         assert_eq!(samples_for_duration(44_101, 3, 1_500), 198_453);
 
-        let (capacity, ready_watermark) = audio_buffer_layout(192_000, 8);
+        let (capacity, ready_watermark, refill_watermark) = audio_buffer_layout(192_000, 8);
         assert_eq!(capacity, MAX_AUDIO_BUFFER_SAMPLES);
         assert_eq!(ready_watermark, 1_536_000);
+        assert_eq!(refill_watermark, 3_000_000);
         assert_eq!(capacity % 8, 0);
+        assert_eq!(refill_watermark % 8, 0);
 
-        let (extreme_capacity, extreme_ready) = audio_buffer_layout(u32::MAX, u16::MAX);
+        let (extreme_capacity, extreme_ready, extreme_refill) =
+            audio_buffer_layout(u32::MAX, u16::MAX);
         assert!((1..=MAX_AUDIO_BUFFER_SAMPLES).contains(&extreme_capacity));
         assert!(extreme_ready <= extreme_capacity);
+        assert!(extreme_refill <= extreme_capacity);
         assert_eq!(extreme_capacity % u16::MAX as usize, 0);
+        assert_eq!(extreme_refill % u16::MAX as usize, 0);
         assert_eq!(
             fft_buffer_capacity_for_audio(extreme_capacity, u16::MAX),
             extreme_capacity / u16::MAX as usize
@@ -599,31 +709,112 @@ mod tests {
     }
 
     #[test]
-    fn trailing_silence_tracker_uses_the_last_audible_sample() {
-        let mut tracker = TrailingSilenceTracker::new(2);
-        tracker.observe(&[0.01, 0.0, 0.0, 0.0]);
-        tracker.observe(&[0.0, 0.0]);
-        assert_eq!(tracker.trailing_silence_samples(), 4);
+    fn trailing_low_energy_tracker_uses_window_energy_and_protects_quiet_masters() {
+        let mut tracker = TrailingSilenceTracker::new(2, 1_000);
+        let window_samples = tracker.window_samples as usize;
+
+        tracker.observe(&vec![0.2; window_samples]);
+        tracker.observe(&vec![0.001; window_samples * 4]);
+        assert_eq!(
+            tracker.trailing_silence_samples(),
+            (window_samples * 4) as u64
+        );
         assert_eq!(tracker.trailing_silence_samples() % 2, 0);
 
-        tracker.observe(&[f32::NAN, 0.0]);
+        // 一个孤立尖峰至多保留它所在的分析窗，不能把后续低能量尾段全部否决。
+        tracker.reset();
+        tracker.observe(&vec![0.2; window_samples]);
+        tracker.observe(&vec![0.0; window_samples]);
+        let mut isolated_peak_window = vec![0.0; window_samples];
+        isolated_peak_window[17] = 1.0;
+        tracker.observe(&isolated_peak_window);
+        tracker.observe(&vec![0.0; window_samples * 3]);
+        assert_eq!(
+            tracker.trailing_silence_samples(),
+            (window_samples * 3) as u64
+        );
+
+        // 相对阈值让整轨本来就很安静的内容仍被视为有效声音。
+        tracker.reset();
+        tracker.observe(&vec![0.001; window_samples * 4]);
+        tracker.observe(&vec![0.0; window_samples * 3]);
+        assert_eq!(
+            tracker.trailing_silence_samples(),
+            (window_samples * 3) as u64
+        );
+
+        // seek 只重置时间位置，继续使用同一首歌已经建立的动态参考。
+        tracker.reset();
+        tracker.observe(&vec![0.2; window_samples]);
+        tracker.reset_position();
+        tracker.observe(&vec![0.001; window_samples * 3]);
+        assert_eq!(
+            tracker.trailing_silence_samples(),
+            (window_samples * 3) as u64
+        );
+
+        tracker.reset();
+        tracker.observe(&vec![0.0; window_samples * 8]);
+        assert_eq!(tracker.trailing_silence_samples(), 0);
+    }
+
+    #[test]
+    fn trailing_low_energy_tracker_requires_a_sustained_tail_and_keeps_non_finite_samples() {
+        let mut tracker = TrailingSilenceTracker::new(2, 1_000);
+        let window_samples = tracker.window_samples as usize;
+
+        tracker.observe(&vec![0.2; window_samples]);
+        tracker.observe(&vec![0.001; 1_198]);
+        assert_eq!(tracker.trailing_silence_samples(), 0);
+        tracker.observe(&[0.001, 0.001]);
+        assert_eq!(tracker.trailing_silence_samples(), 1_200);
+
+        tracker.observe(&vec![0.2; window_samples]);
         assert_eq!(tracker.trailing_silence_samples(), 0);
 
         tracker.reset();
-        tracker.observe(&[0.0; 12]);
+        tracker.observe(&vec![f32::NAN; window_samples]);
+        tracker.observe(&vec![0.0; window_samples * 3]);
+        assert_eq!(
+            tracker.trailing_silence_samples(),
+            (window_samples * 3) as u64
+        );
+        tracker.observe(&vec![f32::INFINITY; window_samples]);
         assert_eq!(tracker.trailing_silence_samples(), 0);
+    }
 
-        tracker.observe(&[TRAILING_SILENCE_THRESHOLD, -TRAILING_SILENCE_THRESHOLD]);
-        assert_eq!(tracker.trailing_silence_samples(), 0);
-        tracker.observe(&[TRAILING_SILENCE_THRESHOLD * 1.01, 0.0]);
-        tracker.observe(&[0.0, 0.0]);
-        assert_eq!(tracker.trailing_silence_samples(), 2);
+    #[test]
+    fn trailing_low_energy_tracker_is_chunk_independent_and_frame_aligned() {
+        for (channels, sample_rate) in [(1, 44_100), (2, 48_000), (6, 96_000)] {
+            let mut whole = TrailingSilenceTracker::new(channels, sample_rate);
+            let window_samples = whole.window_samples as usize;
+            let mut input = vec![0.2; window_samples];
+            input.extend(vec![0.001; window_samples * 3]);
+            whole.observe(&input);
 
-        tracker.reset();
-        tracker.observe(&[0.01]);
-        tracker.observe(&[0.0, 0.0]);
-        tracker.observe(&[0.0]);
-        assert_eq!(tracker.trailing_silence_samples(), 2);
+            let mut chunked = TrailingSilenceTracker::new(channels, sample_rate);
+            let chunk_sizes = [1, usize::from(channels) + 1, window_samples - 3, 17];
+            let mut offset = 0;
+            let mut chunk_index = 0;
+            while offset < input.len() {
+                let chunk_end = offset
+                    .saturating_add(chunk_sizes[chunk_index % chunk_sizes.len()])
+                    .min(input.len());
+                chunked.observe(&input[offset..chunk_end]);
+                offset = chunk_end;
+                chunk_index += 1;
+            }
+
+            assert_eq!(chunked.decoded_samples, whole.decoded_samples);
+            assert_eq!(
+                chunked.trailing_silence_samples(),
+                whole.trailing_silence_samples()
+            );
+            assert_eq!(
+                chunked.trailing_silence_samples() % u64::from(channels),
+                0
+            );
+        }
     }
 
     #[test]
@@ -631,7 +822,7 @@ mod tests {
         let ring = HeapRb::<f32>::new(4);
         let (mut producer, mut consumer) = ring.split();
         let input = [0.01, 0.0, 0.0, 0.0, 0.0, 0.0];
-        let mut tracker = TrailingSilenceTracker::new(2);
+        let mut tracker = TrailingSilenceTracker::new(2, 4);
         let mut written = 0;
 
         let pushed = producer.push_slice(&input[written..]);
@@ -719,6 +910,35 @@ mod tests {
     fn short_finished_source_is_ready_but_empty_source_is_not() {
         assert!(source_with_buffered_samples(2, 5, true).is_ready());
         assert!(!source_with_buffered_samples(0, 5, true).is_ready());
+    }
+
+    #[test]
+    fn finished_source_does_not_wake_the_parked_decoder_while_draining() {
+        let ring = HeapRb::<f32>::new(8);
+        let (mut producer, consumer) = ring.split();
+        assert_eq!(producer.push_slice(&[0.25, 0.5, 0.75, 1.0]), 4);
+
+        let parker = Parker::new();
+        let shared_state = DecoderSharedState::default();
+        shared_state.is_eof.store(true, Ordering::Release);
+        let mut source = AudioSource {
+            consumer,
+            unparker: parker.unparker().clone(),
+            shared_state,
+            watermark: 8,
+            ready_watermark: 1,
+            samples_counter: Arc::new(AtomicU64::new(0)),
+        };
+
+        assert_eq!(source.next(), Some(0.25));
+        assert_eq!(source.next(), Some(0.5));
+        assert_eq!(source.next(), Some(0.75));
+        assert_eq!(source.next(), Some(1.0));
+
+        // 若 drain 期间产生过 unpark token，这里会立即返回；没有 token 时应等到超时。
+        let started_at = std::time::Instant::now();
+        parker.park_timeout(Duration::from_millis(50));
+        assert!(started_at.elapsed() >= Duration::from_millis(25));
     }
 
     #[test]
