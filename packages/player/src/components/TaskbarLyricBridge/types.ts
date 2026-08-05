@@ -31,6 +31,8 @@ export interface TaskbarLyricAlignmentPayload {
 export interface TaskbarLayoutExtraPayload {
 	isCentered: boolean;
 	systemType: string;
+	contentOffsetX: number;
+	contentOffsetY: number;
 }
 
 export interface SystemThemeChangedPayload {

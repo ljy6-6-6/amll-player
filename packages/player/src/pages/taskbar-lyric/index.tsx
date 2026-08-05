@@ -268,6 +268,7 @@ export const TaskbarLyricApp = () => {
 	const [orientation, setOrientation] = useState<"horizontal" | "vertical">(
 		"horizontal",
 	);
+	const [contentOffset, setContentOffset] = useState({ x: 0, y: 0 });
 	const [isHovered, setIsHovered] = useState(false);
 	const [hoverGuardExtent, setHoverGuardExtent] = useState<{
 		orientation: "horizontal" | "vertical";
@@ -439,6 +440,10 @@ export const TaskbarLyricApp = () => {
 				dispatch({
 					type: "UPDATE_SYSTEM_ALIGN",
 					payload: evt.payload.isCentered ? "left" : "right",
+				});
+				setContentOffset({
+					x: evt.payload.contentOffsetX,
+					y: evt.payload.contentOffsetY,
 				});
 			},
 		);
@@ -1135,6 +1140,9 @@ export const TaskbarLyricApp = () => {
 			data-hovered={isHovered}
 			data-orientation={orientation}
 			data-visible={isVisible}
+			style={{
+				transform: `translate(${contentOffset.x}px, ${contentOffset.y}px)`,
+			}}
 			onMouseEnter={handleMouseEnter}
 			onMouseLeave={handleMouseLeave}
 		>

@@ -496,6 +496,8 @@ impl TaskbarLyricVisibility {
 pub struct TaskbarLayoutExtraPayload {
     pub is_centered: bool,
     pub system_type: String,
+    pub content_offset_x: f64,
+    pub content_offset_y: f64,
 }
 
 const AUTO_HIDE_TRIGGER_BAND_PX: i32 = 2;
@@ -852,6 +854,23 @@ fn reserve_auto_hide_trigger_band(
     rect
 }
 
+fn auto_hide_content_offset(edge: Option<TaskbarEdge>, scale_factor: f64) -> (f64, f64) {
+    let scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
+        scale_factor
+    } else {
+        1.0
+    };
+    let half_trigger_band = f64::from(AUTO_HIDE_TRIGGER_BAND_PX) / scale_factor / 2.0;
+
+    match edge {
+        Some(TaskbarEdge::Bottom) => (0.0, -half_trigger_band),
+        Some(TaskbarEdge::Top) => (0.0, half_trigger_band),
+        Some(TaskbarEdge::Right) => (-half_trigger_band, 0.0),
+        Some(TaskbarEdge::Left) => (half_trigger_band, 0.0),
+        None => (0.0, 0.0),
+    }
+}
+
 #[tauri::command]
 pub fn close_taskbar_lyric(app: tauri::AppHandle) {
     if let Some(state) = app.try_state::<TaskbarLyricState>() {
@@ -969,14 +988,18 @@ pub fn open_taskbar_lyric(app: tauri::AppHandle) {
             } else {
                 layout.space.right
             };
-            let current_rect =
-                reserve_auto_hide_trigger_band(current_rect, auto_hidden_taskbar_edge());
+            let auto_hide_edge = auto_hidden_taskbar_edge();
+            let current_rect = reserve_auto_hide_trigger_band(current_rect, auto_hide_edge);
+            let (content_offset_x, content_offset_y) =
+                auto_hide_content_offset(auto_hide_edge, win.scale_factor().unwrap_or(1.0));
 
             let _ = app_clone.emit(
                 "taskbar-layout-extra",
                 TaskbarLayoutExtraPayload {
                     is_centered: layout.extra.is_centered,
                     system_type: format!("{:?}", layout.extra.system_type),
+                    content_offset_x,
+                    content_offset_y,
                 },
             );
 
@@ -1650,6 +1673,31 @@ mod tests {
                 Some(TaskbarEdge::Left)
             )),
             (100, 200, 298, 40)
+        );
+    }
+
+    #[test]
+    fn offsets_content_back_to_the_unreserved_taskbar_center() {
+        assert_eq!(
+            auto_hide_content_offset(Some(TaskbarEdge::Bottom), 1.0),
+            (0.0, -1.0)
+        );
+        assert_eq!(
+            auto_hide_content_offset(Some(TaskbarEdge::Top), 1.0),
+            (0.0, 1.0)
+        );
+        assert_eq!(
+            auto_hide_content_offset(Some(TaskbarEdge::Right), 2.0),
+            (-0.5, 0.0)
+        );
+        assert_eq!(
+            auto_hide_content_offset(Some(TaskbarEdge::Left), 2.0),
+            (0.5, 0.0)
+        );
+        assert_eq!(auto_hide_content_offset(None, 1.0), (0.0, 0.0));
+        assert_eq!(
+            auto_hide_content_offset(Some(TaskbarEdge::Bottom), 0.0),
+            (0.0, -1.0)
         );
     }
 
