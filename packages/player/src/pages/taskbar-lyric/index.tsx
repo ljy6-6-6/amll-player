@@ -1299,79 +1299,95 @@ export const TaskbarLyricApp = () => {
 									)}
 								</>
 							) : (
-								<AnimatePresence initial={false}>
-									{lyricItems.map((item) => (
-										<motion.div
-											key={item.key}
-											className={styles.animatedLine}
-											data-status={item.status}
-											initial={{
-												x: isVert
-													? isSingleLineMode
-														? "-1.5em"
-														: "-2.5em"
-													: 0,
-												y: isVert ? 0 : isSingleLineMode ? "1.5em" : "2.5em",
-												opacity: 0,
-												scale: isSingleLineMode ? 1 : 0.8,
-												filter: "blur(0px)",
-											}}
-											animate={
-												item.status === "primary"
-													? {
-															x: isVert ? "-0.2em" : 0,
-															y: isVert ? 0 : lyricPrimaryY,
-															opacity: 1,
-															scale: 1,
-															filter: "blur(0px)",
+								<div className={styles.lyricViewport}>
+									<div className={styles.lyricStack}>
+										<AnimatePresence initial={false}>
+											{lyricItems.map((item) => (
+												<motion.div
+													key={item.key}
+													className={styles.animatedLine}
+													data-status={item.status}
+													initial={{
+														x: isVert
+															? isSingleLineMode
+																? "-1.5em"
+																: "-2.5em"
+															: 0,
+														y: isVert
+															? 0
+															: isSingleLineMode
+																? "1.5em"
+																: "2.5em",
+														opacity: 0,
+														scale: isSingleLineMode ? 1 : 0.8,
+														filter: "blur(0px)",
+													}}
+													animate={
+														item.status === "primary"
+															? {
+																	x: isVert ? "-0.2em" : 0,
+																	y: isVert ? 0 : lyricPrimaryY,
+																	opacity: 1,
+																	scale: 1,
+																	filter: "blur(0px)",
+																}
+															: {
+																	x: isVert ? "-1.8em" : 0,
+																	y: isVert ? 0 : lyricSecondaryY,
+																	opacity: 1,
+																	scale: 0.8,
+																	filter: "blur(0px)",
+																}
+													}
+													exit={{
+														x: isVert
+															? isSingleLineMode
+																? "1.5em"
+																: "0.8em"
+															: 0,
+														y: isVert
+															? 0
+															: isSingleLineMode
+																? "-1.5em"
+																: "-0.8em",
+														opacity: 0,
+														scale: 1,
+														filter: "blur(4px)",
+													}}
+													transition={{
+														type: "spring",
+														stiffness: 250,
+														damping: 30,
+														mass: 0.8,
+													}}
+												>
+													<LyricScroll
+														text={item.text}
+														status={item.status}
+														orientation={orientation}
+														align={align}
+														startTime={item.startTime}
+														endTime={item.endTime}
+														nextStartTime={item.nextStartTime}
+														isActive={item.isActive}
+														isPlaying={state.musicPlaying}
+														getCurrentPosition={() => positionRef.current}
+														onProgress={
+															item.status === "primary"
+																? publishProgress
+																: undefined
 														}
-													: {
-															x: isVert ? "-1.8em" : 0,
-															y: isVert ? 0 : lyricSecondaryY,
-															opacity: 1,
-															scale: 0.8,
-															filter: "blur(0px)",
+														subscribeProgress={
+															item.status === "secondary"
+																? subscribeProgress
+																: undefined
 														}
-											}
-											exit={{
-												x: isVert ? (isSingleLineMode ? "1.5em" : "0.8em") : 0,
-												y: isVert ? 0 : isSingleLineMode ? "-1.5em" : "-0.8em",
-												opacity: 0,
-												scale: 1,
-												filter: "blur(4px)",
-											}}
-											transition={{
-												type: "spring",
-												stiffness: 250,
-												damping: 30,
-												mass: 0.8,
-											}}
-										>
-											<LyricScroll
-												text={item.text}
-												status={item.status}
-												orientation={orientation}
-												align={align}
-												startTime={item.startTime}
-												endTime={item.endTime}
-												nextStartTime={item.nextStartTime}
-												isActive={item.isActive}
-												isPlaying={state.musicPlaying}
-												getCurrentPosition={() => positionRef.current}
-												onProgress={
-													item.status === "primary"
-														? publishProgress
-														: undefined
-												}
-												subscribeProgress={
-													item.status === "secondary"
-														? subscribeProgress
-														: undefined
-												}
-											/>
-										</motion.div>
-									))}
-								</AnimatePresence>
+													/>
+												</motion.div>
+											))}
+										</AnimatePresence>
+									</div>
+								</div>
 							)}
 						</motion.div>
 					</AnimatePresence>
