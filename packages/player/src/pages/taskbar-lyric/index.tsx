@@ -54,6 +54,11 @@ import {
 } from "./hover-state.ts";
 import { LyricScroll } from "./LyricScroll.tsx";
 import {
+	formatEm,
+	getCenteredLineStackOffsetEm,
+	TASKBAR_LINE_HEIGHT_EM,
+} from "./line-layout.ts";
+import {
 	findCurrentLyricIndex,
 	findMetadataLyricIndex,
 	reconcileMetadataTimeline,
@@ -67,6 +72,9 @@ const HOVER_LAYOUT_TRANSITION = {
 	ease: [0.22, 1, 0.36, 1] as [number, number, number, number],
 };
 const LYRIC_EXIT_EXTENT_HOLD_MS = 360;
+const METADATA_LINE_STACK_OFFSET_EM = getCenteredLineStackOffsetEm([1, 0.85]);
+const LYRIC_LINE_STACK_OFFSET_EM = getCenteredLineStackOffsetEm([1, 0.8]);
+const SINGLE_LINE_DOUBLE_MODE_OFFSET_EM = getCenteredLineStackOffsetEm([1]);
 
 type LayoutExtents = {
 	orientation: "horizontal" | "vertical";
@@ -1019,6 +1027,22 @@ export const TaskbarLyricApp = () => {
 	}, []);
 
 	const isOnlyOneItem = lyricItems.length === 1;
+	const metadataPrimaryY = isSingleLineMode
+		? "0em"
+		: formatEm(METADATA_LINE_STACK_OFFSET_EM);
+	const metadataSecondaryY = formatEm(
+		TASKBAR_LINE_HEIGHT_EM + METADATA_LINE_STACK_OFFSET_EM,
+	);
+	const lyricPrimaryY = isSingleLineMode
+		? 0
+		: formatEm(
+				isOnlyOneItem
+					? SINGLE_LINE_DOUBLE_MODE_OFFSET_EM
+					: LYRIC_LINE_STACK_OFFSET_EM,
+			);
+	const lyricSecondaryY = formatEm(
+		TASKBAR_LINE_HEIGHT_EM + LYRIC_LINE_STACK_OFFSET_EM,
+	);
 	const lockedHoverGuardStyle: React.CSSProperties | undefined =
 		hoverGuardExtent?.orientation === orientation
 			? isVert
@@ -1253,7 +1277,7 @@ export const TaskbarLyricApp = () => {
 										style={{
 											transform: isVert
 												? "translateX(-0.2em) scale(1)"
-												: "translateY(0px) scale(1)",
+												: `translateY(${metadataPrimaryY}) scale(1)`,
 											opacity: 1,
 										}}
 									>
@@ -1266,7 +1290,7 @@ export const TaskbarLyricApp = () => {
 											style={{
 												transform: isVert
 													? "translateX(-1.8em) scale(0.85)"
-													: "translateY(1.2em) scale(0.85)",
+													: `translateY(${metadataSecondaryY}) scale(0.85)`,
 												opacity: 1,
 											}}
 										>
@@ -1296,18 +1320,14 @@ export const TaskbarLyricApp = () => {
 												item.status === "primary"
 													? {
 															x: isVert ? "-0.2em" : 0,
-															y: isVert
-																? 0
-																: !isSingleLineMode && isOnlyOneItem
-																	? "0.5em"
-																	: 0,
+															y: isVert ? 0 : lyricPrimaryY,
 															opacity: 1,
 															scale: 1,
 															filter: "blur(0px)",
 														}
 													: {
 															x: isVert ? "-1.8em" : 0,
-															y: isVert ? 0 : "1.2em",
+															y: isVert ? 0 : lyricSecondaryY,
 															opacity: 1,
 															scale: 0.8,
 															filter: "blur(0px)",
