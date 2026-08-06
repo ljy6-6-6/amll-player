@@ -116,3 +116,7 @@
 		}
 	}
 }
+
+.coverTransitionSourceHidden {
+	opacity: 0;
+}

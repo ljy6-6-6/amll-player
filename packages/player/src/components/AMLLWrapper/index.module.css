@@ -37,6 +37,12 @@
 	opacity: 1;
 }
 
+:global(body[data-amll-cover-transition])
+	.lyricPage
+	:global([data-amll-cover]) {
+	opacity: 0;
+}
+
 .fullscreenPlaylistDismissLayer {
 	position: absolute;
 	inset: 0;

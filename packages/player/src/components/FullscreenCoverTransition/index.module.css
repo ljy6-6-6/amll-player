@@ -1,0 +1,11 @@
+.transitionCover {
+	position: fixed;
+	z-index: 10000;
+	box-sizing: border-box;
+	pointer-events: none;
+	background-color: #111;
+	background-position: center;
+	background-size: cover;
+	transform-origin: top left;
+	will-change: transform, border-radius, box-shadow;
+}

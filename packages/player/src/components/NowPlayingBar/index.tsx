@@ -3,6 +3,7 @@ import {
 	MediaButton,
 	musicArtistsAtom,
 	musicCoverAtom,
+	musicCoverIsVideoAtom,
 	musicNameAtom,
 	musicPlayingAtom,
 	onPlayOrResumeAtom,
@@ -20,7 +21,14 @@ import {
 import { Flex, IconButton } from "@radix-ui/themes";
 import classNames from "classnames";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
-import { type FC, useEffect, useLayoutEffect, useRef } from "react";
+import {
+	type FC,
+	useCallback,
+	useEffect,
+	useLayoutEffect,
+	useRef,
+	useState,
+} from "react";
 import { useTranslation } from "react-i18next";
 import IconForward from "../../assets/icon_forward.svg?react";
 import IconRewind from "../../assets/icon_rewind.svg?react";
@@ -29,6 +37,11 @@ import {
 	playlistCardOpenedAtom,
 } from "../../states/appAtoms.ts";
 import { AnimatedPlayPauseIcon } from "../AnimatedPlayPauseIcon/index.tsx";
+import {
+	captureFullscreenCoverTransition,
+	FullscreenCoverTransition,
+	type FullscreenCoverTransitionSnapshot,
+} from "../FullscreenCoverTransition/index.tsx";
 import { NowPlaylistCard } from "../NowPlaylistCard/index.tsx";
 import styles from "./index.module.css";
 
@@ -40,17 +53,42 @@ export const NowPlayingBar: FC = () => {
 	const musicArtists = useAtomValue(musicArtistsAtom);
 	const musicPlaying = useAtomValue(musicPlayingAtom);
 	const musicCover = useAtomValue(musicCoverAtom);
+	const musicCoverIsVideo = useAtomValue(musicCoverIsVideoAtom);
 	const [playlistOpened, setPlaylistOpened] = useAtom(playlistCardOpenedAtom);
 	const setLyricPageOpened = useSetAtom(isLyricPageOpenedAtom);
+	const [coverTransition, setCoverTransition] =
+		useState<FullscreenCoverTransitionSnapshot | null>(null);
 
 	const onPlayOrResume = useAtomValue(onPlayOrResumeAtom).onEmit;
 	const onRequestPrevSong = useAtomValue(onRequestPrevSongAtom).onEmit;
 	const onRequestNextSong = useAtomValue(onRequestNextSongAtom).onEmit;
 
 	const playbarRef = useRef<HTMLDivElement>(null);
+	const coverButtonRef = useRef<HTMLButtonElement>(null);
 	const playlistPanelRef = useRef<HTMLDivElement>(null);
 	const playlistDismissLayerRef = useRef<HTMLButtonElement>(null);
 	const playlistToggleButtonRef = useRef<HTMLButtonElement>(null);
+	const finishCoverTransition = useCallback(() => {
+		setCoverTransition(null);
+	}, []);
+	const openLyricPage = () => {
+		const source = coverButtonRef.current;
+		const reduceMotion = window.matchMedia(
+			"(prefers-reduced-motion: reduce)",
+		).matches;
+		const snapshot =
+			source && musicCover && !musicCoverIsVideo && !reduceMotion
+				? captureFullscreenCoverTransition(source, musicCover)
+				: null;
+		setCoverTransition(snapshot);
+		setLyricPageOpened(true);
+	};
+
+	useEffect(() => {
+		if (coverTransition && coverTransition.coverUrl !== musicCover) {
+			setCoverTransition(null);
+		}
+	}, [coverTransition, musicCover]);
 
 	useLayoutEffect(() => {
 		const playbarEl = playbarRef.current;
@@ -109,6 +147,12 @@ export const NowPlayingBar: FC = () => {
 
 	return (
 		<>
+			{coverTransition && (
+				<FullscreenCoverTransition
+					snapshot={coverTransition}
+					onFinish={finishCoverTransition}
+				/>
+			)}
 			{/* <Container
 		 	className={classNames(
 		 		styles.nowPlayingBar,
@@ -168,12 +212,17 @@ export const NowPlayingBar: FC = () => {
 					flexBasis="33.3%"
 				>
 					<button
-						className={styles.coverButton}
+						ref={coverButtonRef}
+						className={classNames(
+							styles.coverButton,
+							coverTransition && styles.coverTransitionSourceHidden,
+						)}
 						type="button"
+						aria-label={t("playbar.openLyricPage", "打开全屏歌词")}
 						style={{
 							backgroundImage: `url(${musicCover})`,
 						}}
-						onClick={() => setLyricPageOpened(true)}
+						onClick={openLyricPage}
 					>
 						<div className={styles.lyricIconButton}>
 							<Icon width={34} icon={lyricIcon} className="icon" />
