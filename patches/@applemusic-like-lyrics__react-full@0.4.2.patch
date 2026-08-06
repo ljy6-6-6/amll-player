@@ -1,8 +1,12 @@
 diff --git a/dist/amll-react-framework.cjs b/dist/amll-react-framework.cjs
-index a79ba6b897823fb33cb69b68a398524300c7cf46..8401a6970cff682cea275bd0491b8d0c91aee7ec 100644
+index a79ba6b..52d9357 100644
 --- a/dist/amll-react-framework.cjs
 +++ b/dist/amll-react-framework.cjs
-@@ -3105 +3105,22 @@ const PrebuiltMediaButtons = (t0) => {
+@@ -2105,0 +2106 @@ const PrebuiltToggleIconButton = (0, react.memo)((t0) => {
++			"data-amll-toggle-type": type,
+@@ -3073,0 +3075 @@ const PrebuiltMediaButtons = (t0) => {
++			"data-amll-media-action": "shuffle",
+@@ -3105 +3107,22 @@ const PrebuiltMediaButtons = (t0) => {
 -		t6 = musicIsPlaying ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ForwardRef$7, { color: "#FFFFFF" }) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ForwardRef$6, { color: "#FFFFFF" });
 +		t6 = /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("svg", {
 +			color: "#FFFFFF",
@@ -26,11 +30,21 @@ index a79ba6b897823fb33cb69b68a398524300c7cf46..8401a6970cff682cea275bd0491b8d0c
 +				})
 +			]
 +		});
+@@ -3138,0 +3162 @@ const PrebuiltMediaButtons = (t0) => {
++			"data-amll-media-action": "repeat",
+@@ -3978 +4002 @@ exports.verticalCoverLayoutAtom = verticalCoverLayoutAtom;
+-//# sourceMappingURL=amll-react-framework.cjs.map
+\ No newline at end of file
++//# sourceMappingURL=amll-react-framework.cjs.map
 diff --git a/dist/amll-react-framework.mjs b/dist/amll-react-framework.mjs
-index 9bc62b458417259c4acabbc1d007e0ed581db6ae..1c585a02431cc517ac176fe98b872fa8076b5838 100644
+index 9bc62b4..cf48af9 100644
 --- a/dist/amll-react-framework.mjs
 +++ b/dist/amll-react-framework.mjs
-@@ -3079 +3079,22 @@ const PrebuiltMediaButtons = (t0) => {
+@@ -2079,0 +2080 @@ const PrebuiltToggleIconButton = memo((t0) => {
++			"data-amll-toggle-type": type,
+@@ -3047,0 +3049 @@ const PrebuiltMediaButtons = (t0) => {
++			"data-amll-media-action": "shuffle",
+@@ -3079 +3081,22 @@ const PrebuiltMediaButtons = (t0) => {
 -		t6 = musicIsPlaying ? /* @__PURE__ */ jsx(ForwardRef$7, { color: "#FFFFFF" }) : /* @__PURE__ */ jsx(ForwardRef$6, { color: "#FFFFFF" });
 +		t6 = /* @__PURE__ */ jsxs("svg", {
 +			color: "#FFFFFF",
@@ -54,3 +68,9 @@ index 9bc62b458417259c4acabbc1d007e0ed581db6ae..1c585a02431cc517ac176fe98b872fa8
 +				})
 +			]
 +		});
+@@ -3112,0 +3136 @@ const PrebuiltMediaButtons = (t0) => {
++			"data-amll-media-action": "repeat",
+@@ -3868 +3892 @@ export { AudioFFTVisualizer, AudioQualityTag, AudioQualityType, AutoLyricLayout,
+-//# sourceMappingURL=amll-react-framework.mjs.map
+\ No newline at end of file
++//# sourceMappingURL=amll-react-framework.mjs.map

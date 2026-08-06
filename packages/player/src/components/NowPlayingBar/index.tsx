@@ -35,6 +35,7 @@ import styles from "./index.module.css";
 export const NowPlayingBar: FC = () => {
 	const { t } = useTranslation();
 	const hideNowPlayingBar = useAtomValue(hideNowPlayingBarAtom);
+	const isLyricPageOpened = useAtomValue(isLyricPageOpenedAtom);
 	const musicName = useAtomValue(musicNameAtom);
 	const musicArtists = useAtomValue(musicArtistsAtom);
 	const musicPlaying = useAtomValue(musicPlayingAtom);
@@ -72,15 +73,19 @@ export const NowPlayingBar: FC = () => {
 	}, []);
 
 	useEffect(() => {
-		if (!playlistOpened) return;
+		if (!playlistOpened || isLyricPageOpened) return;
 
 		const handlePointerDown = (event: PointerEvent) => {
 			const target = event.target;
 			if (!(target instanceof Node)) return;
+			const targetElement = target instanceof Element ? target : null;
 			if (
 				playlistPanelRef.current?.contains(target) ||
 				playlistDismissLayerRef.current?.contains(target) ||
-				playlistToggleButtonRef.current?.contains(target)
+				playlistToggleButtonRef.current?.contains(target) ||
+				targetElement?.closest(
+					'[data-amll-playlist-panel], [data-amll-toggle-type="playlist"]',
+				)
 			) {
 				return;
 			}
@@ -100,7 +105,7 @@ export const NowPlayingBar: FC = () => {
 			document.removeEventListener("pointerdown", handlePointerDown, true);
 			document.removeEventListener("keydown", handleKeyDown, true);
 		};
-	}, [playlistOpened, setPlaylistOpened]);
+	}, [isLyricPageOpened, playlistOpened, setPlaylistOpened]);
 
 	return (
 		<>
@@ -114,7 +119,7 @@ export const NowPlayingBar: FC = () => {
 		 	left="0"
 		 	right="0"
 			> */}
-			{playlistOpened && (
+			{playlistOpened && !isLyricPageOpened && (
 				<>
 					<button
 						ref={playlistDismissLayerRef}
