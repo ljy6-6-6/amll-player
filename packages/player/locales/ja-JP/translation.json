@@ -117,6 +117,13 @@
 			}
 		}
 	},
+	"musicDrop": {
+		"addToCurrentPlaylistHint": "現在のプレイリストに追加",
+		"addToPlaylistHint": "「{name}」に追加",
+		"createPlaylistHint": "音楽フォルダーをドロップしてプレイリストを作成",
+		"homeFolderOnlyHint": "ホームでは1つのフォルダーのみ使用できます。音楽ファイルはプレイリストにドロップしてください",
+		"playlistFilesAndFoldersHint": "音楽ファイルとフォルダーに対応"
+	},
 	"name": "",
 	"newPlaylist": {
 		"buttonLabel": "新しいプレイリスト",

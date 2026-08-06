@@ -5,6 +5,7 @@ import { Trans, useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 import { queueManagerAtom } from "../../states/appAtoms.ts";
 import { db, type Playlist } from "../../utils/db-client.ts";
+import { MusicDropVisual } from "../MusicDropVisual/index.tsx";
 import { PlaylistCover } from "../PlaylistCover/index.tsx";
 
 export const PlaylistCard = forwardRef<
@@ -45,6 +46,16 @@ export const PlaylistCard = forwardRef<
 						to={`/playlist/${playlist.id}`}
 						data-music-drop-playlist-id={playlist.id}
 					>
+						<MusicDropVisual
+							variant="playlist"
+							title={t("musicDrop.addToPlaylistHint", "添加到“{name}”", {
+								name: playlist.name,
+							})}
+							detail={t(
+								"musicDrop.playlistFilesAndFoldersHint",
+								"支持音乐文件和文件夹",
+							)}
+						/>
 						<Flex align="center" gap="4">
 							<PlaylistCover playlistId={playlist.id} />
 							<Flex direction="column" gap="1" flexGrow="1">

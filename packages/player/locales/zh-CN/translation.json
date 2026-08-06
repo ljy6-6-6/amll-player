@@ -117,6 +117,13 @@
 			}
 		}
 	},
+	"musicDrop": {
+		"addToCurrentPlaylistHint": "添加到当前歌单",
+		"addToPlaylistHint": "添加到“{name}”",
+		"createPlaylistHint": "拖入音乐文件夹创建歌单",
+		"homeFolderOnlyHint": "首页仅接受单个文件夹；音乐文件请拖到具体歌单",
+		"playlistFilesAndFoldersHint": "支持音乐文件和文件夹"
+	},
 	"name": "",
 	"newPlaylist": {
 		"buttonLabel": "新建歌单",

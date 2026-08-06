@@ -43,6 +43,7 @@ import { Trans, useTranslation } from "react-i18next";
 import { useParams } from "react-router-dom";
 import { toast } from "react-toastify";
 import { ViewportList } from "react-viewport-list";
+import { MusicDropVisual } from "../../components/MusicDropVisual/index.tsx";
 import { PageContainer } from "../../components/PageContainer/index.tsx";
 import { PlaylistCover } from "../../components/PlaylistCover/index.tsx";
 import { PlaylistSongCard } from "../../components/PlaylistSongCard/index.tsx";
@@ -715,30 +716,40 @@ export const Component: FC = () => {
 						</Flex>
 					</Flex>
 				</Flex>
-				<Box
-					flexGrow="1"
-					overflowY="auto"
-					minHeight="0"
-					pb="4"
-					ref={playlistViewRef}
-				>
-					{playlist?.songIds && (
-						<ViewportList
-							items={playlist.songIds}
-							viewportRef={playlistViewRef}
-						>
-							{(songId, index) => (
-								<PlaylistSongCard
-									key={`playlist-song-card-${songId}`}
-									songId={songId}
-									songIndex={index}
-									onPlayList={onPlayList}
-									onDeleteSong={onDeleteSong}
-								/>
-							)}
-						</ViewportList>
-					)}
-				</Box>
+				<div className={styles.dropListTarget}>
+					<MusicDropVisual
+						variant="playlist-detail"
+						title={t("musicDrop.addToCurrentPlaylistHint", "添加到当前歌单")}
+						detail={t(
+							"musicDrop.playlistFilesAndFoldersHint",
+							"支持音乐文件和文件夹",
+						)}
+					/>
+					<Box
+						flexGrow="1"
+						overflowY="auto"
+						minHeight="0"
+						pb="4"
+						ref={playlistViewRef}
+					>
+						{playlist?.songIds && (
+							<ViewportList
+								items={playlist.songIds}
+								viewportRef={playlistViewRef}
+							>
+								{(songId, index) => (
+									<PlaylistSongCard
+										key={`playlist-song-card-${songId}`}
+										songId={songId}
+										songIndex={index}
+										onPlayList={onPlayList}
+										onDeleteSong={onDeleteSong}
+									/>
+								)}
+							</ViewportList>
+						)}
+					</Box>
+				</div>
 			</Flex>
 
 			<Dialog.Root

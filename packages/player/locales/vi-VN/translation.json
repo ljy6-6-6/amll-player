@@ -117,6 +117,13 @@
 			}
 		}
 	},
+	"musicDrop": {
+		"addToCurrentPlaylistHint": "Thêm vào danh sách phát hiện tại",
+		"addToPlaylistHint": "Thêm vào “{name}”",
+		"createPlaylistHint": "Thả thư mục nhạc để tạo danh sách phát",
+		"homeFolderOnlyHint": "Trang chủ chỉ nhận một thư mục; hãy thả tệp nhạc vào một danh sách phát",
+		"playlistFilesAndFoldersHint": "Hỗ trợ tệp nhạc và thư mục"
+	},
 	"name": "",
 	"newPlaylist": {
 		"buttonLabel": "Tạo danh sách phát mới.",

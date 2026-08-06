@@ -117,6 +117,13 @@
 			}
 		}
 	},
+	"musicDrop": {
+		"addToCurrentPlaylistHint": "新增至目前播放清單",
+		"addToPlaylistHint": "新增至「{name}」",
+		"createPlaylistHint": "拖入音樂資料夾以建立播放清單",
+		"homeFolderOnlyHint": "首頁僅接受單一資料夾；音樂檔案請拖到指定播放清單",
+		"playlistFilesAndFoldersHint": "支援音樂檔案與資料夾"
+	},
 	"name": "",
 	"newPlaylist": {
 		"buttonLabel": "新增歌單",

@@ -117,6 +117,13 @@
 			}
 		}
 	},
+	"musicDrop": {
+		"addToCurrentPlaylistHint": "Add to current playlist",
+		"addToPlaylistHint": "Add to “{name}”",
+		"createPlaylistHint": "Drop a music folder to create a playlist",
+		"homeFolderOnlyHint": "Home accepts one folder only; drop music files onto a playlist",
+		"playlistFilesAndFoldersHint": "Supports music files and folders"
+	},
 	"name": "",
 	"newPlaylist": {
 		"buttonLabel": "New Playlist",
