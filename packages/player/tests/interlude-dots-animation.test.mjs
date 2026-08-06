@@ -175,6 +175,54 @@ test("间奏点呼吸后短暂停顿，并在下一句入场时完成聚拢", as
 	player.dispose();
 });
 
+test("暂停且尚未起播时隐藏首句前间奏，播放后仍保留正常间奏", async () => {
+	installFakeDom();
+	const { LyricPlayer } = await import("@applemusic-like-lyrics/core");
+	const player = new LyricPlayer(new FakeElement());
+	const makeGroup = (startTime, endTime) => ({
+		startTime,
+		endTime,
+		mainLine: {
+			getLine: () => ({ isDuet: false }),
+			pause() {},
+			resume() {},
+		},
+		posY: { updateParams() {} },
+		bgSlideY: { updateParams() {} },
+		setTransform() {},
+		dispose() {},
+	});
+	player.pause();
+	player.disableSpring = true;
+	player.timelineState.initialLayoutFinished = true;
+	player.timelineState.currentTime = 0;
+	player.timelineState.scrollToIndex = 0;
+	player.currentLyricGroups = [
+		makeGroup(10000, 11000),
+		makeGroup(20000, 21000),
+	];
+	player.bottomLine.setFocused = () => {};
+	player.bottomLine.setTransform = () => {};
+
+	await player.calcLayout(true);
+	assert.equal(player.interludeDots.currentInterlude, undefined);
+	assert.equal(
+		player.interludeDots.element.classList.contains("FmKaba_enabled"),
+		false,
+	);
+
+	player.resume();
+	await player.calcLayout(true);
+	assert.deepEqual(player.interludeDots.currentInterlude, [20, 9750]);
+
+	player.pause();
+	player.timelineState.currentTime = 5000;
+	await player.calcLayout(true);
+	assert.deepEqual(player.interludeDots.currentInterlude, [5020, 9750]);
+
+	player.dispose();
+});
+
 test("Core 补丁、ESM、CJS 与样式保留同一套间奏退场和衔接参数", () => {
 	const patch = readProjectFile(
 		"../../../patches/@applemusic-like-lyrics__core@0.5.2.patch",
@@ -213,6 +261,10 @@ test("Core 补丁、ESM、CJS 与样式保留同一套间奏退场和衔接参�
 	for (const source of [patchCjs, patchEsm, esm, cjs]) {
 		assert.match(source, /function getInterludeBreatheAmount/);
 		assert.match(source, /return \(Math\.sin\(1\.5 \* Math\.PI/);
+		assert.match(
+			source,
+			/const shouldHideInitialInterlude = !this\.timelineState\.isPlaying && this\.timelineState\.currentTime <= 0/,
+		);
 		assert.match(source, /let scale = \.9025 \+ breatheAmount \* \.1475/);
 		assert.match(source, /let dotSpread = -\.03 \+ breatheAmount \* \.11/);
 		assert.match(source, /currentDuration <= interludeDuration \+ 250/);

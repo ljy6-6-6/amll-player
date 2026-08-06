@@ -1,5 +1,5 @@
 diff --git a/dist/amll-core.cjs b/dist/amll-core.cjs
-index 819b12c2307970f3b2dc160b47c90bc9a560887d..32b5cdded5f05f5e94ac831d4669550edf3e7252 100644
+index 819b12c2307970f3b2dc160b47c90bc9a560887d..a7fa8ec3960912d136b2bb7c7f185f6d2be031d3 100644
 --- a/dist/amll-core.cjs
 +++ b/dist/amll-core.cjs
 @@ -565,6 +565,7 @@ function generateControlPoints(width, height, variationFraction = randomRange(.4
@@ -148,7 +148,9 @@ index 819b12c2307970f3b2dc160b47c90bc9a560887d..32b5cdded5f05f5e94ac831d4669550e
  }
  function easeOutExpo(x) {
  	return x === 1 ? 1 : 1 - 2 ** (-10 * x);
-@@ -1987,17 +2038,34 @@ var InterludeDots = class {
+@@ -1985,19 +2036,36 @@ var InterludeDots = class {
+ 		if (this.currentInterlude) {
+ 			const interludeDuration = this.currentInterlude[1] - this.currentInterlude[0];
  			const currentDuration = this.currentTime - this.currentInterlude[0];
 -			if (currentDuration <= interludeDuration) {
 +			if (currentDuration <= interludeDuration + 250) {
@@ -198,6 +200,16 @@ index 819b12c2307970f3b2dc160b47c90bc9a560887d..32b5cdded5f05f5e94ac831d4669550e
  				this.dot0.style.opacity = "0";
  				this.dot1.style.opacity = "0";
  				this.dot2.style.opacity = "0";
+@@ -3050,7 +3118,8 @@ var LyricPlayerBase = class extends EventTarget {
+ 	* @param force 是否绕过弹簧效果强制更新位置
+ 	*/
+ 	async calcLayout(sync = false, force = false) {
+-		const interlude = computeCurrentInterlude({
++		const shouldHideInitialInterlude = !this.timelineState.isPlaying && this.timelineState.currentTime <= 0;
++		const interlude = shouldHideInitialInterlude ? void 0 : computeCurrentInterlude({
+ 			currentTime: this.timelineState.currentTime,
+ 			scrollToIndex: this.timelineState.scrollToIndex,
+ 			currentGroups: this.currentLyricGroups
 diff --git a/dist/amll-core.d.cts b/dist/amll-core.d.cts
 index ff58a0fe7d74f2e68010566f6249133241ac3d25..21da3f35218eced33fb0e877166cc77f43be4b81 100644
 --- a/dist/amll-core.d.cts
@@ -223,7 +235,7 @@ index 1d57d766316b1812de4ee13e5044ec24b32e7773..6db5e91e77e1ee8a44794fb5d56c5257
    private lastFrameTime;
    private frameTime;
 diff --git a/dist/amll-core.mjs b/dist/amll-core.mjs
-index 37bd9873e58044f0900c04c2ab80da5a6d29f16a..5d0ac0d92a25a7ced71903dcb64dd633c7a9e7f0 100644
+index 37bd9873e58044f0900c04c2ab80da5a6d29f16a..bae78eb616825260b5887cf005a68b81ee276bcc 100644
 --- a/dist/amll-core.mjs
 +++ b/dist/amll-core.mjs
 @@ -540,6 +540,7 @@ function generateControlPoints(width, height, variationFraction = randomRange(.4
@@ -372,7 +384,9 @@ index 37bd9873e58044f0900c04c2ab80da5a6d29f16a..5d0ac0d92a25a7ced71903dcb64dd633
  }
  function easeOutExpo(x) {
  	return x === 1 ? 1 : 1 - 2 ** (-10 * x);
-@@ -1962,17 +2013,34 @@ var InterludeDots = class {
+@@ -1960,19 +2011,36 @@ var InterludeDots = class {
+ 		if (this.currentInterlude) {
+ 			const interludeDuration = this.currentInterlude[1] - this.currentInterlude[0];
  			const currentDuration = this.currentTime - this.currentInterlude[0];
 -			if (currentDuration <= interludeDuration) {
 +			if (currentDuration <= interludeDuration + 250) {
@@ -422,6 +436,16 @@ index 37bd9873e58044f0900c04c2ab80da5a6d29f16a..5d0ac0d92a25a7ced71903dcb64dd633
  				this.dot0.style.opacity = "0";
  				this.dot1.style.opacity = "0";
  				this.dot2.style.opacity = "0";
+@@ -3025,7 +3093,8 @@ var LyricPlayerBase = class extends EventTarget {
+ 	* @param force 是否绕过弹簧效果强制更新位置
+ 	*/
+ 	async calcLayout(sync = false, force = false) {
+-		const interlude = computeCurrentInterlude({
++		const shouldHideInitialInterlude = !this.timelineState.isPlaying && this.timelineState.currentTime <= 0;
++		const interlude = shouldHideInitialInterlude ? void 0 : computeCurrentInterlude({
+ 			currentTime: this.timelineState.currentTime,
+ 			scrollToIndex: this.timelineState.scrollToIndex,
+ 			currentGroups: this.currentLyricGroups
 diff --git a/dist/style.css b/dist/style.css
 index 70b5c0350240b7d82347f0f527659683f7b0b9e9..fb5d33a289b2a8beb87254b61a1b65dbbfd309b1 100644
 --- a/dist/style.css
