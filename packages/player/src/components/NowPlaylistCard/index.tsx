@@ -191,7 +191,6 @@ export const NowPlaylistCard: FC<NowPlaylistCardProps> = ({
 	const prefersReducedMotion = useReducedMotion();
 	const [activeDrag, setActiveDrag] = useState<ActiveQueueDrag | null>(null);
 	const [suppressHover, setSuppressHover] = useState(false);
-	const [rowMotionGeneration, setRowMotionGeneration] = useState(0);
 	const suppressHoverRef = useRef(false);
 	const upcomingCount =
 		playlistIndex >= 0 ? Math.max(0, playlist.length - playlistIndex - 1) : 0;
@@ -428,7 +427,6 @@ export const NowPlaylistCard: FC<NowPlaylistCardProps> = ({
 				flushSync(() => {
 					if (shouldMove) {
 						queueManager.moveSong(fromIndex, toIndex);
-						setRowMotionGeneration((generation) => generation + 1);
 					}
 					setActiveDrag(null);
 				});
@@ -523,11 +521,16 @@ export const NowPlaylistCard: FC<NowPlaylistCardProps> = ({
 		[],
 	);
 
+	const getPlaylistItemKey = useCallback(
+		(index: number) => playlist[index]?.id ?? index,
+		[playlist],
+	);
+
 	const rowVirtualizer = useVirtualizer({
 		count: playlist.length,
 		getScrollElement: () => playlistContainerRef.current,
 		estimateSize: () => NOW_PLAYLIST_ROW_HEIGHT,
-		getItemKey: (index) => playlist[index]?.id ?? index,
+		getItemKey: getPlaylistItemKey,
 		overscan: 5,
 	});
 
@@ -665,10 +668,11 @@ export const NowPlaylistCard: FC<NowPlaylistCardProps> = ({
 									)
 								: 0;
 							return (
-								<div
+								<motion.div
 									key={virtualItem.key}
 									data-index={virtualItem.index}
 									className={styles.queueRowSlot}
+									initial={false}
 									role="listitem"
 									aria-posinset={virtualItem.index + 1}
 									aria-setsize={playlist.length}
@@ -678,23 +682,20 @@ export const NowPlaylistCard: FC<NowPlaylistCardProps> = ({
 									onDragStart={(event) => event.preventDefault()}
 									style={{
 										height: `${NOW_PLAYLIST_ROW_HEIGHT}px`,
-										transform: `translateY(${virtualItem.start}px)`,
 									}}
+									animate={{ y: virtualItem.start + dragShift }}
+									transition={
+										activeDrag && !activeDrag.dropping && !prefersReducedMotion
+											? QUEUE_SHIFT_SPRING
+											: { duration: 0 }
+									}
 								>
-									<motion.div
-										key={`${song.id}:${rowMotionGeneration}`}
-										initial={false}
+									<div
 										className={classNames(
 											styles.rowMotion,
 											isDragSource && styles.dragSource,
 										)}
 										data-drag-source={isDragSource ? "true" : "false"}
-										animate={{ y: dragShift }}
-										transition={
-											prefersReducedMotion
-												? { duration: 0 }
-												: QUEUE_SHIFT_SPRING
-										}
 									>
 										<PlaylistSongItem
 											song={song}
@@ -714,8 +715,8 @@ export const NowPlaylistCard: FC<NowPlaylistCardProps> = ({
 											}
 											onRemove={() => queueManager?.removeSong(song.id)}
 										/>
-									</motion.div>
-								</div>
+									</div>
+								</motion.div>
 							);
 						})}
 						<AnimatePresence

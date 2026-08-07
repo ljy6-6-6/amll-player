@@ -81,7 +81,13 @@ test("拖动排序保留稳定身份、平滑反馈和安全取消", () => {
 	assert.match(queueCard, /"Alt\+ArrowUp Alt\+ArrowDown"/);
 	assert.match(queueCard, /event\.target === event\.currentTarget/);
 	assert.match(queueCard, /flushSync/);
-	assert.match(queueCard, /rowMotionGeneration/);
+	assert.match(queueCard, /getItemKey: getPlaylistItemKey/);
+	assert.match(
+		queueCard,
+		/<motion\.div[\s\S]*key=\{virtualItem\.key\}[\s\S]*animate=\{\{ y: virtualItem\.start \+ dragShift \}\}/,
+	);
+	assert.doesNotMatch(queueCard, /rowMotionGeneration/);
+	assert.doesNotMatch(queueCard, /key=\{`\$\{song\.id\}:\$\{/);
 	assert.match(queueCardStyle, /\.dragOverlay[\s\S]*pointer-events:\s*none/);
 	assert.match(queueCardStyle, /\.dragSource\s*\{[\s\S]*opacity:\s*0/);
 	assert.match(
@@ -182,7 +188,7 @@ test("虚拟列表估算行高与实际行盒保持一致", () => {
 	assert.match(queueCard, /estimateSize:\s*\(\) => NOW_PLAYLIST_ROW_HEIGHT/);
 	assert.match(
 		queueCard,
-		/getItemKey: \(index\) => playlist\[index\]\?\.id \?\? index/,
+		/const getPlaylistItemKey = useCallback\([\s\S]*playlist\[index\]\?\.id \?\? index[\s\S]*\[playlist\]/,
 	);
 	assert.doesNotMatch(queueCard, /measureElement/);
 	assert.match(queueCard, /data-index=\{virtualItem\.index\}/);
