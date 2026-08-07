@@ -17,6 +17,7 @@ import { BottomLyricInfo } from "../BottomLyricInfo";
 import { NowPlaylistCard } from "../NowPlaylistCard/index.tsx";
 import { RecordPanel } from "../RecordPanel/index.tsx";
 import { shouldPreservePointerFocusMode } from "./focus-modality.ts";
+import { calculateFullscreenPlaylistPlacement } from "./fullscreen-playlist-position.ts";
 import styles from "./index.module.css";
 import "@applemusic-like-lyrics/core/style.css";
 import "@applemusic-like-lyrics/react-full/style.css";
@@ -77,16 +78,28 @@ export const AMLLWrapper: FC = () => {
 	const [playlistOpened, setPlaylistOpened] = useAtom(playlistCardOpenedAtom);
 	const setLyricPageOpened = useSetAtom(isLyricPageOpenedAtom);
 	const lyricPageRef = useRef<HTMLDivElement>(null);
+	const fullscreenPlaylistPanelRef = useRef<HTMLDivElement>(null);
+	const fullscreenPlaylistToggleRef = useRef<HTMLButtonElement>(null);
 	const previousLyricPageOpenedRef = useRef(isLyricPageOpened);
+
+	const findVisibleFullscreenPlaylistToggle = () => {
+		const remembered = fullscreenPlaylistToggleRef.current;
+		if (remembered?.isConnected && remembered.getClientRects().length > 0) {
+			return remembered;
+		}
+		const buttons = lyricPageRef.current?.querySelectorAll<HTMLButtonElement>(
+			FULLSCREEN_PLAYLIST_TOGGLE_SELECTOR,
+		);
+		return Array.from(buttons ?? []).find((button) => {
+			if (button.getClientRects().length === 0) return false;
+			const style = getComputedStyle(button);
+			return style.display !== "none" && style.visibility !== "hidden";
+		});
+	};
 
 	const focusFullscreenPlaylistToggle = () => {
 		requestAnimationFrame(() => {
-			const buttons = lyricPageRef.current?.querySelectorAll<HTMLButtonElement>(
-				FULLSCREEN_PLAYLIST_TOGGLE_SELECTOR,
-			);
-			Array.from(buttons ?? [])
-				.find((button) => button.getClientRects().length > 0)
-				?.focus();
+			findVisibleFullscreenPlaylistToggle()?.focus();
 		});
 	};
 
@@ -130,6 +143,71 @@ export const AMLLWrapper: FC = () => {
 			}
 		};
 	}, [isLyricPageOpened, playlistOpened, t]);
+
+	useLayoutEffect(() => {
+		if (!isLyricPageOpened || !playlistOpened) return;
+		const lyricPage = lyricPageRef.current;
+		const panel = fullscreenPlaylistPanelRef.current;
+		if (!lyricPage || !panel) return;
+
+		let animationFrame = 0;
+		const updatePlacement = () => {
+			animationFrame = 0;
+			const trigger = findVisibleFullscreenPlaylistToggle();
+			if (!trigger) return;
+			fullscreenPlaylistToggleRef.current = trigger;
+
+			const containerRect = lyricPage.getBoundingClientRect();
+			const triggerRect = trigger.getBoundingClientRect();
+			const panelRect = panel.getBoundingClientRect();
+			const computedStyle = getComputedStyle(lyricPage);
+			const gap =
+				Number.parseFloat(computedStyle.getPropertyValue("--space-3")) || 12;
+			const titlebarHeight =
+				Number.parseFloat(
+					computedStyle.getPropertyValue("--system-titlebar-height"),
+				) || 0;
+			const placement = calculateFullscreenPlaylistPlacement(
+				containerRect,
+				triggerRect,
+				panelRect.width,
+				gap,
+				titlebarHeight + gap,
+			);
+			panel.style.setProperty(
+				"--amll-fullscreen-playlist-left",
+				`${placement.left}px`,
+			);
+			panel.style.setProperty(
+				"--amll-fullscreen-playlist-bottom",
+				`${placement.bottom}px`,
+			);
+			panel.style.setProperty(
+				"--amll-fullscreen-playlist-max-height",
+				`${placement.maxHeight}px`,
+			);
+		};
+		const schedulePlacement = () => {
+			if (animationFrame) cancelAnimationFrame(animationFrame);
+			animationFrame = requestAnimationFrame(updatePlacement);
+		};
+		const observer = new ResizeObserver(schedulePlacement);
+		observer.observe(lyricPage);
+		observer.observe(panel);
+		for (const button of lyricPage.querySelectorAll<HTMLButtonElement>(
+			FULLSCREEN_PLAYLIST_TOGGLE_SELECTOR,
+		)) {
+			observer.observe(button);
+		}
+		window.addEventListener("resize", schedulePlacement);
+		schedulePlacement();
+
+		return () => {
+			if (animationFrame) cancelAnimationFrame(animationFrame);
+			observer.disconnect();
+			window.removeEventListener("resize", schedulePlacement);
+		};
+	}, [isLyricPageOpened, playlistOpened]);
 
 	useEffect(() => {
 		if (previousLyricPageOpenedRef.current && !isLyricPageOpened) {
@@ -204,6 +282,7 @@ export const AMLLWrapper: FC = () => {
 							}
 							animateFullscreenControl(controlButton);
 							if (controlButton.dataset.amllToggleType === "playlist") {
+								fullscreenPlaylistToggleRef.current = controlButton;
 								setPlaylistOpened((opened) => !opened);
 							}
 						}}
@@ -226,6 +305,7 @@ export const AMLLWrapper: FC = () => {
 									}}
 								/>
 								<div
+									ref={fullscreenPlaylistPanelRef}
 									className={styles.fullscreenPlaylistPanel}
 									data-amll-playlist-panel=""
 									onPointerDown={(event) => event.stopPropagation()}

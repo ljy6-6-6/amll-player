@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { calculateFullscreenPlaylistPlacement } from "../src/components/AMLLWrapper/fullscreen-playlist-position.ts";
 
 const readProjectFile = (path) =>
 	readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf8");
@@ -48,6 +49,10 @@ test("全屏队列按钮接入现有播放队列并显示在全屏层内", () =>
 	assert.match(wrapper, /data-amll-playlist-panel=""/);
 	assert.match(wrapper, /aria-expanded/);
 	assert.match(wrapperStyle, /\.fullscreenPlaylistPanel/);
+	assert.match(wrapper, /fullscreenPlaylistPanelRef/);
+	assert.match(wrapper, /ResizeObserver\(schedulePlacement\)/);
+	assert.match(wrapperStyle, /--amll-fullscreen-playlist-bottom/);
+	assert.match(wrapperStyle, /--amll-fullscreen-playlist-max-height/);
 	assert.match(wrapperStyle, /data-amll-playlist-opened="true"/);
 	assert.match(
 		nowPlayingBar,
@@ -56,4 +61,56 @@ test("全屏队列按钮接入现有播放队列并显示在全屏层内", () =>
 	);
 	assert.match(nowPlayingBar, /!playlistOpened \|\| isLyricPageOpened/);
 	assert.match(nowPlayingBar, /data-amll-playlist-panel/);
+});
+
+test("全屏队列始终锚定在可见按钮上方并限制可用高度", () => {
+	const container = {
+		left: 0,
+		top: 0,
+		right: 1200,
+		bottom: 800,
+		width: 1200,
+		height: 800,
+	};
+	const horizontalTrigger = {
+		left: 1080,
+		top: 720,
+		right: 1128,
+		bottom: 768,
+		width: 48,
+		height: 48,
+	};
+	const horizontal = calculateFullscreenPlaylistPlacement(
+		container,
+		horizontalTrigger,
+		400,
+		12,
+		12,
+	);
+	assert.equal(container.bottom - horizontal.bottom, 708);
+	assert.equal(
+		horizontalTrigger.top - (container.bottom - horizontal.bottom),
+		12,
+	);
+	assert.equal(horizontal.maxHeight, 696);
+	assert.equal(horizontal.left, 728);
+
+	const verticalTrigger = {
+		left: 80,
+		top: 520,
+		right: 128,
+		bottom: 568,
+		width: 48,
+		height: 48,
+	};
+	const vertical = calculateFullscreenPlaylistPlacement(
+		container,
+		verticalTrigger,
+		400,
+		12,
+		32,
+	);
+	assert.equal(vertical.left, 12, "面板不应越过左侧安全区");
+	assert.equal(vertical.maxHeight, 476);
+	assert.equal(verticalTrigger.top - (container.bottom - vertical.bottom), 12);
 });

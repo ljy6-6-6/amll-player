@@ -57,16 +57,21 @@
 
 .fullscreenPlaylistPanel {
 	position: absolute;
-	right: max(var(--space-3), env(safe-area-inset-right));
-	bottom: max(var(--space-3), env(safe-area-inset-bottom));
+	left: var(
+		--amll-fullscreen-playlist-left,
+		max(var(--space-3), env(safe-area-inset-left))
+	);
+	bottom: var(
+		--amll-fullscreen-playlist-bottom,
+		max(var(--space-3), env(safe-area-inset-bottom))
+	);
 	z-index: 21;
 }
 
 .fullscreenPlaylistCard {
-	max-height: calc(
-		100dvh -
-		var(--system-titlebar-height, 0px) -
-		var(--space-6)
+	max-height: var(
+		--amll-fullscreen-playlist-max-height,
+		calc(100dvh - var(--system-titlebar-height, 0px) - var(--space-6))
 	);
 	border: 1px solid var(--gray-a6);
 	border-radius: var(--radius-4);
