@@ -542,7 +542,7 @@ export const NowPlaylistCard: FC<NowPlaylistCardProps> = ({
 			return;
 		}
 		lastAutoScrolledSongIdRef.current = currentSongId;
-		rowVirtualizer.scrollToIndex(playlistIndex, { align: "center" });
+		rowVirtualizer.scrollToIndex(playlistIndex, { align: "auto" });
 	}, [
 		activeDrag,
 		currentSongId,

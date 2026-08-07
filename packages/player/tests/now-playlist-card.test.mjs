@@ -163,8 +163,9 @@ test("队列重排只改变当前索引时不会强制滚回正在播放项", ()
 	);
 	assert.match(
 		queueCard,
-		/lastAutoScrolledSongIdRef\.current = currentSongId;[\s\S]*rowVirtualizer\.scrollToIndex/,
+		/lastAutoScrolledSongIdRef\.current = currentSongId;[\s\S]*rowVirtualizer\.scrollToIndex\(playlistIndex, \{ align: "auto" \}\)/,
 	);
+	assert.doesNotMatch(queueCard, /scrollToIndex\([^\n]+align: "center"/);
 });
 
 test("拖到可视区边缘时按距离连续调节自动滚动速度", () => {
