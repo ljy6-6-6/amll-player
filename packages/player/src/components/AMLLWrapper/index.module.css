@@ -1,29 +1,62 @@
 .lyricPage {
-	position: fixed;
-	left: 0;
-	top: 0;
-	width: 100vw;
-	height: 100vh;
+	--amll-fullscreen-sheet-duration: 0.5s;
+	--amll-fullscreen-sheet-easing: cubic-bezier(0.25, 1, 0.5, 1);
+
+	position: absolute;
+	box-sizing: border-box;
+	inset: 0;
+	z-index: 1;
 	isolation: isolate;
-	transform-style: flat;
+	visibility: hidden;
 	pointer-events: none;
-	background-color: #222;
+	opacity: 0;
 	transition:
-		border-radius 0.25s ease,
-		transform 0.5s cubic-bezier(0.25, 1, 0.5, 1);
-	transform: translateY(100%);
-	border-radius: 1em 1em 0 0;
+		opacity 0.16s 0.3s ease-out,
+		visibility 0s var(--amll-fullscreen-sheet-duration);
+	will-change: opacity;
 	overflow: hidden;
 	color: white;
 
 	&.opened {
+		visibility: visible;
 		pointer-events: auto;
+		opacity: 1;
 		transition:
-			border-radius 0.25s 0.25s ease,
-			transform 0.5s cubic-bezier(0.25, 1, 0.5, 1);
-		transform: translateY(0%);
-		border-radius: 0 0 0 0;
+			opacity 0.16s ease-out,
+			visibility 0s;
 	}
+}
+
+.lyricContent {
+	position: absolute;
+	box-sizing: border-box;
+	left: 0;
+	bottom: 0;
+	width: 100%;
+	height: 100dvh;
+	transform: translateY(var(--amll-player-playbar-top, 100dvh));
+	transition: transform var(--amll-fullscreen-sheet-duration)
+		var(--amll-fullscreen-sheet-easing);
+	will-change: transform;
+}
+
+.lyricPage.opened .lyricContent {
+	transform: translateY(0);
+}
+
+:global(body[data-amll-cover-transition="enter"])
+	.lyricPage
+	:global([data-amll-cover]),
+:global(body[data-amll-cover-transition="enter-handoff"])
+	.lyricPage
+	:global([data-amll-cover]),
+:global(body[data-amll-cover-transition="exit"])
+	.lyricPage
+	:global([data-amll-cover]),
+:global(body[data-amll-cover-transition="exit-handoff"])
+	.lyricPage
+	:global([data-amll-cover]) {
+	opacity: 0;
 }
 
 .lyricPage[data-pointer-input] :global(:focus) {
@@ -40,23 +73,26 @@
 		background-color 0.18s ease;
 }
 
+.lyricPage :global([data-amll-control-thumb]) {
+	transform: translateY(calc(20px - var(--amll-player-playbar-top, 100dvh)));
+	pointer-events: none;
+	transition: transform var(--amll-fullscreen-sheet-duration)
+		var(--amll-fullscreen-sheet-easing);
+	will-change: transform;
+}
+
+.lyricPage.opened :global([data-amll-control-thumb]) {
+	transform: translateY(0);
+	pointer-events: auto;
+	transition: transform var(--amll-fullscreen-sheet-duration)
+		var(--amll-fullscreen-sheet-easing);
+}
+
 .lyricPage
 	:global(
 		[data-amll-toggle-type="playlist"][data-amll-playlist-opened="true"]
 	) {
 	opacity: 1;
-}
-
-:global(body[data-amll-cover-transition="enter"])
-	.lyricPage
-	:global([data-amll-cover]),
-:global(body[data-amll-cover-transition="exit"])
-	.lyricPage
-	:global([data-amll-cover]),
-:global(body[data-amll-cover-transition="exit-handoff"])
-	.lyricPage
-	:global([data-amll-cover]) {
-	opacity: 0;
 }
 
 .fullscreenPlaylistDismissLayer {
@@ -105,5 +141,18 @@
 	.lyricPage,
 	.lyricPage.opened {
 		transition-duration: 1ms;
+		transition-delay: 0s;
+	}
+
+	.lyricContent,
+	.lyricPage.opened .lyricContent {
+		transition-duration: 1ms;
+		transition-delay: 0s;
+	}
+
+	.lyricPage :global([data-amll-control-thumb]),
+	.lyricPage.opened :global([data-amll-control-thumb]) {
+		transition-duration: 1ms;
+		transition-delay: 0s;
 	}
 }

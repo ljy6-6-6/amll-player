@@ -2,6 +2,8 @@ diff --git a/dist/amll-react-framework.cjs b/dist/amll-react-framework.cjs
 index a79ba6b..91b3112 100644
 --- a/dist/amll-react-framework.cjs
 +++ b/dist/amll-react-framework.cjs
+@@ -727,0 +728 @@ const ControlThumb = (t0) => {
++			"data-amll-control-thumb": "",
 @@ -905,0 +906 @@ const Cover = (0, react.forwardRef)((t0, ref) => {
 +			"data-amll-cover": "",
 @@ -2105,0 +2107 @@ const PrebuiltToggleIconButton = (0, react.memo)((t0) => {
@@ -42,6 +44,8 @@ diff --git a/dist/amll-react-framework.mjs b/dist/amll-react-framework.mjs
 index 9bc62b4..da3268e 100644
 --- a/dist/amll-react-framework.mjs
 +++ b/dist/amll-react-framework.mjs
+@@ -701,0 +702 @@ const ControlThumb = (t0) => {
++			"data-amll-control-thumb": "",
 @@ -879,0 +880 @@ const Cover = forwardRef((t0, ref) => {
 +			"data-amll-cover": "",
 @@ -2079,0 +2081 @@ const PrebuiltToggleIconButton = memo((t0) => {

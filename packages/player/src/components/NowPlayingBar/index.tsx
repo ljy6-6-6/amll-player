@@ -123,22 +123,88 @@ export const NowPlayingBar: FC = () => {
 	useLayoutEffect(() => {
 		const playbarEl = playbarRef.current;
 		if (!playbarEl) return;
+		const playbarBoundary = playbarEl.closest<HTMLElement>(
+			"[data-amll-playbar-boundary]",
+		);
+		let viewportResizeFrame = 0;
+		let secondViewportResizeFrame = 0;
 		const updateSafeBound = () => {
-			const { top } = playbarEl.getBoundingClientRect();
+			const { height, top } = playbarEl.getBoundingClientRect();
+			const parsedSeparatorHeight = playbarBoundary
+				? Number.parseFloat(
+						getComputedStyle(playbarBoundary).getPropertyValue(
+							"--amll-player-separator-height",
+						),
+					)
+				: 0;
+			const separatorHeight = Number.isFinite(parsedSeparatorHeight)
+				? parsedSeparatorHeight
+				: 0;
+			const compactHeight = Math.max(1, height + separatorHeight);
+			const sheetTop = Math.min(
+				window.innerHeight,
+				Math.max(0, top - separatorHeight),
+			);
 			document.body.style.setProperty(
 				"--amll-player-playbar-bottom",
-				`${window.innerHeight - top}px`,
+				`${compactHeight}px`,
+			);
+			document.body.style.setProperty(
+				"--amll-player-playbar-top",
+				`${sheetTop}px`,
+			);
+			document.body.style.setProperty(
+				"--amll-player-playbar-height",
+				`${compactHeight}px`,
 			);
 		};
+		const handleViewportResize = () => {
+			if (playbarBoundary?.hasAttribute("data-amll-playbar-expanded")) {
+				playbarBoundary.dataset.amllViewportResizing = "";
+				cancelAnimationFrame(viewportResizeFrame);
+				cancelAnimationFrame(secondViewportResizeFrame);
+				viewportResizeFrame = requestAnimationFrame(() => {
+					viewportResizeFrame = 0;
+					secondViewportResizeFrame = requestAnimationFrame(() => {
+						secondViewportResizeFrame = 0;
+						delete playbarBoundary.dataset.amllViewportResizing;
+					});
+				});
+			}
+			updateSafeBound();
+		};
 		const observer = new ResizeObserver(updateSafeBound);
-		window.addEventListener("resize", updateSafeBound);
+		window.addEventListener("resize", handleViewportResize);
+		window.visualViewport?.addEventListener("resize", handleViewportResize);
 		observer.observe(playbarEl);
 		updateSafeBound();
 		return () => {
-			window.removeEventListener("resize", updateSafeBound);
+			window.removeEventListener("resize", handleViewportResize);
+			window.visualViewport?.removeEventListener(
+				"resize",
+				handleViewportResize,
+			);
+			cancelAnimationFrame(viewportResizeFrame);
+			cancelAnimationFrame(secondViewportResizeFrame);
+			if (playbarBoundary) {
+				delete playbarBoundary.dataset.amllViewportResizing;
+			}
 			observer.disconnect();
+			document.body.style.removeProperty("--amll-player-playbar-bottom");
+			document.body.style.removeProperty("--amll-player-playbar-top");
+			document.body.style.removeProperty("--amll-player-playbar-height");
 		};
 	}, []);
+
+	useLayoutEffect(() => {
+		if (isLyricPageOpened) return;
+		const playbarBoundary = playbarRef.current?.closest<HTMLElement>(
+			"[data-amll-playbar-boundary]",
+		);
+		if (playbarBoundary) {
+			delete playbarBoundary.dataset.amllViewportResizing;
+		}
+	}, [isLyricPageOpened]);
 
 	useEffect(() => {
 		if (!playlistOpened || isLyricPageOpened) return;
@@ -231,9 +297,15 @@ export const NowPlayingBar: FC = () => {
 				</>
 			)}
 			<Flex
-				className={classNames(styles.playBar, hideNowPlayingBar && styles.hide)}
+				className={classNames(
+					styles.playBar,
+					hideNowPlayingBar && styles.hide,
+					isLyricPageOpened && styles.lyricPageOpened,
+				)}
+				data-amll-playbar-content=""
 				overflow="hidden"
 				ref={playbarRef}
+				inert={isLyricPageOpened ? true : undefined}
 			>
 				<Flex
 					direction="row"
@@ -268,6 +340,7 @@ export const NowPlayingBar: FC = () => {
 						flexGrow="1"
 						minWidth="0"
 						overflow="hidden"
+						data-amll-playbar-reveal=""
 						style={{
 							textWrap: "nowrap",
 						}}
@@ -285,6 +358,7 @@ export const NowPlayingBar: FC = () => {
 					flexGrow="1"
 					flexBasis="33.3%"
 					gap="5"
+					data-amll-playbar-reveal=""
 					display={{
 						initial: "none",
 						sm: "flex",
@@ -341,6 +415,7 @@ export const NowPlayingBar: FC = () => {
 						sm: "33.3%",
 					}}
 					gap="1"
+					data-amll-playbar-reveal=""
 				>
 					<Flex
 						direction="row"

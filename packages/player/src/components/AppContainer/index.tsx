@@ -15,8 +15,16 @@ export const AppContainer: FC<
 	PropsWithChildren<{
 		sidebar?: ReactNode;
 		playbar?: ReactNode;
+		playbarExpanded?: boolean;
+		playbarExpandedContent?: ReactNode;
 	}>
-> = ({ sidebar, playbar, children }) => {
+> = ({
+	sidebar,
+	playbar,
+	playbarExpanded = false,
+	playbarExpandedContent,
+	children,
+}) => {
 	const [sidebarWidth, setSidebarWidth] = useAtom(sidebarWidthAtom);
 	const [dragging, setDragging] = useState(false);
 	const onSidebarDraggerMouseDown = () => {
@@ -55,8 +63,22 @@ export const AppContainer: FC<
 				}}
 				onMouseDown={onSidebarDraggerMouseDown}
 			/>
-			<div className={styles.main}>{children}</div>
-			<div className={styles.playbar}>{playbar}</div>
+			<div className={styles.main} inert={playbarExpanded ? true : undefined}>
+				{children}
+			</div>
+			{(playbar || playbarExpandedContent) && (
+				<div
+					className={classNames(
+						styles.playbar,
+						playbarExpanded && styles.playbarExpanded,
+					)}
+					data-amll-playbar-boundary=""
+					data-amll-playbar-expanded={playbarExpanded ? "" : undefined}
+				>
+					{playbar}
+					{playbarExpandedContent}
+				</div>
+			)}
 		</div>
 	);
 };

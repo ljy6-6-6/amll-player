@@ -30,19 +30,48 @@
 }
 
 .playBar {
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	z-index: 2;
+	box-sizing: border-box;
+	width: 100%;
 	padding: var(--space-3);
 	padding-left: calc(var(--space-3) + env(safe-area-inset-left));
 	padding-right: calc(var(--space-3) + env(safe-area-inset-right));
 	padding-bottom: calc(var(--space-3) + env(safe-area-inset-bottom));
 	/* border-radius: var(--radius-4); */
-	transition: transform 0.2s ease;
+	opacity: 1;
+	transition:
+		transform 0.2s ease,
+		opacity 0.18s 0.32s cubic-bezier(0.22, 1, 0.36, 1);
 	margin: auto;
 	max-width: 800px;
+
+	&.lyricPageOpened {
+		opacity: 0;
+		pointer-events: none;
+		transition:
+			transform 0.2s ease,
+			opacity 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+	}
 }
 
 .playBar > * {
 	min-width: 0;
 	overflow: hidden;
+}
+
+.playBar [data-amll-playbar-reveal] {
+	transform: translateY(0);
+	transition: transform 0.18s 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+	will-change: transform;
+}
+
+.playBar.lyricPageOpened [data-amll-playbar-reveal] {
+	transform: translateY(-36px);
+	transition: transform 0.16s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .coverButton {
@@ -121,7 +150,17 @@
 	opacity: 0;
 }
 
-:global(body[data-amll-cover-transition="exit-handoff"])
-	.coverTransitionSourceHidden {
-	opacity: 1;
+@media (prefers-reduced-motion: reduce) {
+	.playBar,
+	.playBar.lyricPageOpened {
+		transition-duration: 1ms;
+		transition-delay: 0s;
+	}
+
+	.playBar [data-amll-playbar-reveal],
+	.playBar.lyricPageOpened [data-amll-playbar-reveal] {
+		transform: translateY(0);
+		transition-duration: 1ms;
+		transition-delay: 0s;
+	}
 }

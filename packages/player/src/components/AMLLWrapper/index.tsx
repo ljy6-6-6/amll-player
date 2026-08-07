@@ -230,7 +230,7 @@ export const AMLLWrapper: FC = () => {
 		};
 	}, [isLyricPageOpened, playlistOpened]);
 
-	useEffect(() => {
+	useLayoutEffect(() => {
 		if (previousLyricPageOpenedRef.current && !isLyricPageOpened) {
 			setPlaylistOpened(false);
 		}
@@ -282,6 +282,7 @@ export const AMLLWrapper: FC = () => {
 							isLyricPageOpened && styles.opened,
 						)}
 						id="amll-lyric-player-wrapper"
+						inert={isLyricPageOpened ? undefined : true}
 						onPointerDownCapture={(event) => {
 							if (event.pointerType === "mouse") {
 								event.currentTarget.dataset.pointerInput = "";
@@ -308,11 +309,16 @@ export const AMLLWrapper: FC = () => {
 							}
 						}}
 					>
-						<PrebuiltLyricPlayer
-							id="amll-lyric-player"
-							style={{ width: "100%", height: "100%" }}
-							bottomLineSlot={<BottomLyricInfo />}
-						/>
+						<div
+							className={styles.lyricContent}
+							data-amll-fullscreen-content=""
+						>
+							<PrebuiltLyricPlayer
+								id="amll-lyric-player"
+								style={{ width: "100%", height: "100%" }}
+								bottomLineSlot={<BottomLyricInfo />}
+							/>
+						</div>
 						{isLyricPageOpened && playlistOpened && (
 							<>
 								<button

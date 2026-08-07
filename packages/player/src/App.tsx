@@ -90,16 +90,21 @@ function App() {
 							isLyricPageOpened && styles.amllOpened,
 						)}
 					>
-						<AppContainer playbar={<NowPlayingBar />}>
+						<AppContainer
+							playbar={<NowPlayingBar />}
+							playbarExpanded={isLyricPageOpened}
+							playbarExpandedContent={
+								<Suspense>
+									<AMLLWrapper />
+								</Suspense>
+							}
+						>
 							<RouterProvider router={router} />
 						</AppContainer>
 						{/* <Box className={styles.container}>
 							<RouterProvider router={router} />
 						</Box> */}
 					</Box>
-					<Suspense>
-						<AMLLWrapper />
-					</Suspense>
 					<ToastContainer
 						theme="dark"
 						position="bottom-right"

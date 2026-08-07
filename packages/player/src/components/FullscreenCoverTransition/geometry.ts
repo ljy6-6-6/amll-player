@@ -5,6 +5,13 @@ export interface CoverRect {
 	height: number;
 }
 
+export interface CoverTransform {
+	translateX: number;
+	translateY: number;
+	scaleX: number;
+	scaleY: number;
+}
+
 export const isUsableCoverRect = (rect: CoverRect) =>
 	Number.isFinite(rect.left) &&
 	Number.isFinite(rect.top) &&
@@ -20,35 +27,33 @@ export const toCoverRect = (rect: DOMRect | CoverRect): CoverRect => ({
 	height: rect.height,
 });
 
-export const mapCoverRectFromTransformedContainer = (
-	target: CoverRect,
-	transformedContainer: CoverRect,
-	finalContainer: CoverRect,
-): CoverRect => {
-	const scaleX = transformedContainer.width / finalContainer.width;
-	const scaleY = transformedContainer.height / finalContainer.height;
-	if (
-		!Number.isFinite(scaleX) ||
-		!Number.isFinite(scaleY) ||
-		Math.abs(scaleX) < 0.0001 ||
-		Math.abs(scaleY) < 0.0001
-	) {
-		return target;
-	}
+export const offsetCoverRect = (
+	rect: CoverRect,
+	offsetX: number,
+	offsetY: number,
+): CoverRect => ({
+	left: rect.left - offsetX,
+	top: rect.top - offsetY,
+	width: rect.width,
+	height: rect.height,
+});
 
-	return {
-		left:
-			finalContainer.left + (target.left - transformedContainer.left) / scaleX,
-		top: finalContainer.top + (target.top - transformedContainer.top) / scaleY,
-		width: target.width / scaleX,
-		height: target.height / scaleY,
-	};
-};
+export const getCoverTransform = (
+	base: CoverRect,
+	displayed: CoverRect,
+): CoverTransform => ({
+	translateX: displayed.left - base.left,
+	translateY: displayed.top - base.top,
+	scaleX: displayed.width / base.width,
+	scaleY: displayed.height / base.height,
+});
 
-export const coverRectDistance = (left: CoverRect, right: CoverRect) =>
-	Math.max(
-		Math.abs(left.left - right.left),
-		Math.abs(left.top - right.top),
-		Math.abs(left.width - right.width),
-		Math.abs(left.height - right.height),
-	);
+export const toCoverTransformCss = (transform: CoverTransform) =>
+	`translate(${transform.translateX}px, ${transform.translateY}px) scale(${transform.scaleX}, ${transform.scaleY})`;
+
+export const getUnscaledCornerRadius = (
+	displayedRadius: number,
+	transform: CoverTransform,
+) =>
+	displayedRadius /
+	Math.max(Math.abs(transform.scaleX), Math.abs(transform.scaleY), 0.001);

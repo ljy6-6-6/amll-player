@@ -1,5 +1,5 @@
 .body {
-	height: 100vh;
+	height: 100dvh;
 	overflow: hidden;
 }
 
@@ -16,7 +16,7 @@
 	transition: scale 0.5s cubic-bezier(0.25, 1, 0.5, 1);
 	scale: 1;
 	box-sizing: border-box;
-	height: 100vh;
+	height: 100dvh;
 	overflow-y: auto;
 }
 
@@ -38,7 +38,7 @@
 	left: 0;
 	top: 0;
 	width: 100vw;
-	height: 100vh;
+	height: 100dvh;
 	pointer-events: none;
 	opacity: 0;
 	/* background-color: #000; */
