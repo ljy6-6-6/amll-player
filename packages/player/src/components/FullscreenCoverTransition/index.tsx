@@ -19,12 +19,14 @@ export interface FullscreenCoverTransitionSnapshot {
 	target: CoverRect;
 	sourceCornerRadius: number;
 	targetCornerRadius: number;
+	sourceFilter: string;
+	targetFilter: string;
 }
 
 const TRANSITION_DURATION = 480;
 const CORRECTION_DURATION = 120;
-const SOURCE_SHADOW = "drop-shadow(0 2px 6px rgb(0 0 0 / 0.14))";
-const TARGET_SHADOW = "drop-shadow(0 18px 30px rgb(0 0 0 / 0.3))";
+const HANDOFF_DURATION = 100;
+const TRANSPARENT_DROP_SHADOW = "drop-shadow(rgba(0, 0, 0, 0) 0px 0px 0px)";
 const SOURCE_SELECTOR = "[data-amll-cover-transition-source]";
 const TARGET_SELECTOR = "[data-amll-cover]";
 const TRANSITION_COVER_SELECTOR = "[data-amll-cover-transition-cover]";
@@ -57,6 +59,11 @@ const getCornerRadius = (element: HTMLElement, fallback: number) => {
 	return Number.isFinite(radius) && radius > 0 ? radius : fallback;
 };
 
+const getVisualFilter = (element: HTMLElement) => {
+	const filter = getComputedStyle(element).filter;
+	return filter === "none" ? TRANSPARENT_DROP_SHADOW : filter;
+};
+
 const measureFullscreenTarget = (
 	direction: FullscreenCoverTransitionDirection,
 ) => {
@@ -81,6 +88,7 @@ const measureFullscreenTarget = (
 	if (!isUsableCoverRect(rect)) return null;
 	return {
 		rect,
+		filter: getVisualFilter(target.element),
 		cornerRadius: getCornerRadius(
 			target.element,
 			Math.max(
@@ -116,6 +124,9 @@ export const captureFullscreenCoverTransition = (
 	const targetCornerRadius = activeTransitionCover
 		? getCornerRadius(activeTransitionCover, measuredTarget.cornerRadius)
 		: measuredTarget.cornerRadius;
+	const targetFilter = activeTransitionCover
+		? getVisualFilter(activeTransitionCover)
+		: measuredTarget.filter;
 
 	return {
 		direction,
@@ -125,6 +136,8 @@ export const captureFullscreenCoverTransition = (
 		target,
 		sourceCornerRadius: getCornerRadius(sourceElement, 6),
 		targetCornerRadius,
+		sourceFilter: getVisualFilter(sourceElement),
+		targetFilter,
 	};
 };
 
@@ -159,7 +172,10 @@ export const FullscreenCoverTransition: FC<{
 		height: from.height,
 		backgroundImage: `url(${snapshot.coverUrl})`,
 		borderRadius: fromCornerRadius,
-		filter: snapshot.direction === "enter" ? SOURCE_SHADOW : TARGET_SHADOW,
+		filter:
+			snapshot.direction === "enter"
+				? snapshot.sourceFilter
+				: snapshot.targetFilter,
 	};
 
 	useLayoutEffect(() => {
@@ -171,6 +187,9 @@ export const FullscreenCoverTransition: FC<{
 		let animationFrame = 0;
 		let correctionCount = 0;
 		let animation: Animation | null = null;
+		let handoffAnimation: Animation | null = null;
+		let nativeHandoffAnimation: Animation | null = null;
+		let handoffStarted = false;
 
 		const resolveEndpoint = () => {
 			if (snapshot.direction === "enter") {
@@ -178,6 +197,7 @@ export const FullscreenCoverTransition: FC<{
 					measureFullscreenTarget("enter") ?? {
 						rect: snapshot.target,
 						cornerRadius: snapshot.targetCornerRadius,
+						filter: snapshot.targetFilter,
 					}
 				);
 			}
@@ -191,6 +211,9 @@ export const FullscreenCoverTransition: FC<{
 				cornerRadius: sourceElement
 					? getCornerRadius(sourceElement, snapshot.sourceCornerRadius)
 					: snapshot.sourceCornerRadius,
+				filter: sourceElement
+					? getVisualFilter(sourceElement)
+					: snapshot.sourceFilter,
 			};
 		};
 
@@ -200,6 +223,34 @@ export const FullscreenCoverTransition: FC<{
 			delete document.body.dataset.amllCoverTransition;
 			onFinish();
 		};
+		const beginHandoff = () => {
+			if (settled || handoffStarted) return;
+			handoffStarted = true;
+			const nativeEndpoint =
+				snapshot.direction === "enter"
+					? getLargestFullscreenCover()?.element
+					: document.querySelector<HTMLElement>(SOURCE_SELECTOR);
+			const currentOpacity = Number.parseFloat(getComputedStyle(cover).opacity);
+			const handoffOptions: KeyframeAnimationOptions = {
+				duration: HANDOFF_DURATION,
+				easing: "cubic-bezier(0.2, 0.8, 0.2, 1)",
+				fill: "both",
+			};
+			handoffAnimation = cover.animate(
+				[
+					{ opacity: Number.isFinite(currentOpacity) ? currentOpacity : 1 },
+					{ opacity: 0 },
+				],
+				handoffOptions,
+			);
+			nativeHandoffAnimation =
+				nativeEndpoint?.animate(
+					[{ opacity: 0 }, { opacity: 1 }],
+					handoffOptions,
+				) ?? null;
+			document.body.dataset.amllCoverTransition = `${snapshot.direction}-handoff`;
+			handoffAnimation.addEventListener("finish", finish, { once: true });
+		};
 		const animateToEndpoint = (duration: number) => {
 			const current = toCoverRect(cover.getBoundingClientRect());
 			const endpoint = resolveEndpoint();
@@ -207,21 +258,15 @@ export const FullscreenCoverTransition: FC<{
 				Number.parseFloat(getComputedStyle(cover).borderTopLeftRadius) ||
 				fromCornerRadius;
 			const currentShadow = getComputedStyle(cover).filter;
-			const endpointShadow =
-				snapshot.direction === "enter" ? TARGET_SHADOW : SOURCE_SHADOW;
 			animation?.cancel();
 			animation = cover.animate(
 				[
 					rectToKeyframe(
 						current,
 						currentRadius,
-						currentShadow === "none"
-							? snapshot.direction === "enter"
-								? SOURCE_SHADOW
-								: TARGET_SHADOW
-							: currentShadow,
+						currentShadow === "none" ? TRANSPARENT_DROP_SHADOW : currentShadow,
 					),
-					rectToKeyframe(endpoint.rect, endpoint.cornerRadius, endpointShadow),
+					rectToKeyframe(endpoint.rect, endpoint.cornerRadius, endpoint.filter),
 				],
 				{
 					duration,
@@ -242,7 +287,7 @@ export const FullscreenCoverTransition: FC<{
 						animateToEndpoint(CORRECTION_DURATION);
 						return;
 					}
-					finish();
+					beginHandoff();
 				},
 				{ once: true },
 			);
@@ -254,6 +299,10 @@ export const FullscreenCoverTransition: FC<{
 		});
 		const handleResize = () => {
 			if (settled) return;
+			if (handoffStarted) {
+				finish();
+				return;
+			}
 			if (animationFrame) cancelAnimationFrame(animationFrame);
 			animationFrame = requestAnimationFrame(() => {
 				animationFrame = 0;
@@ -267,6 +316,8 @@ export const FullscreenCoverTransition: FC<{
 			settled = true;
 			if (animationFrame) cancelAnimationFrame(animationFrame);
 			animation?.cancel();
+			handoffAnimation?.cancel();
+			nativeHandoffAnimation?.cancel();
 			window.removeEventListener("resize", handleResize);
 			delete document.body.dataset.amllCoverTransition;
 		};

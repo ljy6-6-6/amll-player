@@ -47,7 +47,13 @@
 	opacity: 1;
 }
 
-:global(body[data-amll-cover-transition])
+:global(body[data-amll-cover-transition="enter"])
+	.lyricPage
+	:global([data-amll-cover]),
+:global(body[data-amll-cover-transition="exit"])
+	.lyricPage
+	:global([data-amll-cover]),
+:global(body[data-amll-cover-transition="exit-handoff"])
 	.lyricPage
 	:global([data-amll-cover]) {
 	opacity: 0;

@@ -59,6 +59,7 @@ test("封面终点会消除容器平移和缩放并使用精确视口几何", ()
 	assert.match(transition, /mapCoverRectFromTransformedContainer/);
 	assert.match(transition, /TRANSITION_DURATION = 480/);
 	assert.match(transition, /CORRECTION_DURATION = 120/);
+	assert.match(transition, /HANDOFF_DURATION = 100/);
 	assert.match(transition, /cubic-bezier\(0\.25, 1, 0\.5, 1\)/);
 	assert.match(
 		transition,
@@ -71,6 +72,10 @@ test("封面终点会消除容器平移和缩放并使用精确视口几何", ()
 	assert.match(transitionStyle, /\.transitionViewport/);
 	assert.match(transitionStyle, /overflow: hidden/);
 	assert.match(transitionStyle, /will-change: left, top, width, height/);
+	assert.match(transition, /getComputedStyle\(element\)\.filter/);
+	assert.match(transition, /sourceFilter: getVisualFilter\(sourceElement\)/);
+	assert.match(transition, /targetFilter/);
+	assert.doesNotMatch(transition, /drop-shadow\(0 18px 30px/);
 });
 
 test("封面进入和退出共用单层动画并为特殊媒体安全降级", () => {
@@ -87,9 +92,13 @@ test("封面进入和退出共用单层动画并为特殊媒体安全降级", ()
 	assert.match(transition, /document\.body\.dataset\.amllCoverTransition/);
 	assert.match(transition, /data-amll-cover-transition-cover/);
 	assert.match(transition, /TRANSITION_COVER_SELECTOR/);
-	assert.match(wrapperStyle, /body\[data-amll-cover-transition\]/);
+	assert.match(transition, /`\$\{snapshot\.direction\}-handoff`/);
+	assert.match(transition, /\{ opacity: 0 \}/);
+	assert.match(transition, /nativeEndpoint\?\.animate/);
+	assert.match(wrapperStyle, /body\[data-amll-cover-transition=/);
 	assert.match(wrapperStyle, /\[data-amll-cover\]/);
 	assert.match(wrapperStyle, /opacity: 0/);
+	assert.match(nowPlayingBarStyle, /exit-handoff/);
 	assert.match(wrapperStyle, /prefers-reduced-motion: reduce/);
 	assert.match(wrapperStyle, /transition-duration: 1ms/);
 });
