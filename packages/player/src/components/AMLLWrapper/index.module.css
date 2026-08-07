@@ -32,6 +32,16 @@
 
 .lyricPage
 	:global(
+		button[data-amll-toggle-type="lyrics"],
+		button[data-amll-toggle-type="playlist"]
+	) {
+	transition:
+		opacity 0.18s ease,
+		background-color 0.18s ease;
+}
+
+.lyricPage
+	:global(
 		[data-amll-toggle-type="playlist"][data-amll-playlist-opened="true"]
 	) {
 	opacity: 1;

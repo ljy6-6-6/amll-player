@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { getFullscreenControlMotion } from "../src/components/AMLLWrapper/fullscreen-control-motion.ts";
 import { calculateFullscreenPlaylistPlacement } from "../src/components/AMLLWrapper/fullscreen-playlist-position.ts";
 
 const readProjectFile = (path) =>
@@ -20,25 +21,37 @@ const reactFullPatch = readProjectFile(
 const installedReactFull = readProjectFile(
 	"../node_modules/@applemusic-like-lyrics/react-full/dist/amll-react-framework.mjs",
 );
-test("全屏切换按钮每次点击都会重启动画", () => {
+test("全屏切换按钮只重启自身动画且不取消依赖组件动画", () => {
 	for (const source of [reactFullPatch, installedReactFull]) {
 		assert.match(source, /data-amll-toggle-type/);
 	}
 	assert.match(wrapper, /FULLSCREEN_ANIMATED_CONTROL_SELECTOR/);
-	assert.match(wrapper, /icon\.getAnimations\(\)/);
-	assert.match(wrapper, /animation\.cancel\(\)/);
-	assert.match(wrapper, /icon\.animate\(keyframes/);
+	assert.match(wrapper, /new WeakMap/);
+	assert.match(wrapper, /getComputedStyle\(button\)\.transform/);
+	assert.match(wrapper, /button\.animate\(keyframes/);
+	assert.doesNotMatch(wrapper, /\.getAnimations\(\)/);
+	assert.doesNotMatch(wrapper, /icon\.animate/);
 	assert.match(wrapper, /prefers-reduced-motion: reduce/);
 });
 
-test("随机和循环按钮使用各自的点击反馈动画", () => {
+test("随机、循环、歌词和队列按钮使用克制的独立反馈", () => {
 	for (const source of [reactFullPatch, installedReactFull]) {
 		assert.match(source, /data-amll-media-action[^\n]+shuffle/);
 		assert.match(source, /data-amll-media-action[^\n]+repeat/);
 	}
-	assert.match(wrapper, /action === "repeat"/);
-	assert.match(wrapper, /action === "shuffle"/);
-	assert.match(wrapper, /rotate\(360deg\) scale\(1\)/);
+	const shuffle = getFullscreenControlMotion("shuffle");
+	const repeat = getFullscreenControlMotion("repeat");
+	const lyrics = getFullscreenControlMotion(undefined, "lyrics");
+	const playlist = getFullscreenControlMotion(undefined, "playlist");
+	assert.equal(shuffle?.duration, 230);
+	assert.equal(repeat?.duration, 250);
+	assert.equal(lyrics?.duration, 210);
+	assert.equal(playlist?.duration, 190);
+	assert.equal(getFullscreenControlMotion(undefined, "airplay"), null);
+	assert.equal(getFullscreenControlMotion(undefined, "star"), null);
+	const serialized = JSON.stringify([shuffle, repeat, lyrics, playlist]);
+	assert.doesNotMatch(serialized, /360deg|scale\(0\.[0-8]|scale\(1\.0[2-9]/);
+	assert.match(wrapperStyle, /opacity 0\.18s ease/);
 });
 
 test("全屏队列按钮接入现有播放队列并显示在全屏层内", () => {

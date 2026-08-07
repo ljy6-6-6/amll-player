@@ -17,6 +17,7 @@ import { BottomLyricInfo } from "../BottomLyricInfo";
 import { NowPlaylistCard } from "../NowPlaylistCard/index.tsx";
 import { RecordPanel } from "../RecordPanel/index.tsx";
 import { shouldPreservePointerFocusMode } from "./focus-modality.ts";
+import { getFullscreenControlMotion } from "./fullscreen-control-motion.ts";
 import { calculateFullscreenPlaylistPlacement } from "./fullscreen-playlist-position.ts";
 import styles from "./index.module.css";
 import "@applemusic-like-lyrics/core/style.css";
@@ -25,49 +26,69 @@ import "@applemusic-like-lyrics/react-full/style.css";
 const FULLSCREEN_PLAYLIST_TOGGLE_SELECTOR =
 	'button[data-amll-toggle-type="playlist"]';
 const FULLSCREEN_ANIMATED_CONTROL_SELECTOR =
-	"button[data-amll-toggle-type], button[data-amll-media-action]";
+	'button[data-amll-media-action="shuffle"], button[data-amll-media-action="repeat"], button[data-amll-toggle-type="lyrics"], button[data-amll-toggle-type="playlist"]';
+
+interface FullscreenControlAnimationState {
+	animation: Animation | null;
+	animationFrame: number;
+}
+
+const fullscreenControlAnimations = new WeakMap<
+	HTMLButtonElement,
+	FullscreenControlAnimationState
+>();
 
 const animateFullscreenControl = (button: HTMLButtonElement) => {
-	requestAnimationFrame(() => {
-		if (!button.isConnected) return;
-		const icon = button.querySelector<SVGElement>("svg");
-		if (!icon) return;
+	const previous = fullscreenControlAnimations.get(button);
+	if (previous?.animationFrame) {
+		cancelAnimationFrame(previous.animationFrame);
+	}
 
-		for (const animation of icon.getAnimations()) animation.cancel();
-		if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+	const state: FullscreenControlAnimationState = {
+		animation: previous?.animation ?? null,
+		animationFrame: 0,
+	};
+	fullscreenControlAnimations.set(button, state);
+	state.animationFrame = requestAnimationFrame(() => {
+		state.animationFrame = 0;
+		if (!button.isConnected) {
+			state.animation?.cancel();
+			fullscreenControlAnimations.delete(button);
+			return;
+		}
 
-		const action = button.dataset.amllMediaAction;
-		const keyframes: Keyframe[] =
-			action === "repeat"
-				? [
-						{ transform: "rotate(0deg) scale(1)" },
-						{ transform: "rotate(-32deg) scale(0.82)", offset: 0.35 },
-						{ transform: "rotate(360deg) scale(1)" },
-					]
-				: action === "shuffle"
-					? [
-							{ transform: "translateX(0) rotate(0deg) scale(1)" },
-							{
-								transform: "translateX(-0.12em) rotate(-10deg) scale(0.82)",
-								offset: 0.34,
-							},
-							{
-								transform: "translateX(0.08em) rotate(5deg) scale(1.06)",
-								offset: 0.68,
-							},
-							{ transform: "translateX(0) rotate(0deg) scale(1)" },
-						]
-					: [
-							{ transform: "rotate(0deg) scale(1)" },
-							{ transform: "rotate(-8deg) scale(0.78)", offset: 0.38 },
-							{ transform: "rotate(3deg) scale(1.06)", offset: 0.7 },
-							{ transform: "rotate(0deg) scale(1)" },
-						];
+		const motion = getFullscreenControlMotion(
+			button.dataset.amllMediaAction,
+			button.dataset.amllToggleType,
+		);
+		if (
+			!motion ||
+			window.matchMedia("(prefers-reduced-motion: reduce)").matches
+		) {
+			state.animation?.cancel();
+			fullscreenControlAnimations.delete(button);
+			return;
+		}
 
-		icon.animate(keyframes, {
-			duration: action === "repeat" ? 520 : action === "shuffle" ? 460 : 420,
-			easing: "cubic-bezier(0.22, 1, 0.36, 1)",
+		const currentTransform = getComputedStyle(button).transform;
+		state.animation?.cancel();
+		const keyframes = motion.keyframes.map((keyframe, index) =>
+			index === 0 && currentTransform !== "none"
+				? { ...keyframe, transform: currentTransform }
+				: keyframe,
+		);
+		const animation = button.animate(keyframes, {
+			duration: motion.duration,
+			easing: motion.easing,
 		});
+		state.animation = animation;
+		const clearAnimation = () => {
+			if (fullscreenControlAnimations.get(button) === state) {
+				fullscreenControlAnimations.delete(button);
+			}
+		};
+		animation.addEventListener("finish", clearAnimation, { once: true });
+		animation.addEventListener("cancel", clearAnimation, { once: true });
 	});
 };
 
