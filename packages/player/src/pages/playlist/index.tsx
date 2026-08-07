@@ -19,6 +19,7 @@ import {
 	IconButton,
 	ScrollArea,
 	Separator,
+	Spinner,
 	Text,
 	TextField,
 	Tooltip,
@@ -129,7 +130,7 @@ const formatDateTime = (value?: number) => {
 
 export const Component: FC = () => {
 	const param = useParams();
-	const { data: playlist } = useDbQuery(
+	const { data: playlist, loading: playlistLoading } = useDbQuery(
 		() => db.playlists.get(Number(param.id)),
 		[param.id],
 		undefined,
@@ -515,6 +516,17 @@ export const Component: FC = () => {
 		() => onPlayList.bind(null, undefined, true),
 		[onPlayList],
 	);
+
+	if (playlistLoading && playlist === undefined) {
+		return (
+			<div className={styles.loadingSurface} aria-live="polite">
+				<Flex direction="column" gap="2" justify="center" align="center">
+					<Spinner size="3" />
+					<Trans i18nKey="page.main.loadingPlaylist">加载歌单中</Trans>
+				</Flex>
+			</div>
+		);
+	}
 
 	return (
 		<PageContainer>
