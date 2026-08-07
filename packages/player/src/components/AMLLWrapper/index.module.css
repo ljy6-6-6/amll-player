@@ -84,3 +84,10 @@
 	cursor: none;
 	z-index: 9999;
 }
+
+@media (prefers-reduced-motion: reduce) {
+	.lyricPage,
+	.lyricPage.opened {
+		transition-duration: 1ms;
+	}
+}

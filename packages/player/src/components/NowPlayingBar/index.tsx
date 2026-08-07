@@ -4,6 +4,7 @@ import {
 	musicArtistsAtom,
 	musicCoverAtom,
 	musicCoverIsVideoAtom,
+	musicIdAtom,
 	musicNameAtom,
 	musicPlayingAtom,
 	onPlayOrResumeAtom,
@@ -54,10 +55,13 @@ export const NowPlayingBar: FC = () => {
 	const musicPlaying = useAtomValue(musicPlayingAtom);
 	const musicCover = useAtomValue(musicCoverAtom);
 	const musicCoverIsVideo = useAtomValue(musicCoverIsVideoAtom);
+	const musicId = useAtomValue(musicIdAtom);
 	const [playlistOpened, setPlaylistOpened] = useAtom(playlistCardOpenedAtom);
 	const setLyricPageOpened = useSetAtom(isLyricPageOpenedAtom);
 	const [coverTransition, setCoverTransition] =
 		useState<FullscreenCoverTransitionSnapshot | null>(null);
+	const previousLyricPageOpenedRef = useRef(isLyricPageOpened);
+	const coverTransitionBusyRef = useRef(false);
 
 	const onPlayOrResume = useAtomValue(onPlayOrResumeAtom).onEmit;
 	const onRequestPrevSong = useAtomValue(onRequestPrevSongAtom).onEmit;
@@ -69,26 +73,52 @@ export const NowPlayingBar: FC = () => {
 	const playlistDismissLayerRef = useRef<HTMLButtonElement>(null);
 	const playlistToggleButtonRef = useRef<HTMLButtonElement>(null);
 	const finishCoverTransition = useCallback(() => {
+		coverTransitionBusyRef.current = false;
 		setCoverTransition(null);
 	}, []);
 	const openLyricPage = () => {
+		if (isLyricPageOpened || coverTransitionBusyRef.current) return;
 		const source = coverButtonRef.current;
 		const reduceMotion = window.matchMedia(
 			"(prefers-reduced-motion: reduce)",
 		).matches;
 		const snapshot =
 			source && musicCover && !musicCoverIsVideo && !reduceMotion
-				? captureFullscreenCoverTransition(source, musicCover)
+				? captureFullscreenCoverTransition(source, musicCover, musicId, "enter")
 				: null;
+		coverTransitionBusyRef.current = snapshot !== null;
 		setCoverTransition(snapshot);
 		setLyricPageOpened(true);
 	};
 
-	useEffect(() => {
-		if (coverTransition && coverTransition.coverUrl !== musicCover) {
+	useLayoutEffect(() => {
+		const wasOpened = previousLyricPageOpenedRef.current;
+		previousLyricPageOpenedRef.current = isLyricPageOpened;
+		if (!wasOpened || isLyricPageOpened) return;
+
+		const source = coverButtonRef.current;
+		const reduceMotion = window.matchMedia(
+			"(prefers-reduced-motion: reduce)",
+		).matches;
+		const snapshot =
+			source && musicCover && !musicCoverIsVideo && !reduceMotion
+				? captureFullscreenCoverTransition(source, musicCover, musicId, "exit")
+				: null;
+		coverTransitionBusyRef.current = snapshot !== null;
+		setCoverTransition(snapshot);
+	}, [isLyricPageOpened, musicCover, musicCoverIsVideo, musicId]);
+
+	useLayoutEffect(() => {
+		if (
+			coverTransition &&
+			(coverTransition.coverUrl !== musicCover ||
+				coverTransition.musicId !== musicId ||
+				musicCoverIsVideo)
+		) {
+			coverTransitionBusyRef.current = false;
 			setCoverTransition(null);
 		}
-	}, [coverTransition, musicCover]);
+	}, [coverTransition, musicCover, musicCoverIsVideo, musicId]);
 
 	useLayoutEffect(() => {
 		const playbarEl = playbarRef.current;
@@ -149,6 +179,7 @@ export const NowPlayingBar: FC = () => {
 		<>
 			{coverTransition && (
 				<FullscreenCoverTransition
+					key={`${coverTransition.direction}:${coverTransition.musicId}:${coverTransition.coverUrl}`}
 					snapshot={coverTransition}
 					onFinish={finishCoverTransition}
 				/>
@@ -213,11 +244,13 @@ export const NowPlayingBar: FC = () => {
 				>
 					<button
 						ref={coverButtonRef}
+						data-amll-cover-transition-source=""
 						className={classNames(
 							styles.coverButton,
 							coverTransition && styles.coverTransitionSourceHidden,
 						)}
 						type="button"
+						disabled={isLyricPageOpened || coverTransition !== null}
 						aria-label={t("playbar.openLyricPage", "打开全屏歌词")}
 						style={{
 							backgroundImage: `url(${musicCover})`,

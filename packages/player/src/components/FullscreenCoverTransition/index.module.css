@@ -1,11 +1,17 @@
-.transitionCover {
+.transitionViewport {
 	position: fixed;
+	inset: 0;
 	z-index: 10000;
+	overflow: hidden;
+	pointer-events: none;
+}
+
+.transitionCover {
+	position: absolute;
 	box-sizing: border-box;
 	pointer-events: none;
 	background-color: #111;
 	background-position: center;
 	background-size: cover;
-	transform-origin: top left;
-	will-change: transform, border-radius, box-shadow;
+	will-change: left, top, width, height, border-radius, filter;
 }

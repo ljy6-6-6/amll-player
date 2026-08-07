@@ -1,15 +1,19 @@
 import { type CSSProperties, type FC, useLayoutEffect, useRef } from "react";
 import { createPortal } from "react-dom";
+import {
+	type CoverRect,
+	coverRectDistance,
+	isUsableCoverRect,
+	mapCoverRectFromTransformedContainer,
+	toCoverRect,
+} from "./geometry.ts";
 import styles from "./index.module.css";
 
-interface CoverRect {
-	left: number;
-	top: number;
-	width: number;
-	height: number;
-}
+export type FullscreenCoverTransitionDirection = "enter" | "exit";
 
 export interface FullscreenCoverTransitionSnapshot {
+	direction: FullscreenCoverTransitionDirection;
+	musicId: string;
 	coverUrl: string;
 	source: CoverRect;
 	target: CoverRect;
@@ -17,141 +21,266 @@ export interface FullscreenCoverTransitionSnapshot {
 	targetCornerRadius: number;
 }
 
-const isUsableRect = (rect: CoverRect) =>
-	Number.isFinite(rect.left) &&
-	Number.isFinite(rect.top) &&
-	rect.width > 1 &&
-	rect.height > 1;
+const TRANSITION_DURATION = 480;
+const CORRECTION_DURATION = 120;
+const SOURCE_SHADOW = "drop-shadow(0 2px 6px rgb(0 0 0 / 0.14))";
+const TARGET_SHADOW = "drop-shadow(0 18px 30px rgb(0 0 0 / 0.3))";
+const SOURCE_SELECTOR = "[data-amll-cover-transition-source]";
+const TARGET_SELECTOR = "[data-amll-cover]";
+const TRANSITION_COVER_SELECTOR = "[data-amll-cover-transition-cover]";
 
-const toCoverRect = (rect: DOMRect): CoverRect => ({
-	left: rect.left,
-	top: rect.top,
-	width: rect.width,
-	height: rect.height,
-});
+const getLargestFullscreenCover = () => {
+	const wrapper = document.getElementById("amll-lyric-player-wrapper");
+	if (!wrapper) return null;
+	const element = Array.from(
+		wrapper.querySelectorAll<HTMLElement>(TARGET_SELECTOR),
+	)
+		.map((candidate) => ({
+			candidate,
+			rect: candidate.getBoundingClientRect(),
+		}))
+		.filter(({ rect }) => rect.width > 1 && rect.height > 1)
+		.sort(
+			(left, right) =>
+				right.rect.width * right.rect.height -
+				left.rect.width * left.rect.height,
+		)[0];
+	return element
+		? { wrapper, element: element.candidate, rect: element.rect }
+		: null;
+};
+
+const getCornerRadius = (element: HTMLElement, fallback: number) => {
+	const radius = Number.parseFloat(
+		getComputedStyle(element).borderTopLeftRadius,
+	);
+	return Number.isFinite(radius) && radius > 0 ? radius : fallback;
+};
+
+const measureFullscreenTarget = (
+	direction: FullscreenCoverTransitionDirection,
+) => {
+	const target = getLargestFullscreenCover();
+	if (!target) return null;
+	const wrapperRect = toCoverRect(target.wrapper.getBoundingClientRect());
+	const candidateRect = toCoverRect(target.rect);
+	const finalWrapperRect = {
+		left: target.wrapper.offsetLeft,
+		top: target.wrapper.offsetTop,
+		width: target.wrapper.offsetWidth || window.innerWidth,
+		height: target.wrapper.offsetHeight || window.innerHeight,
+	};
+	const rect =
+		direction === "enter"
+			? mapCoverRectFromTransformedContainer(
+					candidateRect,
+					wrapperRect,
+					finalWrapperRect,
+				)
+			: candidateRect;
+	if (!isUsableCoverRect(rect)) return null;
+	return {
+		rect,
+		cornerRadius: getCornerRadius(
+			target.element,
+			Math.max(
+				Math.min(rect.width, rect.height) * 0.02,
+				window.innerHeight * 0.007,
+			),
+		),
+	};
+};
 
 export const captureFullscreenCoverTransition = (
 	sourceElement: HTMLElement,
 	coverUrl: string,
+	musicId: string,
+	direction: FullscreenCoverTransitionDirection = "enter",
 ): FullscreenCoverTransitionSnapshot | null => {
-	const wrapper = document.getElementById("amll-lyric-player-wrapper");
-	if (!wrapper) return null;
-
-	const wrapperRect = wrapper.getBoundingClientRect();
-	const targetCandidate = Array.from(
-		wrapper.querySelectorAll<HTMLElement>("[data-amll-cover]"),
-	)
-		.map((element) => element.getBoundingClientRect())
-		.filter((rect) => rect.width > 1 && rect.height > 1)
-		.sort(
-			(left, right) => right.width * right.height - left.width * left.height,
-		)[0];
-	if (!targetCandidate) return null;
-
 	const source = toCoverRect(sourceElement.getBoundingClientRect());
-	const target = {
-		left: targetCandidate.left - wrapperRect.left,
-		top: targetCandidate.top - wrapperRect.top,
-		width: targetCandidate.width,
-		height: targetCandidate.height,
-	};
-	if (!isUsableRect(source) || !isUsableRect(target)) return null;
+	const measuredTarget = measureFullscreenTarget(direction);
+	if (!measuredTarget || !isUsableCoverRect(source)) return null;
 
-	const sourceCornerRadius = Number.parseFloat(
-		getComputedStyle(sourceElement).borderTopLeftRadius,
+	const activeTransitionCover = document.querySelector<HTMLElement>(
+		TRANSITION_COVER_SELECTOR,
 	);
-	const targetCornerRadius = Math.max(
-		Math.min(target.width, target.height) * 0.02,
-		window.innerHeight * 0.007,
-	);
+	const activeTransitionRect = activeTransitionCover
+		? toCoverRect(activeTransitionCover.getBoundingClientRect())
+		: null;
+	const target =
+		direction === "exit" &&
+		activeTransitionRect &&
+		isUsableCoverRect(activeTransitionRect)
+			? activeTransitionRect
+			: measuredTarget.rect;
+	const targetCornerRadius = activeTransitionCover
+		? getCornerRadius(activeTransitionCover, measuredTarget.cornerRadius)
+		: measuredTarget.cornerRadius;
 
 	return {
+		direction,
+		musicId,
 		coverUrl,
 		source,
 		target,
-		sourceCornerRadius: Number.isFinite(sourceCornerRadius)
-			? sourceCornerRadius
-			: 6,
+		sourceCornerRadius: getCornerRadius(sourceElement, 6),
 		targetCornerRadius,
 	};
 };
+
+const rectToKeyframe = (
+	rect: CoverRect,
+	cornerRadius: number,
+	shadow: string,
+): Keyframe => ({
+	left: `${rect.left}px`,
+	top: `${rect.top}px`,
+	width: `${rect.width}px`,
+	height: `${rect.height}px`,
+	borderRadius: `${cornerRadius}px`,
+	filter: shadow,
+});
 
 export const FullscreenCoverTransition: FC<{
 	snapshot: FullscreenCoverTransitionSnapshot;
 	onFinish: () => void;
 }> = ({ snapshot, onFinish }) => {
 	const coverRef = useRef<HTMLDivElement>(null);
-	const scaleX = snapshot.source.width / snapshot.target.width;
-	const scaleY = snapshot.source.height / snapshot.target.height;
-	const translateX = snapshot.source.left - snapshot.target.left;
-	const translateY = snapshot.source.top - snapshot.target.top;
-	const invertedTransform = `translate(${translateX}px, ${translateY}px) scale(${scaleX}, ${scaleY})`;
-	const initialCornerRadius =
-		snapshot.sourceCornerRadius / Math.max(scaleX, 0.001);
+	const from =
+		snapshot.direction === "enter" ? snapshot.source : snapshot.target;
+	const fromCornerRadius =
+		snapshot.direction === "enter"
+			? snapshot.sourceCornerRadius
+			: snapshot.targetCornerRadius;
 	const style: CSSProperties = {
-		left: snapshot.target.left,
-		top: snapshot.target.top,
-		width: snapshot.target.width,
-		height: snapshot.target.height,
+		left: from.left,
+		top: from.top,
+		width: from.width,
+		height: from.height,
 		backgroundImage: `url(${snapshot.coverUrl})`,
-		borderRadius: initialCornerRadius,
-		transform: invertedTransform,
+		borderRadius: fromCornerRadius,
+		filter: snapshot.direction === "enter" ? SOURCE_SHADOW : TARGET_SHADOW,
 	};
 
 	useLayoutEffect(() => {
 		const cover = coverRef.current;
 		if (!cover) return;
 
-		document.body.dataset.amllCoverTransition = "";
+		document.body.dataset.amllCoverTransition = snapshot.direction;
 		let settled = false;
+		let animationFrame = 0;
+		let correctionCount = 0;
+		let animation: Animation | null = null;
+
+		const resolveEndpoint = () => {
+			if (snapshot.direction === "enter") {
+				return (
+					measureFullscreenTarget("enter") ?? {
+						rect: snapshot.target,
+						cornerRadius: snapshot.targetCornerRadius,
+					}
+				);
+			}
+			const sourceElement =
+				document.querySelector<HTMLElement>(SOURCE_SELECTOR);
+			const rect = sourceElement
+				? toCoverRect(sourceElement.getBoundingClientRect())
+				: snapshot.source;
+			return {
+				rect: isUsableCoverRect(rect) ? rect : snapshot.source,
+				cornerRadius: sourceElement
+					? getCornerRadius(sourceElement, snapshot.sourceCornerRadius)
+					: snapshot.sourceCornerRadius,
+			};
+		};
+
 		const finish = () => {
 			if (settled) return;
 			settled = true;
 			delete document.body.dataset.amllCoverTransition;
 			onFinish();
 		};
-		const animation = cover.animate(
-			[
+		const animateToEndpoint = (duration: number) => {
+			const current = toCoverRect(cover.getBoundingClientRect());
+			const endpoint = resolveEndpoint();
+			const currentRadius =
+				Number.parseFloat(getComputedStyle(cover).borderTopLeftRadius) ||
+				fromCornerRadius;
+			const currentShadow = getComputedStyle(cover).filter;
+			const endpointShadow =
+				snapshot.direction === "enter" ? TARGET_SHADOW : SOURCE_SHADOW;
+			animation?.cancel();
+			animation = cover.animate(
+				[
+					rectToKeyframe(
+						current,
+						currentRadius,
+						currentShadow === "none"
+							? snapshot.direction === "enter"
+								? SOURCE_SHADOW
+								: TARGET_SHADOW
+							: currentShadow,
+					),
+					rectToKeyframe(endpoint.rect, endpoint.cornerRadius, endpointShadow),
+				],
 				{
-					transform: invertedTransform,
-					borderRadius: `${initialCornerRadius}px`,
-					boxShadow: "0 2px 10px rgb(0 0 0 / 0.12)",
+					duration,
+					easing: "cubic-bezier(0.25, 1, 0.5, 1)",
+					fill: "both",
 				},
-				{
-					transform: "translate(0, 0) scale(1, 1)",
-					borderRadius: `${snapshot.targetCornerRadius}px`,
-					boxShadow: "0 22px 60px rgb(0 0 0 / 0.32)",
+			);
+			animation.addEventListener(
+				"finish",
+				() => {
+					const actualEndpoint = resolveEndpoint();
+					const currentRect = toCoverRect(cover.getBoundingClientRect());
+					if (
+						correctionCount < 2 &&
+						coverRectDistance(currentRect, actualEndpoint.rect) > 0.75
+					) {
+						correctionCount += 1;
+						animateToEndpoint(CORRECTION_DURATION);
+						return;
+					}
+					finish();
 				},
-			],
-			{
-				duration: 500,
-				easing: "cubic-bezier(0.25, 1, 0.5, 1)",
-				fill: "both",
-			},
-		);
-		animation.addEventListener("finish", finish, { once: true });
-		window.addEventListener("resize", finish);
+				{ once: true },
+			);
+		};
+
+		animationFrame = requestAnimationFrame(() => {
+			animationFrame = 0;
+			animateToEndpoint(TRANSITION_DURATION);
+		});
+		const handleResize = () => {
+			if (settled) return;
+			if (animationFrame) cancelAnimationFrame(animationFrame);
+			animationFrame = requestAnimationFrame(() => {
+				animationFrame = 0;
+				correctionCount = 0;
+				animateToEndpoint(CORRECTION_DURATION * 2);
+			});
+		};
+		window.addEventListener("resize", handleResize);
 
 		return () => {
 			settled = true;
-			animation.cancel();
-			window.removeEventListener("resize", finish);
+			if (animationFrame) cancelAnimationFrame(animationFrame);
+			animation?.cancel();
+			window.removeEventListener("resize", handleResize);
 			delete document.body.dataset.amllCoverTransition;
 		};
-	}, [
-		initialCornerRadius,
-		invertedTransform,
-		onFinish,
-		snapshot.targetCornerRadius,
-	]);
+	}, [fromCornerRadius, onFinish, snapshot]);
 
 	return createPortal(
-		<div
-			ref={coverRef}
-			className={styles.transitionCover}
-			style={style}
-			aria-hidden="true"
-		/>,
+		<div className={styles.transitionViewport} aria-hidden="true">
+			<div
+				ref={coverRef}
+				className={styles.transitionCover}
+				style={style}
+				data-amll-cover-transition-cover=""
+			/>
+		</div>,
 		document.body,
 	);
 };
