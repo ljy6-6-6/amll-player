@@ -64,6 +64,26 @@ test("工作线程等待 WebView 尺寸落地后重建透明窗口表面", () =>
 	);
 });
 
+test("Windows 窗口缩放稳定后重新校准 WebView 并刷新透明表面", () => {
+	assert.match(
+		nativeWindow,
+		/SURFACE_REFRESH_DELAYS_MS:\s*\[u64;\s*2\]\s*=\s*\[16,\s*64\]/,
+	);
+	assert.match(nativeWindow, /surface_refresh_generation:\s*AtomicU64/);
+	assert.match(
+		nativeWindow,
+		/WindowEvent::Resized\(size\)[\s\S]*size\.width > 0[\s\S]*size\.height > 0[\s\S]*revealed\.load\(Ordering::Acquire\)[\s\S]*schedule_main_window_surface_refresh\(window\)/,
+	);
+	assert.match(
+		nativeWindow,
+		/fn refresh_main_window_surface[\s\S]*inner_size\(\)[\s\S]*width == 0 \|\| client_size\.height == 0[\s\S]*\.set_bounds\(Rect[\s\S]*\.bounds\(\)[\s\S]*redraw_main_window_surface[\s\S]*DwmFlush\(\)/,
+	);
+	assert.match(
+		nativeWindow,
+		/fn schedule_main_window_surface_refresh[\s\S]*surface_refresh_generation[\s\S]*SURFACE_REFRESH_DELAYS_MS[\s\S]*generation[\s\S]*refresh_main_window_surface/,
+	);
+});
+
 test("窗口状态插件调用回到 Tao 主线程避免缓存锁反转", () => {
 	assert.match(
 		nativeWindow,

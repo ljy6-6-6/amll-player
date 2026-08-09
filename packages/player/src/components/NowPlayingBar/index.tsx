@@ -46,6 +46,8 @@ import {
 import { NowPlaylistCard } from "../NowPlaylistCard/index.tsx";
 import styles from "./index.module.css";
 
+const VIEWPORT_RESIZE_SETTLE_DELAY = 120;
+
 export const NowPlayingBar: FC = () => {
 	const { t } = useTranslation();
 	const hideNowPlayingBar = useAtomValue(hideNowPlayingBarAtom);
@@ -128,6 +130,7 @@ export const NowPlayingBar: FC = () => {
 		);
 		let viewportResizeFrame = 0;
 		let secondViewportResizeFrame = 0;
+		let viewportResizeTimeout = 0;
 		const updateSafeBound = () => {
 			const { height, top } = playbarEl.getBoundingClientRect();
 			const parsedSeparatorHeight = playbarBoundary
@@ -161,15 +164,19 @@ export const NowPlayingBar: FC = () => {
 		const handleViewportResize = () => {
 			if (playbarBoundary?.hasAttribute("data-amll-playbar-expanded")) {
 				playbarBoundary.dataset.amllViewportResizing = "";
+				window.clearTimeout(viewportResizeTimeout);
 				cancelAnimationFrame(viewportResizeFrame);
 				cancelAnimationFrame(secondViewportResizeFrame);
-				viewportResizeFrame = requestAnimationFrame(() => {
-					viewportResizeFrame = 0;
-					secondViewportResizeFrame = requestAnimationFrame(() => {
-						secondViewportResizeFrame = 0;
-						delete playbarBoundary.dataset.amllViewportResizing;
+				viewportResizeTimeout = window.setTimeout(() => {
+					viewportResizeTimeout = 0;
+					viewportResizeFrame = requestAnimationFrame(() => {
+						viewportResizeFrame = 0;
+						secondViewportResizeFrame = requestAnimationFrame(() => {
+							secondViewportResizeFrame = 0;
+							delete playbarBoundary.dataset.amllViewportResizing;
+						});
 					});
-				});
+				}, VIEWPORT_RESIZE_SETTLE_DELAY);
 			}
 			updateSafeBound();
 		};
@@ -184,6 +191,7 @@ export const NowPlayingBar: FC = () => {
 				"resize",
 				handleViewportResize,
 			);
+			window.clearTimeout(viewportResizeTimeout);
 			cancelAnimationFrame(viewportResizeFrame);
 			cancelAnimationFrame(secondViewportResizeFrame);
 			if (playbarBoundary) {

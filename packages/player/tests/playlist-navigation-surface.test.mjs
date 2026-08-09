@@ -11,10 +11,22 @@ const playlistPageStyle = readProjectFile(
 	"../src/pages/playlist/index.module.css",
 );
 
-test("歌单数据返回前由主题加载面承接首帧", () => {
+test("歌单路由在提交前加载数据且备用加载面保持系统材质", () => {
 	assert.match(
 		playlistPage,
-		/const \{ data: playlist, loading: playlistLoading \} = useDbQuery/,
+		/export const loader = \(\{ params \}: LoaderFunctionArgs\) =>[\s\S]*db\.playlists\.get\(Number\(params\.id\)\)/,
+	);
+	assert.match(
+		playlistPage,
+		/const routePlaylist = useLoaderData\(\) as Playlist \| undefined/,
+	);
+	assert.match(
+		playlistPage,
+		/const \{ data: queriedPlaylist, loading: playlistLoading \} = useDbQuery\([\s\S]*\[param\.id\],[\s\S]*routePlaylist/,
+	);
+	assert.match(
+		playlistPage,
+		/const playlist =[\s\S]*queriedPlaylist\?\.id === Number\(param\.id\)[\s\S]*\? queriedPlaylist[\s\S]*: routePlaylist/,
 	);
 	assert.match(
 		playlistPage,
@@ -23,6 +35,10 @@ test("歌单数据返回前由主题加载面承接首帧", () => {
 	assert.match(playlistPage, /i18nKey="page\.main\.loadingPlaylist"/);
 	assert.match(
 		playlistPageStyle,
-		/\.loadingSurface\s*\{[\s\S]*width:\s*100%;[\s\S]*height:\s*100%;[\s\S]*background-color:\s*var\(--color-background\)/,
+		/\.loadingSurface\s*\{[\s\S]*width:\s*100%;[\s\S]*height:\s*100%;[\s\S]*background-color:\s*transparent/,
+	);
+	assert.doesNotMatch(
+		playlistPageStyle,
+		/\.loadingSurface\s*\{[^}]*background-color:\s*var\(--color-background\)/,
 	);
 });

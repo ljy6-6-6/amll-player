@@ -84,8 +84,17 @@ test("底栏边界、底色与歌词内容由同一个播放面板承载", () =>
 		/\.playbar\[data-amll-playbar-expanded\]\[data-amll-viewport-resizing\][\s\S]*transition:\s*none/,
 	);
 	assert.match(
+		appContainerStyle,
+		/:global\(#amll-lyric-player-wrapper \*\)[\s\S]*transition:\s*none !important;[\s\S]*animation:\s*none !important/,
+	);
+	assert.match(nowPlayingBar, /VIEWPORT_RESIZE_SETTLE_DELAY\s*=\s*120/);
+	assert.match(
 		nowPlayingBar,
-		/handleViewportResize[\s\S]*data-amll-playbar-expanded[\s\S]*amllViewportResizing[\s\S]*requestAnimationFrame[\s\S]*delete playbarBoundary\.dataset\.amllViewportResizing/,
+		/handleViewportResize[\s\S]*data-amll-playbar-expanded[\s\S]*amllViewportResizing[\s\S]*window\.setTimeout[\s\S]*requestAnimationFrame[\s\S]*delete playbarBoundary\.dataset\.amllViewportResizing[\s\S]*VIEWPORT_RESIZE_SETTLE_DELAY/,
+	);
+	assert.match(
+		nowPlayingBar,
+		/window\.clearTimeout\(viewportResizeTimeout\)[\s\S]*cancelAnimationFrame\(viewportResizeFrame\)[\s\S]*cancelAnimationFrame\(secondViewportResizeFrame\)/,
 	);
 	assert.match(
 		nowPlayingBar,

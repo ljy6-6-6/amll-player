@@ -41,7 +41,11 @@ import {
 	useState,
 } from "react";
 import { Trans, useTranslation } from "react-i18next";
-import { useParams } from "react-router-dom";
+import {
+	type LoaderFunctionArgs,
+	useLoaderData,
+	useParams,
+} from "react-router-dom";
 import { toast } from "react-toastify";
 import { ViewportList } from "react-viewport-list";
 import { MusicDropVisual } from "../../components/MusicDropVisual/index.tsx";
@@ -49,7 +53,12 @@ import { PageContainer } from "../../components/PageContainer/index.tsx";
 import { PlaylistCover } from "../../components/PlaylistCover/index.tsx";
 import { PlaylistSongCard } from "../../components/PlaylistSongCard/index.tsx";
 import { queueManagerAtom } from "../../states/appAtoms.ts";
-import { db, type Song, startRhythmPrecache } from "../../utils/db-client.ts";
+import {
+	db,
+	type Playlist,
+	type Song,
+	startRhythmPrecache,
+} from "../../utils/db-client.ts";
 import { queuePlaylistIdAtom } from "../../utils/play-queue-manager.ts";
 import {
 	readLocalMusicMetadata,
@@ -128,14 +137,20 @@ const formatDateTime = (value?: number) => {
 	return new Date(value).toLocaleString();
 };
 
+export const loader = ({ params }: LoaderFunctionArgs) =>
+	db.playlists.get(Number(params.id));
+
 export const Component: FC = () => {
 	const param = useParams();
-	const { data: playlist, loading: playlistLoading } = useDbQuery(
+	const routePlaylist = useLoaderData() as Playlist | undefined;
+	const { data: queriedPlaylist, loading: playlistLoading } = useDbQuery(
 		() => db.playlists.get(Number(param.id)),
 		[param.id],
-		undefined,
+		routePlaylist,
 		["playlists", "playlist_songs", "songs"],
 	);
+	const playlist =
+		queriedPlaylist?.id === Number(param.id) ? queriedPlaylist : routePlaylist;
 	const { t } = useTranslation();
 	const playlistViewRef = useRef<HTMLDivElement>(null);
 	const playlistViewScroll = useScroll({

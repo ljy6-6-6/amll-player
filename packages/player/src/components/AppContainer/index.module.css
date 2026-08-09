@@ -95,6 +95,16 @@
 
 .playbar[data-amll-playbar-expanded][data-amll-viewport-resizing] {
 	transition: none;
+
+	:global(#amll-lyric-player-wrapper),
+	:global(#amll-lyric-player-wrapper *),
+	:global(#amll-lyric-player-wrapper *::before),
+	:global(#amll-lyric-player-wrapper *::after) {
+		/* biome-ignore lint/complexity/noImportantStyles: Resize must override dependency and inline transitions for one settle window. */
+		transition: none !important;
+		/* biome-ignore lint/complexity/noImportantStyles: Resize must override dependency and inline animations for one settle window. */
+		animation: none !important;
+	}
 }
 
 @media (prefers-reduced-motion: reduce) {

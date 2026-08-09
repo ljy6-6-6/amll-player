@@ -43,6 +43,8 @@ const DEFAULT_RESTORE_LOGICAL_HEIGHT: f64 = 600.0;
 const RESTORE_BOUNDS_SETTLE_DELAY: Duration = Duration::from_millis(80);
 #[cfg(target_os = "windows")]
 const DWM_UNCLOAK_RETRY_DELAYS_MS: [u64; 5] = [0, 1, 2, 4, 8];
+#[cfg(target_os = "windows")]
+const SURFACE_REFRESH_DELAYS_MS: [u64; 2] = [16, 64];
 
 #[cfg(target_os = "windows")]
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
@@ -66,6 +68,7 @@ pub(crate) struct MainWindowPresentationState {
     revealed: AtomicBool,
     presenting: AtomicBool,
     restore_bounds_generation: AtomicU64,
+    surface_refresh_generation: AtomicU64,
     restore_bounds: Mutex<Option<PhysicalWindowRect>>,
     pending_restore_bounds: Mutex<Option<PhysicalWindowRect>>,
 }
@@ -80,6 +83,8 @@ impl MainWindowPresentationState {
         self.revealed.store(false, Ordering::Release);
         self.presenting.store(false, Ordering::Release);
         self.restore_bounds_generation
+            .fetch_add(1, Ordering::AcqRel);
+        self.surface_refresh_generation
             .fetch_add(1, Ordering::AcqRel);
         *self
             .restore_bounds
@@ -374,6 +379,14 @@ pub(crate) fn track_main_window_restore_bounds(window: &tauri::Window, event: &t
 
     let app = window.app_handle().clone();
     let presentation = app.state::<MainWindowPresentationState>();
+    if let tauri::WindowEvent::Resized(size) = event
+        && size.width > 0
+        && size.height > 0
+        && presentation.revealed.load(Ordering::Acquire)
+        && !presentation.presenting.load(Ordering::Acquire)
+    {
+        schedule_main_window_surface_refresh(window);
+    }
     if !presentation.presenting.load(Ordering::Acquire)
         && let Some(window) = app.get_webview_window("main")
         && let Some(bounds) = current_normal_restore_bounds(&window)
@@ -424,8 +437,60 @@ fn redraw_main_window_surface(hwnd: HWND) {
     let redrawn =
         unsafe { RedrawWindow(Some(hwnd), None, None, RDW_INTERNALPAINT | RDW_UPDATENOW) };
     if !redrawn.as_bool() {
-        warn!("Failed to synchronously redraw main window before reveal");
+        warn!("Failed to synchronously redraw the main-window surface");
     }
+}
+
+#[cfg(target_os = "windows")]
+fn refresh_main_window_surface(window: &tauri::WebviewWindow) -> Result<(), String> {
+    let client_size = window.inner_size().map_err(|err| err.to_string())?;
+    if client_size.width == 0 || client_size.height == 0 {
+        return Ok(());
+    }
+    window
+        .as_ref()
+        .set_bounds(Rect {
+            position: Position::Physical(PhysicalPosition::new(0, 0)),
+            size: Size::Physical(client_size),
+        })
+        .map_err(|err| err.to_string())?;
+    window.as_ref().bounds().map_err(|err| err.to_string())?;
+
+    let raw_hwnd = window.hwnd().map_err(|err| err.to_string())?;
+    redraw_main_window_surface(HWND(raw_hwnd.0));
+    unsafe { DwmFlush() }.map_err(|err| err.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn schedule_main_window_surface_refresh(window: &tauri::Window) {
+    let app = window.app_handle().clone();
+    let generation = app
+        .state::<MainWindowPresentationState>()
+        .surface_refresh_generation
+        .fetch_add(1, Ordering::AcqRel)
+        + 1;
+
+    tauri::async_runtime::spawn(async move {
+        for delay_ms in SURFACE_REFRESH_DELAYS_MS {
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            let presentation = app.state::<MainWindowPresentationState>();
+            if !presentation.revealed.load(Ordering::Acquire)
+                || presentation.presenting.load(Ordering::Acquire)
+                || presentation
+                    .surface_refresh_generation
+                    .load(Ordering::Acquire)
+                    != generation
+            {
+                return;
+            }
+            let Some(window) = app.get_webview_window("main") else {
+                return;
+            };
+            if let Err(err) = refresh_main_window_surface(&window) {
+                warn!("Failed to refresh transparent main-window surface after resize: {err}");
+            }
+        }
+    });
 }
 
 #[cfg(target_os = "windows")]
