@@ -21,6 +21,26 @@ const queueCardStyle = readProjectFile(
 const nowPlayingBar = readProjectFile(
 	"../src/components/NowPlayingBar/index.tsx",
 );
+const appContainerStyle = readProjectFile(
+	"../src/components/AppContainer/index.module.css",
+);
+const settingsPage = readProjectFile("../src/pages/settings/index.tsx");
+
+test("设置页保持在普通播放队列的播放栏层级之下", () => {
+	const settingsLayer = Number(
+		settingsPage.match(/position:\s*"fixed"[\s\S]*?zIndex:\s*(\d+)/)?.[1],
+	);
+	const playbarLayer = Number(
+		appContainerStyle.match(/\.playbar\s*\{[\s\S]*?z-index:\s*(\d+)/)?.[1],
+	);
+
+	assert.ok(Number.isFinite(settingsLayer), "未找到设置页层级");
+	assert.ok(Number.isFinite(playbarLayer), "未找到播放栏层级");
+	assert.ok(
+		settingsLayer < playbarLayer,
+		`设置页层级 ${settingsLayer} 必须低于播放栏层级 ${playbarLayer}`,
+	);
+});
 
 test("队列行单击即可播放且当前歌曲有明确状态", () => {
 	assert.match(queueCard, /onClick=\{onPlay\}/);

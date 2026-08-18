@@ -273,7 +273,8 @@ export const Component: FC = () => {
 				left: 0,
 				right: 0,
 				bottom: "80px",
-				zIndex: 1000,
+				// Keep route content below the playbar and its playlist overlay.
+				zIndex: 2,
 			}}
 		>
 			<style>{`
