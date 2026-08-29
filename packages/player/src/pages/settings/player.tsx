@@ -86,6 +86,7 @@ import {
 	updateInfoAtom,
 } from "../../states/appAtoms.ts";
 import { restartApp } from "../../utils/player.ts";
+import { HomeBackgroundSettings } from "./home-background.tsx";
 import styles from "./index.module.css";
 
 const SettingEntry: FC<
@@ -395,6 +396,7 @@ const GeneralSettings = () => {
 					configAtom={enableAlwaysOnTopAtom}
 				/>
 			)}
+			<HomeBackgroundSettings />
 		</>
 	);
 };
@@ -849,6 +851,26 @@ const MusicInfoAppearanceSettings = () => {
 	);
 };
 
+function getColorPickerValue(value: string): string {
+	const normalized = value.trim().toLowerCase();
+	if (/^#[0-9a-f]{6}$/.test(normalized)) return normalized;
+	if (/^#[0-9a-f]{3}$/.test(normalized)) {
+		return `#${normalized
+			.slice(1)
+			.split("")
+			.map((part) => part.repeat(2))
+			.join("")}`;
+	}
+	const rgb = normalized.match(
+		/^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$/,
+	);
+	if (!rgb) return "#111111";
+	return `#${rgb
+		.slice(1)
+		.map((part) => Math.min(255, Number(part)).toString(16).padStart(2, "0"))
+		.join("")}`;
+}
+
 const LyricBackgroundSettings = () => {
 	const { t } = useTranslation();
 	const [backgroundRendererValue, setBackgroundRendererValue] = useAtom(
@@ -894,7 +916,7 @@ const LyricBackgroundSettings = () => {
 		return "mesh";
 	};
 
-	const handleBackgroundRendererChange = (selectedString: string) => {
+	const handleBaseRendererChange = (selectedString: string) => {
 		let rendererObject: LyricBackgroundRenderer;
 		switch (selectedString) {
 			case "mesh":
@@ -917,6 +939,9 @@ const LyricBackgroundSettings = () => {
 			selectedString,
 		);
 	};
+	const baseRendererString = getBackgroundRendererString(
+		backgroundRendererValue,
+	);
 
 	return (
 		<>
@@ -930,8 +955,8 @@ const LyricBackgroundSettings = () => {
 				)}
 			>
 				<Select.Root
-					value={getBackgroundRendererString(backgroundRendererValue)}
-					onValueChange={handleBackgroundRendererChange}
+					value={baseRendererString}
+					onValueChange={handleBaseRendererChange}
 				>
 					<Select.Trigger />
 					<Select.Content>
@@ -943,8 +968,7 @@ const LyricBackgroundSettings = () => {
 					</Select.Content>
 				</Select.Root>
 			</SettingEntry>
-
-			{getBackgroundRendererString(backgroundRendererValue) === "css-bg" ? (
+			{baseRendererString === "css-bg" ? (
 				<SettingEntry
 					label={t(
 						"page.settings.lyricBackground.lyricBackgroundColor.label",
@@ -955,10 +979,24 @@ const LyricBackgroundSettings = () => {
 						"等同于放入 background 样式的字符串值，默认为 #111111",
 					)}
 				>
-					<TextField.Root
-						value={cssBackgroundProperty}
-						onChange={(e) => setCssBackgroundProperty(e.currentTarget.value)}
-					/>
+					<Flex gap="2" align="center" wrap="wrap">
+						<input
+							type="color"
+							value={getColorPickerValue(cssBackgroundProperty)}
+							aria-label={t(
+								"page.settings.lyricBackground.lyricBackgroundColor.picker",
+								"选择纯色背景",
+							)}
+							onInput={(event) =>
+								setCssBackgroundProperty(event.currentTarget.value)
+							}
+							style={{ width: 42, height: 34, padding: 0, border: 0 }}
+						/>
+						<TextField.Root
+							value={cssBackgroundProperty}
+							onChange={(e) => setCssBackgroundProperty(e.currentTarget.value)}
+						/>
+					</Flex>
 				</SettingEntry>
 			) : (
 				<>

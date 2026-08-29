@@ -25,6 +25,9 @@ const appContainerStyle = readProjectFile(
 	"../src/components/AppContainer/index.module.css",
 );
 const settingsPage = readProjectFile("../src/pages/settings/index.tsx");
+const settingsPageStyle = readProjectFile(
+	"../src/pages/settings/index.module.css",
+);
 
 test("设置页保持在普通播放队列的播放栏层级之下", () => {
 	const settingsLayer = Number(
@@ -39,6 +42,18 @@ test("设置页保持在普通播放队列的播放栏层级之下", () => {
 	assert.ok(
 		settingsLayer < playbarLayer,
 		`设置页层级 ${settingsLayer} 必须低于播放栏层级 ${playbarLayer}`,
+	);
+});
+
+test("设置页底边跟随真实播放栏高度而不是固定留出八十像素", () => {
+	assert.match(
+		settingsPage,
+		/bottom:\s*[\r\n\t ]*"var\(--amll-player-playbar-bottom,\s*calc\(100px \+ env\(safe-area-inset-bottom\)\)\)"/,
+	);
+	assert.doesNotMatch(settingsPage, /bottom:\s*"80px"/);
+	assert.match(
+		settingsPageStyle,
+		/\.dialogContent\s*\{[\s\S]*?bottom:\s*var\([\s\S]*?--amll-player-playbar-bottom,[\s\S]*?calc\(100px \+ env\(safe-area-inset-bottom\)\)[\s\S]*?\);/,
 	);
 });
 

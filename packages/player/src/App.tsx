@@ -7,6 +7,7 @@ import { ToastContainer } from "react-toastify";
 import styles from "./App.module.css";
 import { AppContainer } from "./components/AppContainer/index.tsx";
 import { ExtensionInjectPoint } from "./components/ExtensionInjectPoint/index.tsx";
+import { HomeBackground } from "./components/HomeBackground/index.tsx";
 import { LocalMusicContext } from "./components/LocalMusicContext/index.tsx";
 import { MigrationDialog } from "./components/MigrationDialog/index.tsx";
 import { MusicDropContext } from "./components/MusicDropContext/index.tsx";
@@ -18,6 +19,8 @@ import { UpdateContext } from "./components/UpdateContext/index.tsx";
 import { WSProtocolMusicContext } from "./components/WSProtocolMusicContext/index.tsx";
 import { useMigration } from "./hooks/useMigration.ts";
 import { enableTaskbarLyricAtom } from "./states/appAtoms.ts";
+import { homeBackgroundConfigAtom } from "./states/homeBackgroundAtoms.ts";
+import { isCustomHomeBackground } from "./utils/home-background-state.ts";
 import "./i18n";
 import { isLyricPageOpenedAtom } from "@applemusic-like-lyrics/react-full";
 import { StatsComponent } from "./components/StatsComponent/index.tsx";
@@ -41,6 +44,9 @@ function App() {
 	const musicContextMode = useAtomValue(musicContextModeAtom);
 	const isDarkTheme = useAtomValue(isDarkThemeAtom);
 	const hasBackground = useAtomValue(hasBackgroundAtom);
+	const homeBackgroundConfig = useAtomValue(homeBackgroundConfigAtom);
+	const hasCustomHomeBackground = isCustomHomeBackground(homeBackgroundConfig);
+	const useDarkAppearance = isDarkTheme || hasCustomHomeBackground;
 
 	const migration = useMigration();
 
@@ -72,11 +78,12 @@ function App() {
 
 			<StrictMode>
 				<Theme
-					appearance={isDarkTheme ? "dark" : "light"}
+					appearance={useDarkAppearance ? "dark" : "light"}
 					panelBackground="solid"
 					hasBackground={hasBackground}
 					className={styles.radixTheme}
 				>
+					<HomeBackground />
 					<MigrationDialog
 						state={migration}
 						onStart={migration.startMigration}
@@ -88,6 +95,7 @@ function App() {
 						className={classNames(
 							styles.body,
 							isLyricPageOpened && styles.amllOpened,
+							hasCustomHomeBackground && styles.bodyWithHomeBackground,
 						)}
 					>
 						<AppContainer

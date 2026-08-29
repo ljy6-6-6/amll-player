@@ -6,7 +6,14 @@ import {
 import { ContextMenu } from "@radix-ui/themes";
 import classnames from "classnames";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
-import { type FC, useEffect, useLayoutEffect, useRef } from "react";
+import {
+	type ComponentProps,
+	type FC,
+	type ReactNode,
+	useEffect,
+	useLayoutEffect,
+	useRef,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { playlistCardOpenedAtom } from "../../states/appAtoms.ts";
 import { useCursorAutoHide } from "../../utils/useCursorAutoHide.ts";
@@ -16,6 +23,7 @@ import { AudioQualityDialog } from "../AudioQualityDialog/index.tsx";
 import { BottomLyricInfo } from "../BottomLyricInfo";
 import { NowPlaylistCard } from "../NowPlaylistCard/index.tsx";
 import { RecordPanel } from "../RecordPanel/index.tsx";
+import { SongVideoBackground } from "../SongVideoBackground/index.tsx";
 import { shouldPreservePointerFocusMode } from "./focus-modality.ts";
 import { getFullscreenControlMotion } from "./fullscreen-control-motion.ts";
 import { calculateFullscreenPlaylistPlacement } from "./fullscreen-playlist-position.ts";
@@ -27,6 +35,15 @@ const FULLSCREEN_PLAYLIST_TOGGLE_SELECTOR =
 	'button[data-amll-toggle-type="playlist"]';
 const FULLSCREEN_ANIMATED_CONTROL_SELECTOR =
 	'button[data-amll-media-action="shuffle"], button[data-amll-media-action="repeat"], button[data-amll-toggle-type="lyrics"], button[data-amll-toggle-type="playlist"]';
+
+type PrebuiltLyricPlayerWithBackgroundProps = ComponentProps<
+	typeof PrebuiltLyricPlayer
+> & {
+	backgroundSlot?: ReactNode;
+};
+
+const PrebuiltLyricPlayerWithBackground =
+	PrebuiltLyricPlayer as FC<PrebuiltLyricPlayerWithBackgroundProps>;
 
 interface FullscreenControlAnimationState {
 	animation: Animation | null;
@@ -313,10 +330,11 @@ export const AMLLWrapper: FC = () => {
 							className={styles.lyricContent}
 							data-amll-fullscreen-content=""
 						>
-							<PrebuiltLyricPlayer
+							<PrebuiltLyricPlayerWithBackground
 								id="amll-lyric-player"
 								style={{ width: "100%", height: "100%" }}
 								bottomLineSlot={<BottomLyricInfo />}
+								backgroundSlot={<SongVideoBackground />}
 							/>
 						</div>
 						{isLyricPageOpened && playlistOpened && (

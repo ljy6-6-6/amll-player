@@ -2,6 +2,9 @@ pub mod m20260614_000001_init;
 pub mod m20260614_000002_add_modified_at_and_playlist_song_sources;
 pub mod m20260721_000003_add_song_rhythm_analyses;
 pub mod m20260728_000004_add_playlist_import_constraints;
+pub mod m20260813_000005_add_song_video_backgrounds;
+pub mod m20260820_000006_add_song_background_overrides;
+pub mod m20260820_000007_add_video_base_background;
 
 use sea_orm::{ConnectionTrait, DatabaseConnection, TransactionTrait};
 use sea_orm_migration::prelude::*;
@@ -48,6 +51,26 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), DbErr> {
         // These indexes are compatible with the legacy schema, but keeping
         // them out of seaql_migrations lets older player builds reopen the DB.
         m20260728_000004_add_playlist_import_constraints::Migration
+            .up(&manager)
+            .await?;
+
+        // Song video backgrounds are persistent user state, but their schema is
+        // ensured outside the legacy ledger so older builds can still reopen the
+        // library database and simply ignore this table.
+        m20260813_000005_add_song_video_backgrounds::Migration
+            .up(&manager)
+            .await?;
+
+        // Per-song renderer overrides are persistent user state and remain out
+        // of the frozen legacy ledger for the same downgrade-compatibility
+        // reason as video background assets.
+        m20260820_000006_add_song_background_overrides::Migration
+            .up(&manager)
+            .await?;
+
+        // Video mode keeps its own base renderer so per-song composition never
+        // mutates or implicitly follows the global lyric background setting.
+        m20260820_000007_add_video_base_background::Migration
             .up(&manager)
             .await?;
 

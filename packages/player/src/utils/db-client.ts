@@ -25,6 +25,75 @@ export interface Song {
 	modifiedAt?: number | null;
 }
 
+export type SongVideoBackgroundFitMode = "cover" | "contain" | "fill";
+export type SongBackgroundRendererMode = "mesh" | "pixi" | "css-bg" | "video";
+export type SongVideoBaseRendererMode = Exclude<
+	SongBackgroundRendererMode,
+	"video"
+>;
+
+export interface SongBackgroundOverride {
+	songId: string;
+	overrideEnabled: boolean;
+	rendererMode: SongBackgroundRendererMode;
+	dualLayer: boolean;
+	videoOpacity: number;
+	videoBaseRendererMode: SongVideoBaseRendererMode;
+	videoBaseCssBackground: string;
+	updatedAt: number;
+}
+
+export interface SaveSongBackgroundOverridePayload {
+	songId: string;
+	rendererMode: SongBackgroundRendererMode;
+	dualLayer: boolean;
+	videoOpacity: number;
+	videoBaseRendererMode: SongVideoBaseRendererMode;
+	videoBaseCssBackground: string;
+}
+
+export interface ImportedSongVideoBackground {
+	assetId: string;
+	filePath: string;
+	mimeType: "video/mp4" | "video/webm";
+	bytes: number;
+}
+
+export interface SongVideoBackground {
+	songId: string;
+	assetId: string;
+	filePath: string;
+	mimeType: "video/mp4" | "video/webm";
+	durationMs: number;
+	width: number;
+	height: number;
+	fitMode: SongVideoBackgroundFitMode;
+	inPointMs: number;
+	outPointMs: number;
+	loopEnabled: boolean;
+	syncOnSeek: boolean;
+	updatedAt: number;
+}
+
+export interface SaveSongVideoBackgroundPayload {
+	songId: string;
+	assetId: string;
+	durationMs: number;
+	width: number;
+	height: number;
+	fitMode: SongVideoBackgroundFitMode;
+	inPointMs: number;
+	outPointMs: number;
+	loopEnabled: boolean;
+	syncOnSeek: boolean;
+}
+
+export interface VideoBackgroundGcResult {
+	totalScanned: number;
+	deleted: number;
+	errors: string[];
+}
+
 export interface RhythmBeatPoint {
 	timeMs: number;
 	strength: number;
@@ -323,6 +392,56 @@ class SongsClient {
 	}
 }
 
+class SongVideoBackgroundsClient {
+	async pickAndImport(
+		title: string,
+	): Promise<ImportedSongVideoBackground | null> {
+		return invoke("pick_and_import_song_video_background", { title });
+	}
+
+	async import(sourcePath: string): Promise<ImportedSongVideoBackground> {
+		return invoke("import_song_video_background", { sourcePath });
+	}
+
+	async get(songId: string): Promise<SongVideoBackground | null> {
+		return invoke("get_song_video_background", { songId });
+	}
+
+	async save(
+		payload: SaveSongVideoBackgroundPayload,
+	): Promise<SongVideoBackground> {
+		return invoke("save_song_video_background", { payload });
+	}
+
+	async delete(songId: string): Promise<void> {
+		return invoke("delete_song_video_background", { songId });
+	}
+
+	async discard(assetId: string): Promise<void> {
+		return invoke("discard_song_video_background_asset", { assetId });
+	}
+
+	async cleanup(): Promise<VideoBackgroundGcResult> {
+		return invoke("cleanup_orphaned_song_video_backgrounds");
+	}
+}
+
+class SongBackgroundOverridesClient {
+	async get(songId: string): Promise<SongBackgroundOverride | null> {
+		return invoke("get_song_background_override", { songId });
+	}
+
+	async save(
+		payload: SaveSongBackgroundOverridePayload,
+	): Promise<SongBackgroundOverride> {
+		return invoke("save_song_background_override", { payload });
+	}
+
+	async delete(songId: string): Promise<void> {
+		return invoke("delete_song_background_override", { songId });
+	}
+}
+
 class MiscClient {
 	async cleanupOrphanedCovers(): Promise<CoverGcResult> {
 		return invoke("cleanup_orphaned_covers");
@@ -332,6 +451,8 @@ class MiscClient {
 class DbClient {
 	playlists = new PlaylistsClient();
 	songs = new SongsClient();
+	songBackgroundOverrides = new SongBackgroundOverridesClient();
+	videoBackgrounds = new SongVideoBackgroundsClient();
 	misc = new MiscClient();
 }
 

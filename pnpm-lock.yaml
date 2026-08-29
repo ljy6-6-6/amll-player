@@ -69,6 +69,9 @@ importers:
       '@applemusic-like-lyrics/lyric':
         specifier: ^1.0.2
         version: 1.0.2
+      '@applemusic-like-lyrics/react':
+        specifier: ^0.5.2
+        version: 0.5.2(@pixi/app@7.4.3(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3)))(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3))(@pixi/filter-blur@7.4.3(@pixi/core@7.4.3))(@pixi/filter-bulge-pinch@5.1.1(@pixi/core@7.4.3))(@pixi/filter-color-matrix@7.4.3(@pixi/core@7.4.3))(@pixi/sprite@7.4.3(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3)))(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       '@applemusic-like-lyrics/react-full':
         specifier: ^0.4.2
         version: 0.4.2(patch_hash=4a22c87802709bcb3ac72d4c77caa859d1683aaec5fe385f63c32d53a83c520f)(@pixi/app@7.4.3(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3)))(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3))(@pixi/filter-blur@7.4.3(@pixi/core@7.4.3))(@pixi/filter-bulge-pinch@5.1.1(@pixi/core@7.4.3))(@pixi/filter-color-matrix@7.4.3(@pixi/core@7.4.3))(@pixi/sprite@7.4.3(@pixi/core@7.4.3)(@pixi/display@7.4.3(@pixi/core@7.4.3)))(jotai@2.20.1(@babel/core@7.29.0)(@babel/template@7.29.7)(@types/react@19.2.17)(react@19.2.7))(react-dom@19.2.7(react@19.2.7))(react@19.2.7)

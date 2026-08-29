@@ -86,6 +86,28 @@ export const showStatJSFrameAtom = atomWithStorage(
 	false,
 );
 
+export interface MusicTimelineJump {
+	sequence: number;
+	positionMs: number;
+	reason: "seek" | "lyric-click" | "track-change" | "remote-jump";
+}
+
+export const musicTimelineJumpAtom = atom<MusicTimelineJump>({
+	sequence: 0,
+	positionMs: 0,
+	reason: "track-change",
+});
+
+export const emitMusicTimelineJumpAtom = atom(
+	null,
+	(get, set, event: Omit<MusicTimelineJump, "sequence">) => {
+		set(musicTimelineJumpAtom, {
+			...event,
+			sequence: get(musicTimelineJumpAtom).sequence + 1,
+		});
+	},
+);
+
 export const autoDarkModeAtom = atom(true);
 
 export const isDarkThemeAtom = atom(

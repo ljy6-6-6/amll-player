@@ -50,6 +50,7 @@ import {
 	currentLyricAuthorsAtom,
 	currentRhythmAnalysisAtom,
 	currentSongWritersAtom,
+	emitMusicTimelineJumpAtom,
 	enableGaplessPlaybackAtom,
 	enableLoudnessNormalizationAtom,
 	enableMediaControlsAtom,
@@ -400,6 +401,11 @@ export const LocalMusicContext: FC = () => {
 		timestamp: performance.now(),
 	});
 	const rhythmGenerationRef = useRef(0);
+	const musicInfoGenerationRef = useRef(0);
+	const pendingSeekRef = useRef<{
+		targetPosition: number;
+		requestedAt: number;
+	} | null>(null);
 	const rhythmAnalysisRetryRef = useRef<RhythmAnalysisRetryController | null>(
 		null,
 	);
@@ -577,11 +583,18 @@ export const LocalMusicContext: FC = () => {
 		}
 
 		const musicId = data.musicId;
+		const generation = ++musicInfoGenerationRef.current;
 
 		try {
 			store.set(musicIdAtom, musicId);
 
 			const songFromDb = await db.songs.get(musicId);
+			if (
+				generation !== musicInfoGenerationRef.current ||
+				store.get(musicIdAtom) !== musicId
+			) {
+				return;
+			}
 
 			if (songFromDb) {
 				store.set(musicNameAtom, songFromDb.songName);
@@ -604,7 +617,10 @@ export const LocalMusicContext: FC = () => {
 					} else {
 						store.set(musicCoverAtom, convertFileSrc(coverPath));
 					}
-					store.set(musicCoverIsVideoAtom, coverPath.endsWith(".mp4"));
+					store.set(
+						musicCoverIsVideoAtom,
+						/\.(?:mp4|webm)(?:$|[?#])/i.test(coverPath),
+					);
 				} else {
 					store.set(
 						musicCoverAtom,
@@ -635,6 +651,7 @@ export const LocalMusicContext: FC = () => {
 				store.set(musicDurationAtom, (songFromDb.duration * 1000) | 0);
 			}
 		} catch (error) {
+			if (generation !== musicInfoGenerationRef.current) return;
 			console.error(
 				"[syncMusicInfo] An error occurred during state update:",
 				error,
@@ -720,11 +737,21 @@ export const LocalMusicContext: FC = () => {
 						if (!started) return;
 
 						if (position > 0) {
+							const requestedAt = performance.now();
+							pendingSeekRef.current = {
+								targetPosition: position,
+								requestedAt,
+							};
 							lastSyncRef.current = {
 								position,
-								timestamp: performance.now(),
+								timestamp: requestedAt,
 							};
-							store.set(musicPlayingPositionAtom, (position * 1000) | 0);
+							const positionMs = Math.round(position * 1_000);
+							store.set(musicPlayingPositionAtom, positionMs);
+							store.set(emitMusicTimelineJumpAtom, {
+								positionMs,
+								reason: "seek",
+							});
 							await emitAudioThread("seekAudio", { position });
 						}
 					}
@@ -789,11 +816,19 @@ export const LocalMusicContext: FC = () => {
 			toEmit((time: number) => {
 				store.set(rhythmVisualResetAtom, (value) => value + 1);
 				const targetPos = time / 1000;
+				pendingSeekRef.current = {
+					targetPosition: targetPos,
+					requestedAt: performance.now(),
+				};
 				lastSyncRef.current = {
 					position: targetPos,
 					timestamp: performance.now(),
 				};
 				store.set(musicPlayingPositionAtom, time);
+				store.set(emitMusicTimelineJumpAtom, {
+					positionMs: time,
+					reason: "seek",
+				});
 
 				emitAudioThread("seekAudio", {
 					position: targetPos,
@@ -806,12 +841,20 @@ export const LocalMusicContext: FC = () => {
 				store.set(rhythmVisualResetAtom, (value) => value + 1);
 				const targetTimeMs = evt.line.getLine().startTime;
 				const targetPos = targetTimeMs / 1000;
+				pendingSeekRef.current = {
+					targetPosition: targetPos,
+					requestedAt: performance.now(),
+				};
 
 				lastSyncRef.current = {
 					position: targetPos,
 					timestamp: performance.now(),
 				};
 				store.set(musicPlayingPositionAtom, targetTimeMs);
+				store.set(emitMusicTimelineJumpAtom, {
+					positionMs: targetTimeMs,
+					reason: "lyric-click",
+				});
 
 				emitAudioThread("seekAudio", {
 					position: targetPos,
@@ -845,10 +888,32 @@ export const LocalMusicContext: FC = () => {
 
 				case "playPosition": {
 					const now = performance.now();
+					const pendingSeek = pendingSeekRef.current;
+					if (pendingSeek) {
+						const elapsed = now - pendingSeek.requestedAt;
+						const expectedTarget =
+							pendingSeek.targetPosition +
+							(store.get(musicPlayingAtom) ? Math.max(0, elapsed) / 1000 : 0);
+						if (elapsed <= 1_500) {
+							if (Math.abs(evtData.data.position - expectedTarget) > 0.75) {
+								break;
+							}
+							pendingSeekRef.current = null;
+						} else {
+							pendingSeekRef.current = null;
+						}
+					}
 					const dt = (now - lastSyncRef.current.timestamp) / 1000;
 					const currentExtrapolated = lastSyncRef.current.position + dt;
+					const correction = evtData.data.position - currentExtrapolated;
 
-					if (Math.abs(currentExtrapolated - evtData.data.position) > 0.05) {
+					if (Math.abs(correction) > 0.05) {
+						if (Math.abs(correction) > 0.25) {
+							store.set(emitMusicTimelineJumpAtom, {
+								positionMs: Math.round(evtData.data.position * 1000),
+								reason: "remote-jump",
+							});
+						}
 						lastSyncRef.current = {
 							position: evtData.data.position,
 							timestamp: now,
@@ -865,6 +930,7 @@ export const LocalMusicContext: FC = () => {
 					const data = evtData.data;
 					const newMusicId = data.musicId || "";
 					const rhythmGeneration = beginRhythmGeneration(newMusicId || null);
+					pendingSeekRef.current = null;
 
 					if (data.quality) {
 						store.set(musicQualityAtom, processAudioQuality(data.quality));
@@ -878,6 +944,10 @@ export const LocalMusicContext: FC = () => {
 						timestamp: performance.now(),
 					};
 					store.set(musicPlayingPositionAtom, 0);
+					store.set(emitMusicTimelineJumpAtom, {
+						positionMs: 0,
+						reason: "track-change",
+					});
 
 					const currentMusicId = store.get(musicIdAtom);
 
@@ -957,6 +1027,9 @@ export const LocalMusicContext: FC = () => {
 			window.removeEventListener("beforeunload", onBeforeUnload);
 
 			queueManager.dispose();
+			musicInfoGenerationRef.current += 1;
+			pendingSeekRef.current = null;
+			store.set(musicCoverIsVideoAtom, false);
 			store.set(queueManagerAtom, null);
 
 			const doNothing = toEmit(() => {});

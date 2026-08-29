@@ -19,6 +19,7 @@ import { BasicTabContent } from "./basic.tsx";
 import { LyricTabContent } from "./lyric.tsx";
 import { MetadataTabContent } from "./metadata.tsx";
 import { SongContext } from "./song-ctx.ts";
+import { SongVideoBackgroundEditor } from "./video-background.tsx";
 
 const SongPageHeader: FC = () => {
 	const song = useContext(SongContext);
@@ -78,6 +79,9 @@ export const Component: FC = () => {
 						<Tabs.Trigger value="lyric">
 							<Trans i18nKey="page.song.basic.tabs.lyric">歌词</Trans>
 						</Tabs.Trigger>
+						<Tabs.Trigger value="background">
+							<Trans i18nKey="page.song.basic.tabs.background">背景</Trans>
+						</Tabs.Trigger>
 						<ExtensionInjectPoint injectPointName="page.song.tab.list.after" />
 					</Tabs.List>
 					<Box pt="3">
@@ -90,6 +94,9 @@ export const Component: FC = () => {
 						</Tabs.Content>
 						<Tabs.Content value="lyric">
 							<LyricTabContent />
+						</Tabs.Content>
+						<Tabs.Content value="background">
+							<SongVideoBackgroundEditor key={song?.id ?? "missing-song"} />
 						</Tabs.Content>
 						<ExtensionInjectPoint injectPointName="page.song.tab.content.after" />
 					</Box>

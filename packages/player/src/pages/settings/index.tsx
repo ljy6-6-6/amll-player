@@ -272,7 +272,8 @@ export const Component: FC = () => {
 				top: "var(--space-8)",
 				left: 0,
 				right: 0,
-				bottom: "80px",
+				bottom:
+					"var(--amll-player-playbar-bottom, calc(100px + env(safe-area-inset-bottom)))",
 				// Keep route content below the playbar and its playlist overlay.
 				zIndex: 2,
 			}}

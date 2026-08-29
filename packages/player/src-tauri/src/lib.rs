@@ -19,6 +19,7 @@ use crate::server::AMLLWebSocketServerWrapper;
 
 mod db;
 mod db_events;
+mod home_background;
 mod logging;
 mod music_info;
 mod player;
@@ -124,6 +125,55 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Ok(_) => {}
                 Err(e) => warn!("[Startup] Cover GC failed: {e}"),
+            }
+        });
+    }
+
+    {
+        let gc_app = app.handle().clone();
+        tauri::async_runtime::spawn(async move {
+            match home_background::run_home_background_gc(&gc_app).await {
+                Ok(result) => {
+                    if result.deleted > 0 {
+                        info!(
+                            "[Startup] Home background GC: scanned {}, deleted {} orphaned assets",
+                            result.total_scanned, result.deleted
+                        );
+                    }
+                    if !result.errors.is_empty() {
+                        warn!(
+                            "[Startup] Home background GC had {} errors: {}",
+                            result.errors.len(),
+                            result.errors.join("; ")
+                        );
+                    }
+                }
+                Err(error) => warn!("[Startup] Home background GC failed: {error}"),
+            }
+        });
+    }
+
+    {
+        let db_ref = app.state::<db::DbConnection>().inner().clone();
+        let gc_app = app.handle().clone();
+        tauri::async_runtime::spawn(async move {
+            match db::video_background::run_song_video_background_gc(&db_ref, &gc_app).await {
+                Ok(result) => {
+                    if result.deleted > 0 {
+                        info!(
+                            "[Startup] Video background GC: scanned {}, deleted {} orphaned assets",
+                            result.total_scanned, result.deleted
+                        );
+                    }
+                    if !result.errors.is_empty() {
+                        warn!(
+                            "[Startup] Video background GC had {} errors: {}",
+                            result.errors.len(),
+                            result.errors.join("; ")
+                        );
+                    }
+                }
+                Err(error) => warn!("[Startup] Video background GC failed: {error}"),
             }
         });
     }
@@ -310,6 +360,23 @@ pub fn run() {
             db::migrate::migrate_songs_batch,
             db::migrate::migrate_playlists_batch,
             db::cleanup::cleanup_orphaned_covers,
+            db::song_background_override::get_song_background_override,
+            db::song_background_override::save_song_background_override,
+            db::song_background_override::delete_song_background_override,
+            db::video_background::pick_and_import_song_video_background,
+            db::video_background::import_song_video_background,
+            db::video_background::get_song_video_background,
+            db::video_background::save_song_video_background,
+            db::video_background::delete_song_video_background,
+            db::video_background::discard_song_video_background_asset,
+            db::video_background::cleanup_orphaned_song_video_backgrounds,
+            home_background::pick_and_import_home_background_asset,
+            home_background::get_home_background_config,
+            home_background::apply_home_background_asset,
+            home_background::discard_home_background_asset,
+            home_background::set_home_background_color,
+            home_background::reset_home_background,
+            home_background::cleanup_orphaned_home_backgrounds,
             #[cfg(desktop)]
             extension_window::extension_window_create,
             #[cfg(desktop)]

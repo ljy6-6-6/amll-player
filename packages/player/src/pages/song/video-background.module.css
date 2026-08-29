@@ -1,0 +1,144 @@
+.preview {
+	width: min(100%, 720px);
+	/* Deliberately differs from common 16:9 media so cover/contain/fill are
+	 * visibly distinguishable before the user opens the fullscreen player. */
+	aspect-ratio: 4 / 3;
+	background: transparent;
+	border-radius: var(--radius-4);
+	overflow: hidden;
+	position: relative;
+}
+
+.preview video {
+	width: 100%;
+	height: 100%;
+	display: block;
+	background: #090909;
+}
+
+.emptyPreview {
+	width: 100%;
+	height: 100%;
+	display: grid;
+	place-items: center;
+	color: var(--gray-10);
+	border: 1px dashed var(--gray-7);
+	border-radius: inherit;
+}
+
+.rangeEditor {
+	width: min(100%, 720px);
+}
+
+.rangeLabels {
+	display: flex;
+	justify-content: space-between;
+	gap: 16px;
+	font-variant-numeric: tabular-nums;
+	font-size: 12px;
+	color: var(--gray-11);
+}
+
+.rangeTrack {
+	position: relative;
+	height: 44px;
+	margin-top: 4px;
+}
+
+.rangeTrackBase,
+.rangeSelection {
+	position: absolute;
+	top: 18px;
+	height: 8px;
+	border-radius: 999px;
+}
+
+.rangeTrackBase {
+	left: 0;
+	right: 0;
+	background: var(--gray-a5);
+}
+
+.rangeSelection {
+	z-index: 1;
+	min-width: 2px;
+	background: var(--accent-9);
+	cursor: grab;
+	touch-action: none;
+}
+
+.rangeSelection:active {
+	cursor: grabbing;
+}
+
+.rangeSelection:focus-visible {
+	outline: 2px solid var(--accent-8);
+	outline-offset: 4px;
+}
+
+.rangeInput {
+	position: absolute;
+	z-index: 2;
+	inset: 0;
+	width: 100%;
+	height: 44px;
+	margin: 0;
+	appearance: none;
+	background: transparent;
+	pointer-events: none;
+}
+
+.rangeInput::-webkit-slider-runnable-track {
+	height: 6px;
+	background: transparent;
+}
+
+.rangeInput::-webkit-slider-thumb {
+	width: 24px;
+	height: 24px;
+	margin-top: -8px;
+	appearance: none;
+	border-radius: 50%;
+	border: 2px solid var(--accent-9);
+	background: var(--color-panel-solid);
+	box-shadow: 0 1px 4px rgb(0 0 0 / 35%);
+	pointer-events: auto;
+	cursor: ew-resize;
+}
+
+.rangeInput::-moz-range-track {
+	height: 6px;
+	background: transparent;
+}
+
+.rangeInput::-moz-range-thumb {
+	width: 24px;
+	height: 24px;
+	border-radius: 50%;
+	border: 2px solid var(--accent-9);
+	background: var(--color-panel-solid);
+	box-shadow: 0 1px 4px rgb(0 0 0 / 35%);
+	pointer-events: auto;
+	cursor: ew-resize;
+}
+
+.rangeInput:focus-visible::-webkit-slider-thumb {
+	outline: 2px solid var(--accent-8);
+	outline-offset: 3px;
+}
+
+.rangeInput:focus-visible::-moz-range-thumb {
+	outline: 2px solid var(--accent-8);
+	outline-offset: 3px;
+}
+
+.rangeInput:disabled,
+.rangeSelection[aria-disabled="true"] {
+	cursor: not-allowed;
+	opacity: 0.55;
+}
+
+.detailText {
+	font-variant-numeric: tabular-nums;
+	word-break: break-all;
+}

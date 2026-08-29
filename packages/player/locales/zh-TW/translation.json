@@ -335,7 +335,8 @@
 				},
 				"lyricBackgroundColor": {
 					"description": "等同于放入 background 样式的字符串值，默认为 #111111",
-					"label": "CSS 背景属性值"
+					"label": "CSS 背景属性值",
+					"picker": "選擇純色背景"
 				},
 				"lyricBackgroundFPS": {
 					"description": "對效能影響較高，但是實際開銷不大，如果遇到效能問題，可以嘗試降低此值。預設值為 60。",
@@ -355,6 +356,39 @@
 					"pixiRenderer": "PixiJS 渲染器"
 				},
 				"subtitle": "歌詞背景"
+			},
+			"homeBackground": {
+				"asset": {
+					"chooseImage": "選擇背景圖片",
+					"chooseVideo": "選擇背景影片",
+					"label": "背景素材",
+					"replace": "更換素材"
+				},
+				"color": {
+					"description": "使用所選純色作為應用程式背景，並自動疊加深色對比層以確保介面清晰。",
+					"label": "背景顏色",
+					"picker": "選擇首頁背景顏色"
+				},
+				"description": "預設保留目前的系統材質風格；自訂圖片、影片或純色背景會自動疊加深色對比層。",
+				"error": {
+					"asset": "無法套用首頁背景：{message}",
+					"color": "請輸入 #RRGGBB 格式的顏色值",
+					"save": "無法儲存首頁背景設定：{message}"
+				},
+				"mode": {
+					"description": "圖片和影片會複製到應用程式資料目錄，原始檔案移動後仍可使用。",
+					"label": "背景類型",
+					"menu": {
+						"color": "純色",
+						"default": "預設",
+						"image": "圖片",
+						"video": "影片"
+					}
+				},
+				"subtitle": "首頁背景",
+				"success": {
+					"asset": "首頁背景已套用"
+				}
 			},
 			"lyricContent": {
 				"bottomLyricMode": {
@@ -485,12 +519,44 @@
 			}
 		},
 		"song": {
+			"backgroundOverride": {
+				"baseCssBackground": {
+					"description": "等同於 background 樣式的字串值，預設為黑色 #000000。",
+					"label": "雙重背景 CSS 屬性值",
+					"picker": "選擇雙重背景純色"
+				},
+				"baseRenderer": {
+					"description": "選擇影片下方的基礎背景；此設定只影響這首歌曲。",
+					"label": "雙重背景渲染器"
+				},
+				"dualLayer": {
+					"description": "在影片下方保留獨立的基礎背景，並以透明度控制影片顯示程度。",
+					"label": "疊加雙重背景"
+				},
+				"enabled": {
+					"description": "只為這首歌曲選擇不同的歌詞背景；關閉時繼續使用全域設定。",
+					"label": "覆寫全域設定"
+				},
+				"error": "無法儲存這首歌曲的背景覆寫設定：{message}",
+				"loadError": "無法讀取這首歌曲的背景覆寫設定。",
+				"opacity": {
+					"label": "影片不透明度"
+				},
+				"renderer": {
+					"css": "CSS 背景",
+					"label": "背景渲染器",
+					"mesh": "網格漸變渲染器",
+					"pixi": "PixiJS 渲染器",
+					"video": "歌曲影片背景"
+				}
+			},
 			"basic": {
 				"musicDuration": "音樂時長",
 				"musicFilePath": "音樂文件路徑",
 				"musicId": "音樂 ID",
 				"tabs": {
 					"basic": "基本",
+					"background": "背景",
 					"lyric": "歌詞",
 					"metadata": "後設資料"
 				}
@@ -521,6 +587,51 @@
 				"songAlbum": "音樂專輯名",
 				"songArtists": "音樂作者",
 				"songName": "音樂名稱"
+			},
+			"videoBackground": {
+				"apply": "套用影片背景",
+				"change": "更換影片",
+				"choose": "選擇影片",
+				"description": "僅會覆蓋這首歌曲的全螢幕歌詞背景，不會修改歌曲封面。",
+				"discard": "放棄候選影片",
+				"discarded": "已放棄候選影片",
+				"retry": "重試",
+				"empty": "尚未設定影片背景",
+				"error": {
+					"import": "無法匯入影片背景：{message}",
+					"load": "無法讀取這首歌曲的影片背景設定。",
+					"remove": "無法移除影片背景：{message}",
+					"save": "無法儲存影片背景：{message}"
+				},
+				"fit": {
+					"contain": "完整顯示",
+					"cover": "填滿（裁切）",
+					"description": "填滿會裁切，完整顯示會保留空白，拉伸會鋪滿；影片與預覽比例相同時三者看起來相同。",
+					"fill": "拉伸",
+					"label": "顯示方式"
+				},
+				"loop": {
+					"description": "播放到出點後返回入點；關閉時會停留在最後一幀。",
+					"label": "循環播放"
+				},
+				"pending": "這是尚未套用的候選影片，離開頁面時會自動清理。",
+				"preview": "影片背景預覽",
+				"range": {
+					"in": "入點",
+					"label": "播放範圍",
+					"move": "移動所選影片片段",
+					"out": "出點",
+					"reset": "重設為歌曲長度"
+				},
+				"remove": "移除背景",
+				"removed": "已移除影片背景",
+				"saved": "已儲存影片背景",
+				"syncOnSeek": {
+					"description": "關閉後，拖曳音樂進度不會改變影片當下的播放位置。",
+					"label": "調整音樂進度時同步影片"
+				},
+				"title": "歌詞影片背景",
+				"videoFiles": "影片檔案"
 			}
 		},
 		"ws": {

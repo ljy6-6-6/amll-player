@@ -335,7 +335,8 @@
 				},
 				"lyricBackgroundColor": {
 					"description": "等同于放入 background 样式的字符串值，默认为 #111111",
-					"label": "CSS 背景属性值"
+					"label": "CSS 背景属性值",
+					"picker": "単色の背景を選択"
 				},
 				"lyricBackgroundFPS": {
 					"description": "对性能影响较高，但是实际开销不大，如果遇到性能问题，可以尝试降低此值。默认值为 60。",
@@ -355,6 +356,39 @@
 					"pixiRenderer": "PixiJS 渲染器"
 				},
 				"subtitle": "歌词背景"
+			},
+			"homeBackground": {
+				"asset": {
+					"chooseImage": "背景画像を選択",
+					"chooseVideo": "背景動画を選択",
+					"label": "背景素材",
+					"replace": "素材を変更"
+				},
+				"color": {
+					"description": "選択した単色をアプリの背景に使用し、画面を読みやすくする暗いコントラストレイヤーを自動で重ねます。",
+					"label": "背景色",
+					"picker": "ホーム背景色を選択"
+				},
+				"description": "既定では現在のシステム素材を維持し、画像、動画、または単色を選ぶと暗いコントラストレイヤーを自動で重ねます。",
+				"error": {
+					"asset": "ホーム背景を適用できません：{message}",
+					"color": "#RRGGBB 形式で色を入力してください",
+					"save": "ホーム背景設定を保存できません：{message}"
+				},
+				"mode": {
+					"description": "画像と動画はアプリデータにコピーされるため、元のファイルを移動しても背景は維持されます。",
+					"label": "背景の種類",
+					"menu": {
+						"color": "単色",
+						"default": "デフォルト",
+						"image": "画像",
+						"video": "動画"
+					}
+				},
+				"subtitle": "ホーム背景",
+				"success": {
+					"asset": "ホーム背景を適用しました"
+				}
 			},
 			"lyricContent": {
 				"bottomLyricMode": {
@@ -485,12 +519,44 @@
 			}
 		},
 		"song": {
+			"backgroundOverride": {
+				"baseCssBackground": {
+					"description": "background の CSS 値として使用します。既定値は黒（#000000）です。",
+					"label": "二重背景の CSS 値",
+					"picker": "二重背景の単色を選択"
+				},
+				"baseRenderer": {
+					"description": "動画の下に表示する、この曲専用の基本背景を選択します。",
+					"label": "二重背景レンダラー"
+				},
+				"dualLayer": {
+					"description": "動画の下に独立した基本背景を残し、不透明度で動画の表示具合を調整します。",
+					"label": "二重背景を使用"
+				},
+				"enabled": {
+					"description": "この曲だけ別の歌詞背景を選択します。オフにするとグローバル設定を使用します。",
+					"label": "グローバル設定を上書き"
+				},
+				"error": "この曲の背景上書き設定を保存できません：{message}",
+				"loadError": "この曲の背景上書き設定を読み込めません。",
+				"opacity": {
+					"label": "動画の不透明度"
+				},
+				"renderer": {
+					"css": "CSS 背景",
+					"label": "背景レンダラー",
+					"mesh": "メッシュグラデーションレンダラー",
+					"pixi": "PixiJS レンダラー",
+					"video": "曲の動画背景"
+				}
+			},
 			"basic": {
 				"musicDuration": "音乐时长",
 				"musicFilePath": "音乐文件路径",
 				"musicId": "音乐 ID",
 				"tabs": {
 					"basic": "基本",
+					"background": "背景",
 					"lyric": "歌词",
 					"metadata": "元数据"
 				}
@@ -521,6 +587,51 @@
 				"songAlbum": "音乐专辑名",
 				"songArtists": "音乐作者",
 				"songName": "音乐名称"
+			},
+			"videoBackground": {
+				"apply": "動画背景を適用",
+				"change": "動画を変更",
+				"choose": "動画を選択",
+				"description": "この曲のフルスクリーン歌詞背景にのみ適用され、ジャケット画像は変更されません。",
+				"discard": "候補動画を破棄",
+				"discarded": "候補動画を破棄しました",
+				"retry": "再試行",
+				"empty": "動画背景が設定されていません",
+				"error": {
+					"import": "動画背景をインポートできませんでした：{message}",
+					"load": "この曲の動画背景設定を読み込めませんでした。",
+					"remove": "動画背景を削除できませんでした：{message}",
+					"save": "動画背景を保存できませんでした：{message}"
+				},
+				"fit": {
+					"contain": "全体表示",
+					"cover": "全面表示（トリミング）",
+					"description": "全面表示は切り抜き、全体表示は余白を残して全体を表示し、引き伸ばしは枠いっぱいに変形します。動画とプレビューの縦横比が同じ場合は同じように見えます。",
+					"fill": "引き伸ばす",
+					"label": "表示方法"
+				},
+				"loop": {
+					"description": "アウト点に達するとイン点へ戻ります。無効にすると最後のフレームで停止します。",
+					"label": "ループ再生"
+				},
+				"pending": "この動画はまだ適用されていません。ページを離れると自動的に削除されます。",
+				"preview": "動画背景のプレビュー",
+				"range": {
+					"in": "イン点",
+					"label": "再生範囲",
+					"move": "選択した動画区間を移動",
+					"out": "アウト点",
+					"reset": "曲の長さにリセット"
+				},
+				"remove": "背景を削除",
+				"removed": "動画背景を削除しました",
+				"saved": "動画背景を保存しました",
+				"syncOnSeek": {
+					"description": "無効にすると、曲をシークしても動画の現在位置は変わりません。",
+					"label": "曲のシーク時に動画を同期"
+				},
+				"title": "歌詞の動画背景",
+				"videoFiles": "動画ファイル"
 			}
 		},
 		"ws": {

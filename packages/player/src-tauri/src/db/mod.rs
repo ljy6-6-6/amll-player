@@ -8,7 +8,9 @@ pub mod refresh;
 pub mod rhythm;
 pub mod rhythm_precache;
 pub mod scanner;
+pub mod song_background_override;
 pub mod utils;
+pub mod video_background;
 
 use sea_orm::{Database, DatabaseConnection};
 use tauri::AppHandle;

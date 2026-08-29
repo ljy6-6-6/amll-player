@@ -29,6 +29,10 @@ pub enum Relation {
     PlaylistSongs,
     #[sea_orm(has_one = "super::song_rhythm_analysis::Entity")]
     RhythmAnalysis,
+    #[sea_orm(has_one = "super::song_video_background::Entity")]
+    VideoBackground,
+    #[sea_orm(has_one = "super::song_background_override::Entity")]
+    BackgroundOverride,
 }
 
 impl Related<super::playlist_songs::Entity> for Entity {
@@ -40,6 +44,18 @@ impl Related<super::playlist_songs::Entity> for Entity {
 impl Related<super::song_rhythm_analysis::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::RhythmAnalysis.def()
+    }
+}
+
+impl Related<super::song_video_background::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::VideoBackground.def()
+    }
+}
+
+impl Related<super::song_background_override::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::BackgroundOverride.def()
     }
 }
 

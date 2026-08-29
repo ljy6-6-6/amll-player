@@ -335,7 +335,8 @@
 				},
 				"lyricBackgroundColor": {
 					"description": "等同于放入 background 样式的字符串值，默认为 #111111",
-					"label": "CSS 背景属性值"
+					"label": "CSS 背景属性值",
+					"picker": "Chọn màu nền đơn sắc"
 				},
 				"lyricBackgroundFPS": {
 					"description": "Có ảnh hưởng đến hiệu suất, nhưng thực tế không lớn. Nếu gặp vấn đề về hiệu suất, có thể cân nhắc giảm giá trị này. Mặc định là 60.",
@@ -355,6 +356,39 @@
 					"pixiRenderer": "PixiJS 渲染器"
 				},
 				"subtitle": "Nền của lời bài hát"
+			},
+			"homeBackground": {
+				"asset": {
+					"chooseImage": "Chọn ảnh nền",
+					"chooseVideo": "Chọn video nền",
+					"label": "Tệp nền",
+					"replace": "Thay tệp nền"
+				},
+				"color": {
+					"description": "Dùng màu đã chọn làm nền ứng dụng và tự động phủ một lớp tối để giao diện luôn dễ đọc.",
+					"label": "Màu nền",
+					"picker": "Chọn màu nền trang chính"
+				},
+				"description": "Mặc định giữ phong cách vật liệu hệ thống hiện tại; nền ảnh, video hoặc màu đặc sẽ tự động có lớp phủ tối để tăng độ tương phản.",
+				"error": {
+					"asset": "Không thể áp dụng nền trang chính: {message}",
+					"color": "Hãy nhập màu theo định dạng #RRGGBB",
+					"save": "Không thể lưu cài đặt nền trang chính: {message}"
+				},
+				"mode": {
+					"description": "Ảnh và video được sao chép vào dữ liệu ứng dụng, vì vậy việc di chuyển tệp gốc sẽ không làm mất nền.",
+					"label": "Loại nền",
+					"menu": {
+						"color": "Màu đặc",
+						"default": "Mặc định",
+						"image": "Hình ảnh",
+						"video": "Video"
+					}
+				},
+				"subtitle": "Nền trang chính",
+				"success": {
+					"asset": "Đã áp dụng nền trang chính"
+				}
 			},
 			"lyricContent": {
 				"bottomLyricMode": {
@@ -485,12 +519,44 @@
 			}
 		},
 		"song": {
+			"backgroundOverride": {
+				"baseCssBackground": {
+					"description": "Được áp dụng làm giá trị CSS background; mặc định là màu đen (#000000).",
+					"label": "Giá trị CSS của nền kép",
+					"picker": "Chọn màu đơn cho nền kép"
+				},
+				"baseRenderer": {
+					"description": "Chọn nền cơ sở bên dưới video; cài đặt này chỉ áp dụng cho bài hát này.",
+					"label": "Bộ kết xuất nền kép"
+				},
+				"dualLayer": {
+					"description": "Giữ một nền cơ sở riêng bên dưới video và dùng độ mờ để điều chỉnh video.",
+					"label": "Sử dụng nền kép"
+				},
+				"enabled": {
+					"description": "Chọn nền lời bài hát riêng cho bài này; tắt để tiếp tục dùng cài đặt toàn cục.",
+					"label": "Ghi đè cài đặt toàn cục"
+				},
+				"error": "Không thể lưu cài đặt nền riêng cho bài hát: {message}",
+				"loadError": "Không thể đọc cài đặt nền riêng của bài hát.",
+				"opacity": {
+					"label": "Độ mờ đục của video"
+				},
+				"renderer": {
+					"css": "Nền CSS",
+					"label": "Bộ kết xuất nền",
+					"mesh": "Bộ kết xuất lưới chuyển sắc",
+					"pixi": "Bộ kết xuất PixiJS",
+					"video": "Nền video theo bài hát"
+				}
+			},
 			"basic": {
 				"musicDuration": "Thời gian bài hát",
 				"musicFilePath": "Đường dẫn tệp âm thanh",
 				"musicId": "ID bài hát",
 				"tabs": {
 					"basic": "Cơ bản",
+					"background": "Nền",
 					"lyric": "Lời bài hát",
 					"metadata": "Siêu dữ liệu bài hát"
 				}
@@ -521,6 +587,51 @@
 				"songAlbum": "Tên album",
 				"songArtists": "Tác giả bài hát",
 				"songName": "Tên bài hát"
+			},
+			"videoBackground": {
+				"apply": "Áp dụng nền video",
+				"change": "Đổi video",
+				"choose": "Chọn video",
+				"description": "Chỉ thay thế nền lời bài hát toàn màn hình của bài hát này và không thay đổi ảnh bìa.",
+				"discard": "Bỏ video đã chọn",
+				"discarded": "Đã bỏ video đã chọn",
+				"retry": "Thử lại",
+				"empty": "Chưa đặt nền video",
+				"error": {
+					"import": "Không thể nhập nền video: {message}",
+					"load": "Không thể tải cài đặt nền video của bài hát này.",
+					"remove": "Không thể xóa nền video: {message}",
+					"save": "Không thể lưu nền video: {message}"
+				},
+				"fit": {
+					"contain": "Vừa khung (hiển thị toàn bộ)",
+					"cover": "Lấp đầy (cắt xén)",
+					"description": "Lấp đầy sẽ cắt xén, Vừa khung hiển thị toàn bộ và để lại khoảng trống, còn Kéo giãn sẽ phủ kín khung. Ba chế độ trông giống nhau khi video và khung xem trước có cùng tỷ lệ.",
+					"fill": "Kéo giãn",
+					"label": "Cách hiển thị"
+				},
+				"loop": {
+					"description": "Khi đến điểm kết thúc, video sẽ quay lại điểm bắt đầu; khi tắt, video sẽ dừng ở khung hình cuối.",
+					"label": "Phát lặp lại"
+				},
+				"pending": "Đây là video đang chờ áp dụng; video sẽ tự động bị xóa khi bạn rời khỏi trang.",
+				"preview": "Xem trước nền video",
+				"range": {
+					"in": "Điểm bắt đầu",
+					"label": "Phạm vi phát",
+					"move": "Di chuyển đoạn video đã chọn",
+					"out": "Điểm kết thúc",
+					"reset": "Đặt lại theo thời lượng bài hát"
+				},
+				"remove": "Xóa nền",
+				"removed": "Đã xóa nền video",
+				"saved": "Đã lưu nền video",
+				"syncOnSeek": {
+					"description": "Khi tắt, việc tua bài hát sẽ không làm thay đổi vị trí hiện tại của video.",
+					"label": "Đồng bộ video khi tua bài hát"
+				},
+				"title": "Nền video cho lời bài hát",
+				"videoFiles": "Tệp video"
 			}
 		},
 		"ws": {
