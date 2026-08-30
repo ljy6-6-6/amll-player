@@ -52,7 +52,6 @@ const editor = readProjectFile("../src/pages/song/video-background.tsx");
 const editorStyle = readProjectFile(
 	"../src/pages/song/video-background.module.css",
 );
-const range = readProjectFile("../src/pages/song/video-background-range.tsx");
 const dbClient = readProjectFile("../src/utils/db-client.ts");
 const rust = readProjectFile("../src-tauri/src/db/video_background.rs");
 const overrideRust = readProjectFile(
@@ -449,7 +448,7 @@ test("编辑器先完成真实解码，再为短视频生成有效默认范围",
 	]);
 });
 
-test("编辑器禁用条件一致，range change source 决定预览落点", () => {
+test("编辑器禁用条件一致，复用 Radix 双端滑轨并根据端点定位预览", () => {
 	assertSourceContains(editor, "禁用条件", [
 		"const controlsDisabled = busy || loading || Boolean(loadError);",
 		'<Button size="1" variant="soft" onClick={refetch}>',
@@ -461,24 +460,40 @@ test("编辑器禁用条件一致，range change source 决定预览落点", () 
 		countSourceOccurrences(editor, "disabled={controlsDisabled}") >= 6,
 		"移除、适应方式、范围、重置和两个开关都应共享禁用状态",
 	);
-	assertSourceContains(range, "range source", [
-		'export type VideoBackgroundRangeChangeSource = "in" | "out" | "move";',
-		"const MIN_RANGE_MS = 100;",
-		"const minRangeMs = Math.min(MIN_RANGE_MS, safeDuration);",
-		'onChange(nextIn, nextIn + width, "move");',
-		'onChange(Math.max(0, next), safeOutPoint, "in");',
-		'onChange(safeInPoint, Math.min(safeDuration, next), "out");',
-		'role="slider"',
-		'event.key !== "ArrowUp"',
-		'event.key !== "ArrowDown"',
-		'event.key !== "Home"',
-		'event.key !== "End"',
-		"aria-valuemax={safeDuration - (safeOutPoint - safeInPoint)}",
-		"event.currentTarget.setPointerCapture(event.pointerId);",
+	assertSourceContains(editor, "Radix 双端 range", [
+		"const RANGE_STEP_MS = 100;",
+		"const safeDurationMs = Number.isFinite(durationMs)",
+		"const finiteInPointMs = Number.isFinite(inPointMs) ? inPointMs : 0;",
+		"const finiteOutPointMs = Number.isFinite(outPointMs)",
+		"const minRangeMs = Math.min(MIN_VALID_RANGE_MS, safeDurationMs);",
+		"<Slider",
+		"ref={rangeSliderRef}",
+		"step={RANGE_STEP_MS}",
+		"minStepsBetweenThumbs={Math.min(MIN_VALID_RANGE_MS, videoRange.durationMs) / RANGE_STEP_MS}",
+		"value={[videoRange.inPointMs, videoRange.outPointMs]}",
+		"const source = getChangedVideoRangeEndpoint(",
+		"videoRange, nextRange,",
+		'if (next.inPointMs === previous.inPointMs) return "out";',
+		'if (next.outPointMs === previous.outPointMs) return "in";',
+		'return next.inPointMs === previous.outPointMs ? "out" : "in";',
+		"rangeSliderRef.current?.querySelectorAll<HTMLElement>('[role=\"slider\"]')",
+		'thumb.setAttribute("aria-label", endpoint.label);',
+		'thumb.setAttribute("aria-valuetext", formatVideoTime(endpoint.value));',
 	]);
+	assert.equal(
+		editor.includes("VideoBackgroundRange"),
+		false,
+		"歌曲页不应继续引用独立的双滑块实现",
+	);
+	assert.equal(
+		/\.range(?:Track|Selection|Input)/.test(editorStyle),
+		false,
+		"歌曲页不应继续维护自定义滑轨、选区或滑块样式",
+	);
 	assertSourceContains(editor, "范围预览", [
 		'source === "out" ? Math.max(inPointMs, outPointMs - END_FRAME_OFFSET_MS) : inPointMs',
-		"seekPreviewForRangeChange(inPointMs, outPointMs, source);",
+		"seekPreviewForRangeChange(",
+		"nextRange.inPointMs, nextRange.outPointMs, source,",
 	]);
 	assertSourceContains(editorStyle, "非 16:9 适应方式预览", [
 		"aspect-ratio: 4 / 3;",
@@ -878,7 +893,6 @@ test("五种内置语言的视频背景叶子键结构完整且一致", () => {
 		"page.song.videoBackground.fit.contain",
 		"page.song.videoBackground.fit.fill",
 		"page.song.videoBackground.fit.description",
-		"page.song.videoBackground.range.move",
 		"page.song.videoBackground.loop.label",
 		"page.song.videoBackground.syncOnSeek.label",
 	]) {

@@ -34,13 +34,9 @@ import {
 import { useDbQuery } from "../../utils/use-db-query.ts";
 import { SongContext } from "./song-ctx.ts";
 import styles from "./video-background.module.css";
-import {
-	formatVideoTime,
-	VideoBackgroundRange,
-	type VideoBackgroundRangeChangeSource,
-} from "./video-background-range.tsx";
 
 const MIN_VALID_RANGE_MS = 100;
+const RANGE_STEP_MS = 100;
 const END_FRAME_OFFSET_MS = 16;
 const DEFAULT_DUAL_LAYER = true;
 const DEFAULT_VIDEO_OPACITY = 0.4;
@@ -162,6 +158,55 @@ function formatBytes(bytes: number): string {
 	return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
 }
 
+function formatVideoTime(milliseconds: number): string {
+	const safeMilliseconds = Math.max(0, Math.round(milliseconds));
+	const minutes = Math.floor(safeMilliseconds / 60_000);
+	const seconds = Math.floor((safeMilliseconds % 60_000) / 1_000);
+	const fraction = safeMilliseconds % 1_000;
+	return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${String(fraction).padStart(3, "0")}`;
+}
+
+function getSafeVideoRange(
+	durationMs: number,
+	inPointMs: number,
+	outPointMs: number,
+): {
+	durationMs: number;
+	inPointMs: number;
+	outPointMs: number;
+} {
+	const safeDurationMs = Number.isFinite(durationMs)
+		? Math.max(1, Math.round(durationMs))
+		: 1;
+	const finiteInPointMs = Number.isFinite(inPointMs) ? inPointMs : 0;
+	const finiteOutPointMs = Number.isFinite(outPointMs)
+		? outPointMs
+		: safeDurationMs;
+	const minRangeMs = Math.min(MIN_VALID_RANGE_MS, safeDurationMs);
+	const safeInPointMs = Math.min(
+		Math.max(finiteInPointMs, 0),
+		safeDurationMs - minRangeMs,
+	);
+	return {
+		durationMs: safeDurationMs,
+		inPointMs: safeInPointMs,
+		outPointMs: Math.min(
+			Math.max(finiteOutPointMs, safeInPointMs + minRangeMs),
+			safeDurationMs,
+		),
+	};
+}
+
+function getChangedVideoRangeEndpoint(
+	previous: ReturnType<typeof getSafeVideoRange>,
+	next: ReturnType<typeof getSafeVideoRange>,
+): "in" | "out" {
+	// Radix sorts both values, so crossing thumbs swaps their final logical roles.
+	if (next.inPointMs === previous.inPointMs) return "out";
+	if (next.outPointMs === previous.outPointMs) return "in";
+	return next.inPointMs === previous.outPointMs ? "out" : "in";
+}
+
 function getDefaultOutPointMs(
 	videoDurationMs: number,
 	songDurationMs: number,
@@ -209,6 +254,7 @@ const VideoBackgroundEditor: FC = () => {
 	const song = useContext(SongContext);
 	const { t } = useTranslation();
 	const previewRef = useRef<HTMLVideoElement>(null);
+	const rangeSliderRef = useRef<HTMLSpanElement>(null);
 	const mountedRef = useRef(false);
 	const operationRef = useRef(0);
 	const busyRef = useRef(false);
@@ -542,11 +588,7 @@ const VideoBackgroundEditor: FC = () => {
 	}, [busy, draft, song, updateDraft]);
 
 	const seekPreviewForRangeChange = useCallback(
-		(
-			inPointMs: number,
-			outPointMs: number,
-			source: VideoBackgroundRangeChangeSource,
-		) => {
+		(inPointMs: number, outPointMs: number, source: "in" | "out") => {
 			const video = previewRef.current;
 			if (!video) return;
 			const targetMs =
@@ -560,6 +602,33 @@ const VideoBackgroundEditor: FC = () => {
 
 	const previewSource = draft ? convertFileSrc(draft.filePath) : null;
 	const controlsDisabled = busy || loading || Boolean(loadError);
+	const videoRange = getSafeVideoRange(
+		draft?.durationMs ?? 1,
+		draft?.inPointMs ?? 0,
+		draft?.outPointMs ?? 1,
+	);
+	const rangeInLabel = t("page.song.videoBackground.range.in", "入点");
+	const rangeOutLabel = t("page.song.videoBackground.range.out", "出点");
+	useLayoutEffect(() => {
+		const thumbs =
+			rangeSliderRef.current?.querySelectorAll<HTMLElement>('[role="slider"]');
+		const endpoints = [
+			{ label: rangeInLabel, value: videoRange.inPointMs },
+			{ label: rangeOutLabel, value: videoRange.outPointMs },
+		];
+		thumbs?.forEach((thumb, index) => {
+			const endpoint = endpoints[index];
+			if (!endpoint) return;
+			thumb.setAttribute("aria-label", endpoint.label);
+			thumb.setAttribute("aria-valuetext", formatVideoTime(endpoint.value));
+		});
+	}, [
+		draft?.assetId,
+		rangeInLabel,
+		rangeOutLabel,
+		videoRange.inPointMs,
+		videoRange.outPointMs,
+	]);
 
 	return (
 		<Card aria-busy={busy || loading}>
@@ -704,26 +773,50 @@ const VideoBackgroundEditor: FC = () => {
 									{t("page.song.videoBackground.range.reset", "重置为歌曲长度")}
 								</Button>
 							</Flex>
-							<VideoBackgroundRange
-								durationMs={draft.durationMs}
-								inPointMs={draft.inPointMs}
-								outPointMs={draft.outPointMs}
-								disabled={controlsDisabled}
-								onChange={(inPointMs, outPointMs, source) => {
-									updateDraft((current) => ({
-										...current,
-										inPointMs,
-										outPointMs,
-									}));
-									seekPreviewForRangeChange(inPointMs, outPointMs, source);
-								}}
-								inPointLabel={t("page.song.videoBackground.range.in", "入点")}
-								outPointLabel={t("page.song.videoBackground.range.out", "出点")}
-								moveRangeLabel={t(
-									"page.song.videoBackground.range.move",
-									"移动所选视频片段",
-								)}
-							/>
+							<div className={styles.rangeEditor}>
+								<div className={styles.rangeLabels}>
+									<span>
+										{rangeInLabel}: {formatVideoTime(videoRange.inPointMs)}
+									</span>
+									<span>
+										{rangeOutLabel}: {formatVideoTime(videoRange.outPointMs)}
+									</span>
+								</div>
+								<Slider
+									ref={rangeSliderRef}
+									mt="2"
+									min={0}
+									max={videoRange.durationMs}
+									step={RANGE_STEP_MS}
+									minStepsBetweenThumbs={
+										Math.min(MIN_VALID_RANGE_MS, videoRange.durationMs) /
+										RANGE_STEP_MS
+									}
+									value={[videoRange.inPointMs, videoRange.outPointMs]}
+									disabled={controlsDisabled}
+									onValueChange={([inPointMs, outPointMs]) => {
+										const nextRange = getSafeVideoRange(
+											videoRange.durationMs,
+											inPointMs ?? videoRange.inPointMs,
+											outPointMs ?? videoRange.outPointMs,
+										);
+										const source = getChangedVideoRangeEndpoint(
+											videoRange,
+											nextRange,
+										);
+										updateDraft((current) => ({
+											...current,
+											inPointMs: nextRange.inPointMs,
+											outPointMs: nextRange.outPointMs,
+										}));
+										seekPreviewForRangeChange(
+											nextRange.inPointMs,
+											nextRange.outPointMs,
+											source,
+										);
+									}}
+								/>
+							</div>
 						</div>
 
 						<label>

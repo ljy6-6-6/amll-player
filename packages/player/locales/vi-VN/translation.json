@@ -1,6 +1,7 @@
 {
 	"amll": {
 		"audioQuality": {
+			"bitDepth": "Độ sâu bit",
 			"channels": "音频通道数量",
 			"codec": "音频解码器",
 			"sampleFormat": "采样格式",
@@ -551,15 +552,33 @@
 				}
 			},
 			"basic": {
+				"album": "Album",
+				"albumArtist": "Nghệ sĩ album",
+				"composer": "Nhà soạn nhạc",
+				"copyFilePath": "Sao chép đường dẫn tệp",
+				"copyright": "Bản quyền",
+				"discNumber": "Số đĩa",
+				"encoder": "Bộ mã hóa",
+				"fileMetadataError": "Không thể đọc thông tin tệp nhạc gốc: {message}",
+				"fileModifiedAt": "Thời gian sửa đổi tệp",
+				"fileSize": "Kích thước tệp",
+				"genre": "Thể loại",
+				"loadingFileMetadata": "Đang đọc thông tin tệp nhạc gốc…",
+				"lyricist": "Người viết lời",
 				"musicDuration": "Thời gian bài hát",
 				"musicFilePath": "Đường dẫn tệp âm thanh",
 				"musicId": "ID bài hát",
+				"noFileMetadata": "Tệp nhạc gốc không có thẻ siêu dữ liệu để hiển thị",
+				"originalFileMetadata": "Siêu dữ liệu tệp gốc",
+				"publisher": "Nhà phát hành",
+				"recordingDate": "Ngày",
 				"tabs": {
 					"basic": "Cơ bản",
 					"background": "Nền",
 					"lyric": "Lời bài hát",
 					"metadata": "Siêu dữ liệu bài hát"
-				}
+				},
+				"trackNumber": "Số bài"
 			},
 			"lyric": {
 				"importFromFile": "从本地文件导入歌词",
@@ -581,7 +600,6 @@
 			},
 			"metadata": {
 				"changeCoverToImageOrVideo": "Thay đổi bìa thành bìa hình ảnh/ bìa video",
-				"importLyricFromFile": "从本地文件导入歌词",
 				"overrideSafeTip": "Cài đặt trên trang này sẽ không ảnh hưởng đến tệp âm thanh gốc",
 				"reloadMetadataFromFile": "Tải lại siêu dữ liệu từ tệp",
 				"songAlbum": "Tên album",
@@ -619,7 +637,6 @@
 				"range": {
 					"in": "Điểm bắt đầu",
 					"label": "Phạm vi phát",
-					"move": "Di chuyển đoạn video đã chọn",
 					"out": "Điểm kết thúc",
 					"reset": "Đặt lại theo thời lượng bài hát"
 				},

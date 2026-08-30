@@ -1,6 +1,7 @@
 {
 	"amll": {
 		"audioQuality": {
+			"bitDepth": "Bit depth",
 			"channels": "音频通道数量",
 			"codec": "Audio codec",
 			"sampleFormat": "Sample format",
@@ -551,15 +552,33 @@
 				}
 			},
 			"basic": {
+				"album": "Album",
+				"albumArtist": "Album artist",
+				"composer": "Composer",
+				"copyFilePath": "Copy file path",
+				"copyright": "Copyright",
+				"discNumber": "Disc number",
+				"encoder": "Encoder",
+				"fileMetadataError": "Unable to read the original music file information: {message}",
+				"fileModifiedAt": "File modified",
+				"fileSize": "File size",
+				"genre": "Genre",
+				"loadingFileMetadata": "Reading original music file information…",
+				"lyricist": "Lyricist",
 				"musicDuration": "Duration",
 				"musicFilePath": "File Path",
 				"musicId": "Music ID",
+				"noFileMetadata": "The original music file has no metadata tags to display",
+				"originalFileMetadata": "Original file metadata",
+				"publisher": "Publisher",
+				"recordingDate": "Date",
 				"tabs": {
 					"basic": "Basics",
 					"background": "Background",
 					"lyric": "Lyrics",
 					"metadata": "Metadata"
-				}
+				},
+				"trackNumber": "Track number"
 			},
 			"lyric": {
 				"importFromFile": "Import lyrics from file",
@@ -581,7 +600,6 @@
 			},
 			"metadata": {
 				"changeCoverToImageOrVideo": "Change cover image as image / video",
-				"importLyricFromFile": "Import lyrics from file",
 				"overrideSafeTip": "Properties in this page will not override into source file.",
 				"reloadMetadataFromFile": "Reload Metadata from Audio File",
 				"songAlbum": "Album",
@@ -619,7 +637,6 @@
 				"range": {
 					"in": "In point",
 					"label": "Playback range",
-					"move": "Move selected video segment",
 					"out": "Out point",
 					"reset": "Reset to song length"
 				},
