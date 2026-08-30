@@ -10,12 +10,16 @@ index 819b12c2307970f3b2dc160b47c90bc9a560887d..a7fa8ec3960912d136b2bb7c7f185f6d
  //#endregion
  //#region \0raw:/home/runner/work/applemusic-like-lyrics/applemusic-like-lyrics/packages/core/src/bg-render/mesh-renderer/mesh.vert.glsl
  var mesh_vert_default = "precision mediump float;\n\nattribute vec2 a_pos;\nattribute vec3 a_color;\nattribute vec2 a_uv;\nvarying vec3 v_color;\nvarying vec2 v_uv;\n\nuniform float u_aspect;\n\nvoid main() {\n    v_color = a_color;\n    v_uv = a_uv;\n    vec2 pos = a_pos;\n    if (u_aspect > 1.0) {\n        pos.y *= u_aspect;\n    } else {\n        pos.x /= u_aspect;\n    }\n    gl_Position = vec4(pos, 0.0, 1.0);\n}\n";
-@@ -1136,11 +1137,21 @@ function createOffscreenCanvas(width, height) {
+@@ -1136,11 +1137,25 @@ function createOffscreenCanvas(width, height) {
  	return canvas;
  }
  var MeshGradientRenderer = class extends BaseRenderer {
 +	static rhythmVisualVolume = 0;
 +	static strongBeat = 0;
++	static rhythmVisualIntensity = 1;
++	static setRhythmVisualIntensity(intensity = 1) {
++		MeshGradientRenderer.rhythmVisualIntensity = Number.isFinite(intensity) ? Math.min(2, Math.max(0, intensity)) : 1;
++	}
 +	static setRhythmVisualSignal(breath, heavyBeat) {
 +		MeshGradientRenderer.rhythmVisualVolume = Number.isFinite(breath) ? Math.min(.4, Math.max(0, breath)) : 0;
 +		MeshGradientRenderer.strongBeat = Number.isFinite(heavyBeat) ? Math.min(1, Math.max(0, heavyBeat)) : 0;
@@ -32,7 +36,7 @@ index 819b12c2307970f3b2dc160b47c90bc9a560887d..a7fa8ec3960912d136b2bb7c7f185f6d
  	volume = 0;
  	tickHandle = 0;
  	maxFPS = 60;
-@@ -1192,8 +1203,10 @@ var MeshGradientRenderer = class extends BaseRenderer {
+@@ -1192,8 +1207,10 @@ var MeshGradientRenderer = class extends BaseRenderer {
  		const frameDelta = tickTime - this.lastFrameTime;
  		this.lastFrameTime = tickTime;
  		this.lastTickTime = tickTime - delta % interval;
@@ -45,7 +49,7 @@ index 819b12c2307970f3b2dc160b47c90bc9a560887d..a7fa8ec3960912d136b2bb7c7f185f6d
  		else if (this.staticMode) this.lastFrameTime = NaN;
  	}
  	checkIfResize() {
-@@ -1228,7 +1241,9 @@ var MeshGradientRenderer = class extends BaseRenderer {
+@@ -1228,7 +1245,9 @@ var MeshGradientRenderer = class extends BaseRenderer {
  	onRedraw(tickTime, delta) {
  		const latestMeshState = this.meshStates[this.meshStates.length - 1];
  		let canBeStatic = false;
@@ -56,7 +60,7 @@ index 819b12c2307970f3b2dc160b47c90bc9a560887d..a7fa8ec3960912d136b2bb7c7f185f6d
  		if (latestMeshState) {
  			latestMeshState.mesh.bind();
  			if (this.manualControl) latestMeshState.mesh.updateMesh();
-@@ -1260,11 +1275,38 @@ var MeshGradientRenderer = class extends BaseRenderer {
+@@ -1260,11 +1279,41 @@ var MeshGradientRenderer = class extends BaseRenderer {
  		const gl = this.gl;
  		this.checkIfResize();
  		if (!this.fbo) return canBeStatic;
@@ -92,24 +96,27 @@ index 819b12c2307970f3b2dc160b47c90bc9a560887d..a7fa8ec3960912d136b2bb7c7f185f6d
 +		const combinedBreath = Math.max(0, this.volume) + this.rhythmBreath;
 +		const breathKnee = Math.min(1, Math.max(0, (combinedBreath - .16) / .06));
 +		const breathVolume = combinedBreath <= .16 ? combinedBreath : .16 + .06 * breathKnee - .02 * breathKnee * breathKnee * breathKnee;
-+		const compensatedAlpha = 1 / Math.max(.5, 1 - breathVolume * .5);
++		const rhythmVisualIntensity = MeshGradientRenderer.rhythmVisualIntensity;
++		const rhythmRotationIntensity = rhythmVisualIntensity * 1.5;
++		const animatedBreathVolume = Math.min(.4, breathVolume * rhythmVisualIntensity);
++		const compensatedAlpha = 1 / Math.max(.5, 1 - animatedBreathVolume * .5);
  		for (const state of this.meshStates) {
  			gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
  			gl.disable(gl.BLEND);
-@@ -1275,9 +1317,9 @@ var MeshGradientRenderer = class extends BaseRenderer {
+@@ -1275,9 +1324,9 @@ var MeshGradientRenderer = class extends BaseRenderer {
  			const uTime = tickTime / 1e4;
  			this.mainProgram.setUniform1f("u_aspect", this.manualControl ? 1 : this.canvas.width / this.canvas.height);
  			this.mainProgram.setUniform1i("u_texture", 0);
 -			this.mainProgram.setUniform1f("u_volume", this.volume);
 -			this.mainProgram.setUniform1f("u_alpha", 1);
 -			const angle = (uTime + this.volume) * 2;
-+			this.mainProgram.setUniform1f("u_volume", breathVolume);
++			this.mainProgram.setUniform1f("u_volume", animatedBreathVolume);
 +			this.mainProgram.setUniform1f("u_alpha", compensatedAlpha);
-+			const angle = (uTime + this.volume) * 2 + this.rhythmKick;
++			const angle = uTime * 2 + (this.volume * 2 + this.rhythmKick) * rhythmRotationIntensity;
  			this.mainProgram.setUniform1f("u_sinAngle", Math.sin(angle));
  			this.mainProgram.setUniform1f("u_cosAngle", Math.cos(angle));
  			state.texture.bind();
-@@ -1362,7 +1404,12 @@ var MeshGradientRenderer = class extends BaseRenderer {
+@@ -1362,7 +1411,12 @@ var MeshGradientRenderer = class extends BaseRenderer {
  		this.paused = true;
  	}
  	resume() {
@@ -122,7 +129,7 @@ index 819b12c2307970f3b2dc160b47c90bc9a560887d..a7fa8ec3960912d136b2bb7c7f185f6d
  		this.requestTick();
  	}
  	async setAlbum(albumSource, isVideo) {
-@@ -1471,7 +1518,7 @@ var MeshGradientRenderer = class extends BaseRenderer {
+@@ -1471,7 +1525,7 @@ var MeshGradientRenderer = class extends BaseRenderer {
  		this.requestTick();
  	}
  	setLowFreqVolume(volume) {
@@ -131,7 +138,7 @@ index 819b12c2307970f3b2dc160b47c90bc9a560887d..a7fa8ec3960912d136b2bb7c7f185f6d
  	}
  	setHasLyric(_hasLyric) {}
  	dispose() {
-@@ -1930,9 +1977,13 @@ function optimizeLyricLines(lines, options) {
+@@ -1930,9 +1984,13 @@ function optimizeLyricLines(lines, options) {
  }
  //#endregion
  //#region src/lyric-player/dom/interlude-dots.ts
@@ -148,7 +155,7 @@ index 819b12c2307970f3b2dc160b47c90bc9a560887d..a7fa8ec3960912d136b2bb7c7f185f6d
  }
  function easeOutExpo(x) {
  	return x === 1 ? 1 : 1 - 2 ** (-10 * x);
-@@ -1985,19 +2036,36 @@ var InterludeDots = class {
+@@ -1985,19 +2043,36 @@ var InterludeDots = class {
  		if (this.currentInterlude) {
  			const interludeDuration = this.currentInterlude[1] - this.currentInterlude[0];
  			const currentDuration = this.currentTime - this.currentInterlude[0];
@@ -191,7 +198,7 @@ index 819b12c2307970f3b2dc160b47c90bc9a560887d..a7fa8ec3960912d136b2bb7c7f185f6d
  				const dot0Opacity = clamp(.25, currentDuration * 3 / dotsDuration * .75, 1);
  				const dot1Opacity = clamp(.25, (currentDuration - dotsDuration / 3) * 3 / dotsDuration * .75, 1);
  				const dot2Opacity = clamp(.25, (currentDuration - dotsDuration / 3 * 2) * 3 / dotsDuration * .75, 1);
-@@ -2005,7 +2073,7 @@ var InterludeDots = class {
+@@ -2005,7 +2080,7 @@ var InterludeDots = class {
  				this.dot1.style.opacity = `${clamp01(globalOpacity * dot1Opacity)}`;
  				this.dot2.style.opacity = `${clamp01(globalOpacity * dot2Opacity)}`;
  			} else {
@@ -200,7 +207,7 @@ index 819b12c2307970f3b2dc160b47c90bc9a560887d..a7fa8ec3960912d136b2bb7c7f185f6d
  				this.dot0.style.opacity = "0";
  				this.dot1.style.opacity = "0";
  				this.dot2.style.opacity = "0";
-@@ -3050,7 +3118,8 @@ var LyricPlayerBase = class extends EventTarget {
+@@ -3050,7 +3125,8 @@ var LyricPlayerBase = class extends EventTarget {
  	* @param force 是否绕过弹簧效果强制更新位置
  	*/
  	async calcLayout(sync = false, force = false) {
@@ -214,10 +221,11 @@ diff --git a/dist/amll-core.d.cts b/dist/amll-core.d.cts
 index ff58a0fe7d74f2e68010566f6249133241ac3d25..21da3f35218eced33fb0e877166cc77f43be4b81 100644
 --- a/dist/amll-core.d.cts
 +++ b/dist/amll-core.d.cts
-@@ -243,6 +243,7 @@ declare class ControlPoint {
+@@ -243,6 +243,8 @@ declare class ControlPoint {
    private updateVTangent;
  }
  declare class MeshGradientRenderer extends BaseRenderer {
++  static setRhythmVisualIntensity(intensity?: number): void;
 +  static setRhythmVisualSignal(breath: number, heavyBeat: number): void;
    private gl;
    private lastFrameTime;
@@ -226,10 +234,11 @@ diff --git a/dist/amll-core.d.mts b/dist/amll-core.d.mts
 index 1d57d766316b1812de4ee13e5044ec24b32e7773..6db5e91e77e1ee8a44794fb5d56c5257986a99fe 100644
 --- a/dist/amll-core.d.mts
 +++ b/dist/amll-core.d.mts
-@@ -243,6 +243,7 @@ declare class ControlPoint {
+@@ -243,6 +243,8 @@ declare class ControlPoint {
    private updateVTangent;
  }
  declare class MeshGradientRenderer extends BaseRenderer {
++  static setRhythmVisualIntensity(intensity?: number): void;
 +  static setRhythmVisualSignal(breath: number, heavyBeat: number): void;
    private gl;
    private lastFrameTime;
@@ -246,12 +255,16 @@ index 37bd9873e58044f0900c04c2ab80da5a6d29f16a..bae78eb616825260b5887cf005a68b81
  //#endregion
  //#region \0raw:/home/runner/work/applemusic-like-lyrics/applemusic-like-lyrics/packages/core/src/bg-render/mesh-renderer/mesh.vert.glsl
  var mesh_vert_default = "precision mediump float;\n\nattribute vec2 a_pos;\nattribute vec3 a_color;\nattribute vec2 a_uv;\nvarying vec3 v_color;\nvarying vec2 v_uv;\n\nuniform float u_aspect;\n\nvoid main() {\n    v_color = a_color;\n    v_uv = a_uv;\n    vec2 pos = a_pos;\n    if (u_aspect > 1.0) {\n        pos.y *= u_aspect;\n    } else {\n        pos.x /= u_aspect;\n    }\n    gl_Position = vec4(pos, 0.0, 1.0);\n}\n";
-@@ -1111,11 +1112,21 @@ function createOffscreenCanvas(width, height) {
+@@ -1111,11 +1112,25 @@ function createOffscreenCanvas(width, height) {
  	return canvas;
  }
  var MeshGradientRenderer = class extends BaseRenderer {
 +	static rhythmVisualVolume = 0;
 +	static strongBeat = 0;
++	static rhythmVisualIntensity = 1;
++	static setRhythmVisualIntensity(intensity = 1) {
++		MeshGradientRenderer.rhythmVisualIntensity = Number.isFinite(intensity) ? Math.min(2, Math.max(0, intensity)) : 1;
++	}
 +	static setRhythmVisualSignal(breath, heavyBeat) {
 +		MeshGradientRenderer.rhythmVisualVolume = Number.isFinite(breath) ? Math.min(.4, Math.max(0, breath)) : 0;
 +		MeshGradientRenderer.strongBeat = Number.isFinite(heavyBeat) ? Math.min(1, Math.max(0, heavyBeat)) : 0;
@@ -268,7 +281,7 @@ index 37bd9873e58044f0900c04c2ab80da5a6d29f16a..bae78eb616825260b5887cf005a68b81
  	volume = 0;
  	tickHandle = 0;
  	maxFPS = 60;
-@@ -1167,8 +1178,10 @@ var MeshGradientRenderer = class extends BaseRenderer {
+@@ -1167,8 +1182,10 @@ var MeshGradientRenderer = class extends BaseRenderer {
  		const frameDelta = tickTime - this.lastFrameTime;
  		this.lastFrameTime = tickTime;
  		this.lastTickTime = tickTime - delta % interval;
@@ -281,7 +294,7 @@ index 37bd9873e58044f0900c04c2ab80da5a6d29f16a..bae78eb616825260b5887cf005a68b81
  		else if (this.staticMode) this.lastFrameTime = NaN;
  	}
  	checkIfResize() {
-@@ -1203,7 +1216,9 @@ var MeshGradientRenderer = class extends BaseRenderer {
+@@ -1203,7 +1220,9 @@ var MeshGradientRenderer = class extends BaseRenderer {
  	onRedraw(tickTime, delta) {
  		const latestMeshState = this.meshStates[this.meshStates.length - 1];
  		let canBeStatic = false;
@@ -292,7 +305,7 @@ index 37bd9873e58044f0900c04c2ab80da5a6d29f16a..bae78eb616825260b5887cf005a68b81
  		if (latestMeshState) {
  			latestMeshState.mesh.bind();
  			if (this.manualControl) latestMeshState.mesh.updateMesh();
-@@ -1235,11 +1250,38 @@ var MeshGradientRenderer = class extends BaseRenderer {
+@@ -1235,11 +1254,41 @@ var MeshGradientRenderer = class extends BaseRenderer {
  		const gl = this.gl;
  		this.checkIfResize();
  		if (!this.fbo) return canBeStatic;
@@ -328,24 +341,27 @@ index 37bd9873e58044f0900c04c2ab80da5a6d29f16a..bae78eb616825260b5887cf005a68b81
 +		const combinedBreath = Math.max(0, this.volume) + this.rhythmBreath;
 +		const breathKnee = Math.min(1, Math.max(0, (combinedBreath - .16) / .06));
 +		const breathVolume = combinedBreath <= .16 ? combinedBreath : .16 + .06 * breathKnee - .02 * breathKnee * breathKnee * breathKnee;
-+		const compensatedAlpha = 1 / Math.max(.5, 1 - breathVolume * .5);
++		const rhythmVisualIntensity = MeshGradientRenderer.rhythmVisualIntensity;
++		const rhythmRotationIntensity = rhythmVisualIntensity * 1.5;
++		const animatedBreathVolume = Math.min(.4, breathVolume * rhythmVisualIntensity);
++		const compensatedAlpha = 1 / Math.max(.5, 1 - animatedBreathVolume * .5);
  		for (const state of this.meshStates) {
  			gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
  			gl.disable(gl.BLEND);
-@@ -1250,9 +1292,9 @@ var MeshGradientRenderer = class extends BaseRenderer {
+@@ -1250,9 +1299,9 @@ var MeshGradientRenderer = class extends BaseRenderer {
  			const uTime = tickTime / 1e4;
  			this.mainProgram.setUniform1f("u_aspect", this.manualControl ? 1 : this.canvas.width / this.canvas.height);
  			this.mainProgram.setUniform1i("u_texture", 0);
 -			this.mainProgram.setUniform1f("u_volume", this.volume);
 -			this.mainProgram.setUniform1f("u_alpha", 1);
 -			const angle = (uTime + this.volume) * 2;
-+			this.mainProgram.setUniform1f("u_volume", breathVolume);
++			this.mainProgram.setUniform1f("u_volume", animatedBreathVolume);
 +			this.mainProgram.setUniform1f("u_alpha", compensatedAlpha);
-+			const angle = (uTime + this.volume) * 2 + this.rhythmKick;
++			const angle = uTime * 2 + (this.volume * 2 + this.rhythmKick) * rhythmRotationIntensity;
  			this.mainProgram.setUniform1f("u_sinAngle", Math.sin(angle));
  			this.mainProgram.setUniform1f("u_cosAngle", Math.cos(angle));
  			state.texture.bind();
-@@ -1337,7 +1379,12 @@ var MeshGradientRenderer = class extends BaseRenderer {
+@@ -1337,7 +1386,12 @@ var MeshGradientRenderer = class extends BaseRenderer {
  		this.paused = true;
  	}
  	resume() {
@@ -358,7 +374,7 @@ index 37bd9873e58044f0900c04c2ab80da5a6d29f16a..bae78eb616825260b5887cf005a68b81
  		this.requestTick();
  	}
  	async setAlbum(albumSource, isVideo) {
-@@ -1446,7 +1493,7 @@ var MeshGradientRenderer = class extends BaseRenderer {
+@@ -1446,7 +1500,7 @@ var MeshGradientRenderer = class extends BaseRenderer {
  		this.requestTick();
  	}
  	setLowFreqVolume(volume) {
@@ -367,7 +383,7 @@ index 37bd9873e58044f0900c04c2ab80da5a6d29f16a..bae78eb616825260b5887cf005a68b81
  	}
  	setHasLyric(_hasLyric) {}
  	dispose() {
-@@ -1905,9 +1952,13 @@ function optimizeLyricLines(lines, options) {
+@@ -1905,9 +1959,13 @@ function optimizeLyricLines(lines, options) {
  }
  //#endregion
  //#region src/lyric-player/dom/interlude-dots.ts
@@ -384,7 +400,7 @@ index 37bd9873e58044f0900c04c2ab80da5a6d29f16a..bae78eb616825260b5887cf005a68b81
  }
  function easeOutExpo(x) {
  	return x === 1 ? 1 : 1 - 2 ** (-10 * x);
-@@ -1960,19 +2011,36 @@ var InterludeDots = class {
+@@ -1960,19 +2018,36 @@ var InterludeDots = class {
  		if (this.currentInterlude) {
  			const interludeDuration = this.currentInterlude[1] - this.currentInterlude[0];
  			const currentDuration = this.currentTime - this.currentInterlude[0];
@@ -427,7 +443,7 @@ index 37bd9873e58044f0900c04c2ab80da5a6d29f16a..bae78eb616825260b5887cf005a68b81
  				const dot0Opacity = clamp(.25, currentDuration * 3 / dotsDuration * .75, 1);
  				const dot1Opacity = clamp(.25, (currentDuration - dotsDuration / 3) * 3 / dotsDuration * .75, 1);
  				const dot2Opacity = clamp(.25, (currentDuration - dotsDuration / 3 * 2) * 3 / dotsDuration * .75, 1);
-@@ -1980,7 +2048,7 @@ var InterludeDots = class {
+@@ -1980,7 +2055,7 @@ var InterludeDots = class {
  				this.dot1.style.opacity = `${clamp01(globalOpacity * dot1Opacity)}`;
  				this.dot2.style.opacity = `${clamp01(globalOpacity * dot2Opacity)}`;
  			} else {
@@ -436,7 +452,7 @@ index 37bd9873e58044f0900c04c2ab80da5a6d29f16a..bae78eb616825260b5887cf005a68b81
  				this.dot0.style.opacity = "0";
  				this.dot1.style.opacity = "0";
  				this.dot2.style.opacity = "0";
-@@ -3025,7 +3093,8 @@ var LyricPlayerBase = class extends EventTarget {
+@@ -3025,7 +3100,8 @@ var LyricPlayerBase = class extends EventTarget {
  	* @param force 是否绕过弹簧效果强制更新位置
  	*/
  	async calcLayout(sync = false, force = false) {

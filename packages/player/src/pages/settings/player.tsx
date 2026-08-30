@@ -78,7 +78,10 @@ import {
 	enableLoudnessNormalizationAtom,
 	enableMediaControlsAtom,
 	enableTaskbarLyricAtom,
+	LYRIC_BACKGROUND_ANIMATION_INTENSITY_MAX,
+	LYRIC_BACKGROUND_ANIMATION_INTENSITY_MIN,
 	languageAtom,
+	lyricBackgroundAnimationIntensityAtom,
 	showStatJSFrameAtom,
 	taskbarLyricAlignSettingAtom,
 	taskbarLyricModeSettingAtom,
@@ -283,21 +286,64 @@ function SliderSettings<T extends number | number[]>({
 	description,
 	configAtom,
 	children,
+	inlineValue = false,
 	...rest
 }: PropsWithChildren<{ configAtom: WritableAtom<T, [T], void> }> &
 	React.ComponentProps<typeof SettingEntry> &
-	Omit<SliderProps, "value" | "onValueChange">): ReactNode {
+	Omit<SliderProps, "value" | "onValueChange"> & {
+		inlineValue?: boolean;
+	}): ReactNode {
 	const [value, setValue] = useAtom(configAtom);
+	const sliderRef = React.useRef<React.ElementRef<typeof Slider>>(null);
+	const sliderValue = (typeof value === "number" ? [value] : value) as number[];
+	const sliderAriaLabel = rest["aria-label"];
+	useLayoutEffect(() => {
+		const thumbs =
+			sliderRef.current?.querySelectorAll<HTMLElement>('[role="slider"]');
+		thumbs?.forEach((thumb, index) => {
+			if (typeof sliderAriaLabel === "string" && sliderAriaLabel) {
+				thumb.setAttribute(
+					"aria-label",
+					thumbs.length > 1
+						? `${sliderAriaLabel} ${index + 1}`
+						: sliderAriaLabel,
+				);
+			}
+		});
+	}, [sliderAriaLabel]);
+	const slider = (
+		<Slider
+			ref={sliderRef}
+			value={sliderValue}
+			onValueChange={(v: number[]) =>
+				typeof value === "number" ? setValue(v[0] as T) : setValue(v as T)
+			}
+			{...rest}
+			style={
+				inlineValue
+					? {
+							width: "auto",
+							minWidth: 0,
+							flex: "1 1 0",
+							...rest.style,
+						}
+					: rest.style
+			}
+		/>
+	);
 	return (
 		<SettingEntry label={label} description={description}>
-			<Slider
-				value={typeof value === "number" ? [value] : value}
-				onValueChange={(v: number[]) =>
-					typeof value === "number" ? setValue(v[0] as T) : setValue(v as T)
-				}
-				{...rest}
-			/>
-			{children}
+			{inlineValue ? (
+				<Flex width="100%" minWidth="0" align="center" gap="2" wrap="nowrap">
+					{slider}
+					{children}
+				</Flex>
+			) : (
+				<>
+					{slider}
+					{children}
+				</>
+			)}
 		</SettingEntry>
 	);
 }
@@ -879,6 +925,35 @@ const LyricBackgroundSettings = () => {
 	const [cssBackgroundProperty, setCssBackgroundProperty] = useAtom(
 		cssBackgroundPropertyAtom,
 	);
+	const [backgroundAnimationIntensity, setBackgroundAnimationIntensity] =
+		useAtom(lyricBackgroundAnimationIntensityAtom);
+	const [
+		backgroundAnimationIntensityInput,
+		setBackgroundAnimationIntensityInput,
+	] = useState(() => String(backgroundAnimationIntensity));
+	useEffect(() => {
+		setBackgroundAnimationIntensityInput(String(backgroundAnimationIntensity));
+	}, [backgroundAnimationIntensity]);
+	const commitBackgroundAnimationIntensity = () => {
+		const input = backgroundAnimationIntensityInput.trim();
+		const parsed = Number(input);
+		if (!input || !Number.isFinite(parsed)) {
+			setBackgroundAnimationIntensityInput(
+				String(backgroundAnimationIntensity),
+			);
+			return;
+		}
+		const normalized = Math.min(
+			LYRIC_BACKGROUND_ANIMATION_INTENSITY_MAX,
+			Math.max(LYRIC_BACKGROUND_ANIMATION_INTENSITY_MIN, parsed),
+		);
+		setBackgroundAnimationIntensity(normalized);
+		setBackgroundAnimationIntensityInput(String(normalized));
+	};
+	const backgroundAnimationIntensityLabel = t(
+		"page.settings.lyricBackground.lyricBackgroundAnimationIntensity.label",
+		"节拍动画强度倍率",
+	);
 	const backgroundRendererMenu = useMemo(
 		() => [
 			{
@@ -1016,6 +1091,51 @@ const LyricBackgroundSettings = () => {
 						)}
 						configAtom={lyricBackgroundFPSAtom}
 					/>
+					{baseRendererString === "mesh" && (
+						<SliderSettings
+							label={backgroundAnimationIntensityLabel}
+							description={t(
+								"page.settings.lyricBackground.lyricBackgroundAnimationIntensity.description",
+								"调节网格渐变背景跟随音乐节拍的呼吸与旋转幅度。1× 保持当前效果，0× 关闭节拍响应，最高可调至 2×。",
+							)}
+							configAtom={lyricBackgroundAnimationIntensityAtom}
+							min={LYRIC_BACKGROUND_ANIMATION_INTENSITY_MIN}
+							max={LYRIC_BACKGROUND_ANIMATION_INTENSITY_MAX}
+							step={0.05}
+							inlineValue
+							aria-label={backgroundAnimationIntensityLabel}
+						>
+							<Flex
+								align="center"
+								gap="1"
+								wrap="nowrap"
+								style={{ flex: "0 0 auto", marginInlineStart: "auto" }}
+							>
+								<TextField.Root
+									type="number"
+									min={LYRIC_BACKGROUND_ANIMATION_INTENSITY_MIN}
+									max={LYRIC_BACKGROUND_ANIMATION_INTENSITY_MAX}
+									step={0.05}
+									value={backgroundAnimationIntensityInput}
+									aria-label={backgroundAnimationIntensityLabel}
+									onChange={(event) =>
+										setBackgroundAnimationIntensityInput(
+											event.currentTarget.value,
+										)
+									}
+									onBlur={commitBackgroundAnimationIntensity}
+									onKeyDown={(event) => {
+										if (event.key === "Enter") {
+											event.preventDefault();
+											event.currentTarget.blur();
+										}
+									}}
+									style={{ width: "5.5em" }}
+								/>
+								<Text wrap="nowrap">×</Text>
+							</Flex>
+						</SliderSettings>
+					)}
 					<NumberSettings
 						placeholder="1.0"
 						type="number"

@@ -343,6 +343,10 @@
 					"description": "對效能影響較高，但是實際開銷不大，如果遇到效能問題，可以嘗試降低此值。預設值為 60。",
 					"label": "背景最高幀數"
 				},
+				"lyricBackgroundAnimationIntensity": {
+					"description": "調整網格漸層背景跟隨音樂節拍的呼吸與旋轉幅度。1× 保持目前效果，0× 關閉節拍回應，最高可調至 2×。",
+					"label": "節拍動畫強度倍率"
+				},
 				"lyricBackgroundRenderScale": {
 					"description": "對效能影響較高，但是實際開銷不大，如果遇到效能問題，可以嘗試降低此值。預設值為 1 即每像素點渲染。",
 					"label": "背景渲染倍率"

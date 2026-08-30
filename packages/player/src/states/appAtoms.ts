@@ -22,6 +22,42 @@ export const darkModeAtom = atomWithStorage(
 	DarkMode.Auto,
 );
 
+export const LYRIC_BACKGROUND_ANIMATION_INTENSITY_MIN = 0;
+export const LYRIC_BACKGROUND_ANIMATION_INTENSITY_MAX = 2;
+export const LYRIC_BACKGROUND_ANIMATION_INTENSITY_DEFAULT = 1;
+
+export function normalizeLyricBackgroundAnimationIntensity(
+	value: number,
+): number {
+	if (!Number.isFinite(value)) {
+		return LYRIC_BACKGROUND_ANIMATION_INTENSITY_DEFAULT;
+	}
+	return Math.min(
+		LYRIC_BACKGROUND_ANIMATION_INTENSITY_MAX,
+		Math.max(LYRIC_BACKGROUND_ANIMATION_INTENSITY_MIN, value),
+	);
+}
+
+const lyricBackgroundAnimationIntensityStorageAtom = atomWithStorage<number>(
+	"amll-player.lyricBackgroundAnimationIntensity",
+	LYRIC_BACKGROUND_ANIMATION_INTENSITY_DEFAULT,
+	undefined,
+	{ getOnInit: true },
+);
+
+export const lyricBackgroundAnimationIntensityAtom = atom(
+	(get) =>
+		normalizeLyricBackgroundAnimationIntensity(
+			get(lyricBackgroundAnimationIntensityStorageAtom),
+		),
+	(_get, set, value: number) => {
+		set(
+			lyricBackgroundAnimationIntensityStorageAtom,
+			normalizeLyricBackgroundAnimationIntensity(value),
+		);
+	},
+);
+
 export const musicContextModeAtom = atomWithStorage(
 	"amll-player.musicContextMode",
 	MusicContextMode.Local,

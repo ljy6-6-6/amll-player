@@ -27,7 +27,10 @@ import {
 	useRef,
 	useState,
 } from "react";
-import { musicTimelineJumpAtom } from "../../states/appAtoms.ts";
+import {
+	lyricBackgroundAnimationIntensityAtom,
+	musicTimelineJumpAtom,
+} from "../../states/appAtoms.ts";
 import {
 	db,
 	type SongBackgroundOverride,
@@ -148,8 +151,15 @@ export const SongVideoBackground: FC = () => {
 	const renderScale = useAtomValue(lyricBackgroundRenderScaleAtom);
 	const staticMode = useAtomValue(lyricBackgroundStaticModeAtom);
 	const lowFreqVolume = useAtomValue(lowFreqVolumeAtom);
+	const backgroundAnimationIntensity = useAtomValue(
+		lyricBackgroundAnimationIntensityAtom,
+	);
 	const pageVisible = usePageVisibility();
 	const reducedMotion = useReducedMotion();
+
+	useEffect(() => {
+		MeshGradientRenderer.setRhythmVisualIntensity(backgroundAnimationIntensity);
+	}, [backgroundAnimationIntensity]);
 
 	const videoRef = useRef<HTMLVideoElement>(null);
 	const activeMediaKeyRef = useRef<string | null>(null);

@@ -343,6 +343,10 @@
 					"description": "Có ảnh hưởng đến hiệu suất, nhưng thực tế không lớn. Nếu gặp vấn đề về hiệu suất, có thể cân nhắc giảm giá trị này. Mặc định là 60.",
 					"label": "Tần suất khung hình cao nhất"
 				},
+				"lyricBackgroundAnimationIntensity": {
+					"description": "Điều chỉnh mức độ nền chuyển sắc dạng lưới co giãn và xoay theo nhịp nhạc. 1× giữ nguyên hiệu ứng hiện tại, 0× tắt phản ứng theo nhịp và tối đa là 2×.",
+					"label": "Hệ số cường độ hoạt ảnh theo nhịp"
+				},
 				"lyricBackgroundRenderScale": {
 					"description": "Có ảnh hưởng đến hiệu suất, nhưng thực tế không lớn. Nếu gặp vấn đề về hiệu suất, có thể cân nhắc giảm giá trị này. Mặc định là 1, tức là hiển thị mỗi khung hình một lần.",
 					"label": "Tỷ lệ hiển thị nền"

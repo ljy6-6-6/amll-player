@@ -2168,6 +2168,7 @@ test("长帧恢复只推进一个有限视觉步长，不追赶未显示的动�
 function createMeshHarness() {
 	const noop = () => {};
 	const uniforms = new Map();
+	MeshGradientRenderer.setRhythmVisualIntensity(1);
 	MeshGradientRenderer.setRhythmVisualSignal(0, 0);
 	const gl = {
 		ARRAY_BUFFER: 0x8892,
@@ -2239,18 +2240,34 @@ function createMeshHarness() {
 
 	return {
 		renderer,
-		step(timeMs, deltaMs, { breath = 0, strongBeat = 0, rawBass = 0 } = {}) {
+		step(
+			timeMs,
+			deltaMs,
+			{ breath = 0, strongBeat = 0, rawBass = 0, intensity = 1 } = {},
+		) {
+			MeshGradientRenderer.setRhythmVisualIntensity(intensity);
 			MeshGradientRenderer.setRhythmVisualSignal(breath, strongBeat);
 			renderer.setLowFreqVolume(rawBass);
 			renderer.onRedraw(timeMs, deltaMs);
 			const renderedBreath = uniforms.get("u_volume") ?? 0;
 			const alpha = uniforms.get("u_alpha") ?? 1;
 			const kick = renderer.rhythmKick;
-			const expectedAngle = (timeMs / 1e4 + renderer.volume) * 2 + kick;
+			const safeIntensity = Number.isFinite(intensity)
+				? Math.min(2, Math.max(0, intensity))
+				: 1;
+			const ambientAngle = (timeMs / 1e4) * 2;
+			const expectedAngle =
+				ambientAngle + (renderer.volume * 2 + kick) * safeIntensity * 1.5;
 			const sinAngle = uniforms.get("u_sinAngle");
 			const cosAngle = uniforms.get("u_cosAngle");
+			const actualAngle =
+				typeof sinAngle === "number" && typeof cosAngle === "number"
+					? Math.atan2(sinAngle, cosAngle)
+					: Number.NaN;
 			return {
 				alpha,
+				ambientAngle,
+				angle: actualAngle,
 				angleUniformError:
 					typeof sinAngle === "number" && typeof cosAngle === "number"
 						? Math.max(
@@ -2268,6 +2285,59 @@ function createMeshHarness() {
 		},
 	};
 }
+
+test("歌词背景动画强度倍率保持呼吸基准并将旋转基准提升至 150%", () => {
+	const sample = (intensity) => {
+		const harness = createMeshHarness();
+		harness.step(0, 0, {
+			breath: 0.4,
+			strongBeat: 1,
+			rawBass: 1,
+			intensity,
+		});
+		return harness.step(16, 16, {
+			breath: 0.4,
+			strongBeat: 0,
+			rawBass: 1,
+			intensity,
+		});
+	};
+
+	const disabled = sample(0);
+	const gentle = sample(0.5);
+	const normal = sample(1);
+	const strong = sample(2);
+	const negative = sample(-10);
+	const excessive = sample(10);
+	const invalid = sample(Number.NaN);
+	const beatRotation = (result) => result.angle - result.ambientAngle;
+
+	assert.equal(disabled.breath, 0);
+	assert.equal(beatRotation(disabled), 0);
+	assert.ok(normal.breath > 0);
+	assert.ok(beatRotation(normal) > 0);
+	assert.ok(
+		Math.abs(
+			beatRotation(normal) - (normal.rawBassVolume * 2 + normal.kick) * 1.5,
+		) < 1e-12,
+	);
+	assert.ok(Math.abs(gentle.breath - normal.breath * 0.5) < 1e-12);
+	assert.ok(Math.abs(strong.breath - normal.breath * 2) < 1e-12);
+	assert.ok(
+		Math.abs(beatRotation(gentle) - beatRotation(normal) * 0.5) < 1e-12,
+	);
+	assert.ok(Math.abs(beatRotation(strong) - beatRotation(normal) * 2) < 1e-12);
+	assert.equal(negative.breath, disabled.breath);
+	assert.equal(beatRotation(negative), beatRotation(disabled));
+	assert.equal(excessive.breath, strong.breath);
+	assert.equal(beatRotation(excessive), beatRotation(strong));
+	assert.equal(invalid.breath, normal.breath);
+	assert.equal(beatRotation(invalid), beatRotation(normal));
+	for (const result of [disabled, gentle, normal, strong]) {
+		assert.ok(Math.abs(result.brightness - 1) < 1e-12);
+		assert.ok(result.angleUniformError < 1e-12);
+	}
+});
 
 test("真实 Mesh 的 resume 只重置当前实例的重拍边沿", () => {
 	const resumed = createMeshHarness();
@@ -2820,7 +2890,7 @@ test("弱强拍冲量用更长预滚缓慢起势，极重拍保持锐利前冲",
 	);
 });
 
-test("原作者低频旋转保持原公式，并与呼吸、极重拍冲量独立叠加", () => {
+test("原作者低频输入保持原公式，旋转基准提升 50% 后与呼吸、极重拍冲量独立叠加", () => {
 	const baseHarness = createMeshHarness();
 	const base = baseHarness.step(1_000, 16, { breath: 0.4 });
 	const bassHarness = createMeshHarness();
@@ -2839,8 +2909,8 @@ test("原作者低频旋转保持原公式，并与呼吸、极重拍冲量独�
 		"原低频 volume / 10 被改变",
 	);
 	assert.ok(
-		Math.abs(bassAngle - baseAngle - 0.16) < 1e-12,
-		`原低频 (uTime + volume) * 2 增量为 ${bassAngle - baseAngle}`,
+		Math.abs(bassAngle - baseAngle - 0.24) < 1e-12,
+		`原低频旋转的 1.5 倍增量为 ${bassAngle - baseAngle}`,
 	);
 	assert.ok(combined.kick > 0, "极重拍冲量未叠加到原低频角度");
 	assert.ok(
@@ -3068,7 +3138,7 @@ test("重新打开歌词页会沿用当前节奏状态而不是先硬切静音",
 	assert.doesNotMatch(source, /let lastMusicId = ["']{2}/);
 });
 
-test("播放器实际挂载原低频桥，并把呼吸与极重拍接入 Mesh", () => {
+test("播放器挂载低频桥，并独立同步 Mesh 节拍信号与强度倍率", () => {
 	const visualSource = readFileSync(
 		new URL(
 			"../src/components/LocalMusicContext/rhythm-visual.tsx",
@@ -3080,6 +3150,10 @@ test("播放器实际挂载原低频桥，并把呼吸与极重拍接入 Mesh", 
 		new URL("../src/components/LocalMusicContext/index.tsx", import.meta.url),
 		"utf8",
 	);
+	const videoBackgroundSource = readFileSync(
+		new URL("../src/components/SongVideoBackground/index.tsx", import.meta.url),
+		"utf8",
+	);
 	assert.match(
 		visualSource,
 		/MeshGradientRenderer\.setRhythmVisualSignal\(\s*Math\.max\(SILENT_RHYTHM_VOLUME, smoothedValue\),\s*strongBeatTarget,?\s*\)/,
@@ -3089,6 +3163,98 @@ test("播放器实际挂载原低频桥，并把呼吸与极重拍接入 Mesh", 
 		/MeshGradientRenderer\.setRhythmVisualSignal\(0, 0\)/,
 	);
 	assert.match(contextSource, /<FFTToLowPassContext\s*\/>/);
+	assert.match(
+		videoBackgroundSource,
+		/const backgroundAnimationIntensity = useAtomValue\(\s*lyricBackgroundAnimationIntensityAtom,?\s*\)/,
+	);
+	assert.match(
+		videoBackgroundSource,
+		/useEffect\(\(\) => \{\s*MeshGradientRenderer\.setRhythmVisualIntensity\(\s*backgroundAnimationIntensity,?\s*\);\s*\}, \[backgroundAnimationIntensity\]\)/,
+	);
+});
+
+test("歌词背景设置持久化并限制动画强度倍率", () => {
+	const atomsSource = readFileSync(
+		new URL("../src/states/appAtoms.ts", import.meta.url),
+		"utf8",
+	);
+	const settingsSource = readFileSync(
+		new URL("../src/pages/settings/player.tsx", import.meta.url),
+		"utf8",
+	);
+
+	assert.match(atomsSource, /LYRIC_BACKGROUND_ANIMATION_INTENSITY_MIN = 0/);
+	assert.match(atomsSource, /LYRIC_BACKGROUND_ANIMATION_INTENSITY_MAX = 2/);
+	assert.match(atomsSource, /LYRIC_BACKGROUND_ANIMATION_INTENSITY_DEFAULT = 1/);
+	assert.match(atomsSource, /"amll-player\.lyricBackgroundAnimationIntensity"/);
+	assert.match(
+		atomsSource,
+		/Number\.isFinite\(value\)[\s\S]*?Math\.min\([\s\S]*?LYRIC_BACKGROUND_ANIMATION_INTENSITY_MAX[\s\S]*?Math\.max\(LYRIC_BACKGROUND_ANIMATION_INTENSITY_MIN, value\)/,
+	);
+	assert.match(
+		settingsSource,
+		/baseRendererString === "mesh"[\s\S]*?<SliderSettings[\s\S]*?configAtom=\{lyricBackgroundAnimationIntensityAtom\}[\s\S]*?step=\{0\.05\}/,
+	);
+	const fpsIndex = settingsSource.indexOf(
+		"configAtom={lyricBackgroundFPSAtom}",
+	);
+	const intensityIndex = settingsSource.indexOf(
+		"configAtom={lyricBackgroundAnimationIntensityAtom}",
+	);
+	const renderScaleIndex = settingsSource.indexOf(
+		"configAtom={lyricBackgroundRenderScaleAtom}",
+	);
+	assert.ok(fpsIndex >= 0 && fpsIndex < intensityIndex);
+	assert.ok(intensityIndex < renderScaleIndex);
+
+	for (const locale of ["en-US", "ja-JP", "vi-VN", "zh-CN", "zh-TW"]) {
+		const translations = JSON.parse(
+			readFileSync(
+				new URL(`../locales/${locale}/translation.json`, import.meta.url),
+				"utf8",
+			),
+		);
+		const entry =
+			translations.page.settings.lyricBackground
+				.lyricBackgroundAnimationIntensity;
+		assert.equal(typeof entry?.label, "string", `${locale} 缺少倍率标签`);
+		assert.equal(typeof entry?.description, "string", `${locale} 缺少倍率说明`);
+		assert.ok(entry.label.length > 0 && entry.description.length > 0);
+	}
+});
+
+test("节拍动画倍率输入框与滑杆组成同一行的右对齐控制组", () => {
+	const settingsSource = readFileSync(
+		new URL("../src/pages/settings/player.tsx", import.meta.url),
+		"utf8",
+	);
+	assert.match(
+		settingsSource,
+		/<Flex width="100%" minWidth="0" align="center" gap="2" wrap="nowrap">[\s\S]*?\{slider\}[\s\S]*?\{children\}/,
+	);
+	assert.match(
+		settingsSource,
+		/style=\{\{ flex: "0 0 auto", marginInlineStart: "auto" \}\}/,
+	);
+	assert.match(
+		settingsSource,
+		/configAtom=\{lyricBackgroundAnimationIntensityAtom\}[\s\S]*?inlineValue/,
+	);
+	assert.match(
+		settingsSource,
+		/querySelectorAll<HTMLElement>\('\[role="slider"\]'\)[\s\S]*?setAttribute\([\s\S]*?"aria-label"/,
+		"实际的滑杆 Thumb 必须获得无障碍名称",
+	);
+	assert.doesNotMatch(
+		settingsSource,
+		/thumb\.removeAttribute\("aria-label"\)/,
+		"没有自定义名称时必须保留 Radix 双滑块自带的无障碍名称",
+	);
+	assert.match(
+		settingsSource,
+		/value=\{backgroundAnimationIntensityInput\}[\s\S]*?onBlur=\{commitBackgroundAnimationIntensity\}/,
+		"数值框应保留小数输入草稿并在失焦时提交",
+	);
 });
 
 test("安装后的 Mesh 补丁使用低频、呼吸、极重拍三通道和亮度补偿", () => {
@@ -3099,6 +3265,11 @@ test("安装后的 Mesh 补丁使用低频、呼吸、极重拍三通道和亮�
 				import.meta.url,
 			),
 			"utf8",
+		);
+		assert.match(source, /static setRhythmVisualIntensity\(intensity = 1\) \{/);
+		assert.match(
+			source,
+			/MeshGradientRenderer\.rhythmVisualIntensity = Number\.isFinite\(intensity\) \? Math\.min\(2, Math\.max\(0, intensity\)\) : 1/,
 		);
 		assert.match(
 			source,
@@ -3142,7 +3313,15 @@ test("安装后的 Mesh 补丁使用低频、呼吸、极重拍三通道和亮�
 		assert.match(source, /this\.onRedraw\(this\.frameTime, safeFrameDelta\)/);
 		assert.match(source, /const deltaFactor = safeDelta \/ 500/);
 		assert.match(source, /u_cosAngle \* centeredUV\.x/);
-		assert.match(source, /"u_volume", breathVolume/);
+		assert.match(
+			source,
+			/const animatedBreathVolume = Math\.min\(\.4, breathVolume \* rhythmVisualIntensity\)/,
+		);
+		assert.match(
+			source,
+			/const rhythmRotationIntensity = rhythmVisualIntensity \* 1\.5/,
+		);
+		assert.match(source, /"u_volume", animatedBreathVolume/);
 		assert.match(source, /"u_alpha", compensatedAlpha/);
 		assert.match(
 			source,
@@ -3152,7 +3331,7 @@ test("安装后的 Mesh 补丁使用低频、呼吸、极重拍三通道和亮�
 		assert.match(source, /const breathVolume = combinedBreath <= \.16/);
 		assert.match(
 			source,
-			/const angle = \(uTime \+ this\.volume\) \* 2 \+ this\.rhythmKick/,
+			/const angle = uTime \* 2 \+ \(this\.volume \* 2 \+ this\.rhythmKick\) \* rhythmRotationIntensity/,
 		);
 		assert.match(
 			source,
@@ -3178,8 +3357,13 @@ test("安装后的 Mesh 补丁使用低频、呼吸、极重拍三通道和亮�
 		);
 		assert.match(
 			source,
+			/static setRhythmVisualIntensity\(intensity\?: number\): void;/,
+			`${fileName} 缺少强度倍率静态 API 类型`,
+		);
+		assert.match(
+			source,
 			/static setRhythmVisualSignal\(breath: number, heavyBeat: number\): void;/,
-			`${fileName} 缺少三通道静态 API 类型`,
+			`${fileName} 缺少节拍信号静态 API 类型`,
 		);
 	}
 });

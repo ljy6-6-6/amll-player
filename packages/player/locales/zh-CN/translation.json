@@ -343,6 +343,10 @@
 					"description": "对性能影响较高，但是实际开销不大，如果遇到性能问题，可以尝试降低此值。默认值为 60。",
 					"label": "背景最高帧数"
 				},
+				"lyricBackgroundAnimationIntensity": {
+					"description": "调节网格渐变背景跟随音乐节拍的呼吸与旋转幅度。1× 保持当前效果，0× 关闭节拍响应，最高可调至 2×。",
+					"label": "节拍动画强度倍率"
+				},
 				"lyricBackgroundRenderScale": {
 					"description": "对性能影响较高，但是实际开销不大，如果遇到性能问题，可以尝试降低此值。默认值为 1 即每像素点渲染。",
 					"label": "背景渲染倍率"
