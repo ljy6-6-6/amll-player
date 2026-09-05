@@ -163,6 +163,7 @@ struct TaskbarLyricVisibilityState {
     generation: u64,
     layout_ready: bool,
     page_ready: bool,
+    show_pending: bool,
     shown: bool,
     layout_retry_count: u8,
     layout_retry_pending: bool,
@@ -223,6 +224,7 @@ impl TaskbarLyricVisibility {
         }
         state.layout_ready = false;
         state.page_ready = false;
+        state.show_pending = false;
         state.shown = false;
         state.layout_retry_count = 0;
         state.layout_retry_pending = false;
@@ -427,10 +429,10 @@ impl TaskbarLyricVisibility {
     }
 
     fn take_show_request(state: &mut TaskbarLyricVisibilityState) -> bool {
-        if !state.layout_ready || !state.page_ready || state.shown {
+        if !state.layout_ready || !state.page_ready || state.show_pending || state.shown {
             return false;
         }
-        state.shown = true;
+        state.show_pending = true;
         true
     }
 
@@ -439,6 +441,7 @@ impl TaskbarLyricVisibility {
         if state.generation != generation {
             return TaskbarShowFailureAction::Stale;
         }
+        state.show_pending = false;
         state.shown = false;
         state.layout_ready = false;
         state.layout_retry_count = 0;
@@ -456,6 +459,8 @@ impl TaskbarLyricVisibility {
         if state.generation != generation {
             return false;
         }
+        state.show_pending = false;
+        state.shown = true;
         state.show_retry_count = 0;
         true
     }
