@@ -178,6 +178,11 @@ export const enableTaskbarLyricAtom = atomWithStorage(
 	false,
 );
 
+export const taskbarLyricWordProgressAtom = atomWithStorage(
+	"amll-player.taskbarLyricWordProgress",
+	false,
+);
+
 export const audioQualityDialogOpenedAtom = atom(false);
 
 export const taskbarLyricThemeSettingAtom = atomWithStorage<

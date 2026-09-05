@@ -1,4 +1,5 @@
 import {
+	lyricWordFadeWidthAtom,
 	musicAlbumNameAtom,
 	musicArtistsAtom,
 	musicCoverAtom,
@@ -21,6 +22,7 @@ import {
 	taskbarLyricAlignSettingAtom,
 	taskbarLyricModeSettingAtom,
 	taskbarLyricThemeSettingAtom,
+	taskbarLyricWordProgressAtom,
 } from "../../states/appAtoms";
 import {
 	ALIGN_EVENT,
@@ -38,7 +40,9 @@ import {
 	type TaskbarLyricPlayStatusPayload,
 	type TaskbarLyricPositionPayload,
 	type TaskbarLyricThemePayload,
+	type TaskbarLyricWordProgressPayload,
 	THEME_EVENT,
+	WORD_PROGRESS_EVENT,
 } from "./types";
 
 export const TaskbarLyricBridge: FC = () => {
@@ -60,6 +64,8 @@ export const TaskbarLyricBridge: FC = () => {
 	const taskbarLyricTheme = useAtomValue(taskbarLyricThemeSettingAtom);
 	const taskbarLyricAlign = useAtomValue(taskbarLyricAlignSettingAtom);
 	const taskbarLyricMode = useAtomValue(taskbarLyricModeSettingAtom);
+	const taskbarLyricWordProgress = useAtomValue(taskbarLyricWordProgressAtom);
+	const lyricWordFadeWidth = useAtomValue(lyricWordFadeWidthAtom);
 
 	const stateCache = useRef({
 		metadata: {} as TaskbarLyricMetadataPayload,
@@ -68,6 +74,10 @@ export const TaskbarLyricBridge: FC = () => {
 		theme: { theme: "auto" } as TaskbarLyricThemePayload,
 		align: { align: "auto" } as TaskbarLyricAlignmentPayload,
 		mode: { mode: "auto" } as TaskbarLyricModePayload,
+		wordProgress: {
+			enabled: false,
+			fadeWidth: 0.5,
+		} as TaskbarLyricWordProgressPayload,
 	});
 
 	useEffect(() => {
@@ -136,6 +146,16 @@ export const TaskbarLyricBridge: FC = () => {
 	}, [taskbarLyricMode]);
 
 	useEffect(() => {
+		stateCache.current.wordProgress = {
+			enabled: taskbarLyricWordProgress,
+			fadeWidth: lyricWordFadeWidth,
+		};
+		emit(WORD_PROGRESS_EVENT, stateCache.current.wordProgress).catch(
+			console.error,
+		);
+	}, [lyricWordFadeWidth, taskbarLyricWordProgress]);
+
+	useEffect(() => {
 		const unlistenRequest = listen(REQUEST_UPDATE_EVENT, () => {
 			if (stateCache.current.metadata.musicName !== undefined) {
 				emit(METADATA_EVENT, stateCache.current.metadata).catch(console.error);
@@ -146,6 +166,9 @@ export const TaskbarLyricBridge: FC = () => {
 				emit(THEME_EVENT, stateCache.current.theme).catch(console.error);
 				emit(ALIGN_EVENT, stateCache.current.align).catch(console.error);
 				emit(MODE_EVENT, stateCache.current.mode).catch(console.error);
+				emit(WORD_PROGRESS_EVENT, stateCache.current.wordProgress).catch(
+					console.error,
+				);
 			}
 		});
 
