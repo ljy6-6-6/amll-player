@@ -5,6 +5,11 @@ import { atomWithStorage } from "jotai/utils";
 import i18n from "../i18n";
 import type { RhythmAnalysis } from "../utils/db-client.ts";
 import type { PlayQueueManager } from "../utils/play-queue-manager.ts";
+import {
+	DEFAULT_WINDOW_CLOSE_BEHAVIOR,
+	normalizeWindowCloseBehavior,
+	type WindowCloseBehaviorMode,
+} from "../utils/window-lifecycle.ts";
 
 export enum DarkMode {
 	Auto = "auto",
@@ -85,6 +90,20 @@ export const enableGaplessPlaybackAtom = atomWithStorage(
 	false,
 	undefined,
 	{ getOnInit: true },
+);
+
+const windowCloseBehaviorStorageAtom = atomWithStorage<unknown>(
+	"amll-player.windowCloseBehavior",
+	DEFAULT_WINDOW_CLOSE_BEHAVIOR,
+	undefined,
+	{ getOnInit: true },
+);
+
+export const windowCloseBehaviorAtom = atom(
+	(get) => normalizeWindowCloseBehavior(get(windowCloseBehaviorStorageAtom)),
+	(_get, set, value: WindowCloseBehaviorMode) => {
+		set(windowCloseBehaviorStorageAtom, normalizeWindowCloseBehavior(value));
+	},
 );
 
 export const enableMediaControlsAtom = atom(

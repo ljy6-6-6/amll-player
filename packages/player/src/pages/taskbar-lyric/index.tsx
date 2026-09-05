@@ -49,6 +49,11 @@ import {
 import styles from "./index.module.css";
 import "@applemusic-like-lyrics/react-full/style.css";
 import {
+	CMD_SHOW_MAIN_WINDOW_FROM_BACKGROUND,
+	isTaskbarRestoreClick,
+	type RestorePointerPosition,
+} from "../../utils/window-lifecycle.ts";
+import {
 	hasPointerMoved,
 	isPointerOutsideRect,
 	type PointerPosition,
@@ -105,7 +110,11 @@ const PlaybackControls = ({
 }: PlaybackControlsProps) => {
 	const isInteractive = Boolean(enabled && onPrev && onTogglePlay && onNext);
 	return (
-		<div ref={panelRef} className={styles.controlsPanel}>
+		<div
+			ref={panelRef}
+			className={styles.controlsPanel}
+			data-taskbar-lyric-control=""
+		>
 			<MediaButton
 				className={styles.controlBtn}
 				disabled={!isInteractive}
@@ -303,6 +312,7 @@ export const TaskbarLyricApp = () => {
 	const collapsedProbeRef = useRef<HTMLDivElement>(null);
 	const expandedProbeRef = useRef<HTMLDivElement>(null);
 	const controlsProbeRef = useRef<HTMLDivElement>(null);
+	const restorePointerRef = useRef<RestorePointerPosition | null>(null);
 	const [layoutExtents, setLayoutExtents] = useState<LayoutExtents | null>(
 		null,
 	);
@@ -1071,6 +1081,55 @@ export const TaskbarLyricApp = () => {
 		emit(CTRL_NEXT_EVENT).catch(console.error);
 	};
 
+	const handleRestorePointerDown = useCallback(
+		(event: React.PointerEvent<HTMLDivElement>) => {
+			restorePointerRef.current = null;
+			if (event.button !== 0) return;
+			const target = event.target;
+			if (
+				target instanceof Element &&
+				target.closest("[data-taskbar-lyric-control]")
+			) {
+				return;
+			}
+			restorePointerRef.current = {
+				pointerId: event.pointerId,
+				x: event.clientX,
+				y: event.clientY,
+			};
+		},
+		[],
+	);
+
+	const handleRestorePointerUp = useCallback(
+		(event: React.PointerEvent<HTMLDivElement>) => {
+			const start = restorePointerRef.current;
+			restorePointerRef.current = null;
+			const target = event.target;
+			const blocked =
+				event.button !== 0 ||
+				(target instanceof Element &&
+					Boolean(target.closest("[data-taskbar-lyric-control]")));
+			if (
+				!isTaskbarRestoreClick(
+					start,
+					{
+						pointerId: event.pointerId,
+						x: event.clientX,
+						y: event.clientY,
+					},
+					blocked,
+				)
+			) {
+				return;
+			}
+			void invoke(CMD_SHOW_MAIN_WINDOW_FROM_BACKGROUND).catch((error) => {
+				console.error("显示播放器窗口失败", error);
+			});
+		},
+		[],
+	);
+
 	useEffect(() => {
 		const disableContextMenu = (e: MouseEvent) => {
 			e.preventDefault();
@@ -1215,6 +1274,14 @@ export const TaskbarLyricApp = () => {
 				initial={false}
 				animate={containerSizeAnimation}
 				transition={HOVER_LAYOUT_TRANSITION}
+				onPointerDown={handleRestorePointerDown}
+				onPointerUp={handleRestorePointerUp}
+				onPointerCancel={() => {
+					restorePointerRef.current = null;
+				}}
+				onPointerLeave={() => {
+					restorePointerRef.current = null;
+				}}
 				onMouseEnter={() => {
 					if (!hoverArmedRef.current && !isHoveredRef.current) return;
 					setClickInterception(true);

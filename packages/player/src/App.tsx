@@ -15,7 +15,9 @@ import { NowPlayingBar } from "./components/NowPlayingBar/index.tsx";
 import { ShotcutContext } from "./components/ShotcutContext/index.tsx";
 import { TaskbarLyricBridge } from "./components/TaskbarLyricBridge/index.tsx";
 import { ThemeManager } from "./components/ThemeManager/index.tsx";
+import { TrayBridge } from "./components/TrayBridge/index.tsx";
 import { UpdateContext } from "./components/UpdateContext/index.tsx";
+import { WindowCloseBehavior } from "./components/WindowCloseBehavior/index.tsx";
 import { WSProtocolMusicContext } from "./components/WSProtocolMusicContext/index.tsx";
 import { useMigration } from "./hooks/useMigration.ts";
 import { enableTaskbarLyricAtom } from "./states/appAtoms.ts";
@@ -55,10 +57,12 @@ function App() {
 	return (
 		<>
 			{/* 上下文组件均不建议被 StrictMode 包含，以免重复加载扩展程序发生问题  */}
+			<WindowCloseBehavior />
 			{showStatJSFrame && <StatsComponent />}
 			{musicContextMode === MusicContextMode.Local && (
 				<LocalMusicContext key={MusicContextMode.Local} />
 			)}
+			<TrayBridge />
 			{enableTaskbarLyric && <TaskbarLyricBridge />}
 			{musicContextMode === MusicContextMode.WSProtocol && (
 				<WSProtocolMusicContext

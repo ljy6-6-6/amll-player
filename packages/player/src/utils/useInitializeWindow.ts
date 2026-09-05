@@ -5,6 +5,7 @@ import { useStore } from "jotai";
 import { useEffect, useRef } from "react";
 import semverGt from "semver/functions/gt";
 import { hasBackgroundAtom } from "../states/appAtoms";
+import { CMD_SHOW_MAIN_WINDOW_FROM_BACKGROUND } from "./window-lifecycle.ts";
 
 const waitForCommittedFrames = () =>
 	new Promise<void>((resolve) => {
@@ -52,8 +53,7 @@ export const useInitializeWindow = () => {
 						await invoke("present_main_window");
 					} catch (err) {
 						console.error("原生窗口呈现失败，回退到普通显示:", err);
-						await appWindow.show();
-						await appWindow.setFocus();
+						await invoke(CMD_SHOW_MAIN_WINDOW_FROM_BACKGROUND);
 					}
 				} else {
 					await appWindow.show();

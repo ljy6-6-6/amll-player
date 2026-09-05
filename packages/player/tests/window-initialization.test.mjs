@@ -17,6 +17,10 @@ test("Windows 主窗口只在前端首帧后执行一次原生呈现", () => {
 		/requestAnimationFrame\(\(\) => \{[\s\S]*requestAnimationFrame\(finish\)/,
 	);
 	assert.match(initialization, /invoke\("present_main_window"\)/);
+	assert.match(
+		initialization,
+		/catch \(err\) \{[\s\S]*CMD_SHOW_MAIN_WINDOW_FROM_BACKGROUND/,
+	);
 	assert.doesNotMatch(initialization, /appWindow\.(?:unmaximize|maximize)\(/);
 });
 
@@ -50,6 +54,10 @@ test("最终呈现按最大化意图原子显示并校准 WebView 客户区", ()
 		/should_fullscreen[\s\S]*restore_state\(StateFlags::FULLSCREEN\)/,
 	);
 	assert.match(nativeWindow, /revealed\.swap\(true, Ordering::AcqRel\)/);
+	assert.match(
+		nativeWindow,
+		/presentation\.presenting\.store\(false, Ordering::Release\);[\s\S]*reconcile_background_restore_entry\(&app\);[\s\S]*result/,
+	);
 });
 
 test("工作线程等待 WebView 尺寸落地后重建透明窗口表面", () => {

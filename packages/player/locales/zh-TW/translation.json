@@ -23,6 +23,12 @@
 			"toggleLyrics": "顯示歌詞",
 			"windowAlwaysOnTop": "窗口置顶"
 		},
+		"tray": {
+			"exit": "結束",
+			"pause": "暫停",
+			"showWindow": "顯示視窗",
+			"taskbarLyric": "工作列歌詞"
+		},
 		"loadAudioError": "播放後端加載音頻失敗\n{error}",
 		"migrationDialog": {
 			"completedDesc": "成功匯入 {count} 項資料。",
@@ -292,6 +298,15 @@
 				"windowAlwaysOnTop": {
 					"description": "将应用窗口设置为始终置顶",
 					"label": "启用窗口置顶"
+				},
+				"windowCloseBehavior": {
+					"description": "選擇關閉時播放器是否最小化到工作列系統匣",
+					"label": "關閉選項",
+					"menu": {
+						"alwaysMinimize": "一律最小化",
+						"exit": "直接退出",
+						"minimizeWhenPlaying": "播放時最小化"
+					}
 				}
 			},
 			"lyricAppearance": {

@@ -23,6 +23,12 @@
 			"toggleLyrics": "Lyrics",
 			"windowAlwaysOnTop": "窗口置顶"
 		},
+		"tray": {
+			"exit": "Exit",
+			"pause": "Pause",
+			"showWindow": "Show window",
+			"taskbarLyric": "Taskbar lyrics"
+		},
 		"loadAudioError": "The player backend encountered an error when loading the audio file:\n{error}",
 		"migrationDialog": {
 			"completedDesc": "Successfully imported {count} items.",
@@ -292,6 +298,15 @@
 				"windowAlwaysOnTop": {
 					"description": "将应用窗口设置为始终置顶",
 					"label": "启用窗口置顶"
+				},
+				"windowCloseBehavior": {
+					"description": "Choose whether the player minimizes to the system tray when closed.",
+					"label": "Close behavior",
+					"menu": {
+						"alwaysMinimize": "Always minimize to tray",
+						"exit": "Exit immediately",
+						"minimizeWhenPlaying": "Minimize while playing"
+					}
 				}
 			},
 			"lyricAppearance": {

@@ -88,8 +88,15 @@ import {
 	taskbarLyricThemeSettingAtom,
 	taskbarLyricWordProgressAtom,
 	updateInfoAtom,
+	windowCloseBehaviorAtom,
 } from "../../states/appAtoms.ts";
 import { restartApp } from "../../utils/player.ts";
+import {
+	WINDOW_CLOSE_BEHAVIOR_ALWAYS_MINIMIZE,
+	WINDOW_CLOSE_BEHAVIOR_EXIT,
+	WINDOW_CLOSE_BEHAVIOR_MINIMIZE_WHEN_PLAYING,
+	type WindowCloseBehaviorMode,
+} from "../../utils/window-lifecycle.ts";
 import { HomeBackgroundSettings } from "./home-background.tsx";
 import styles from "./index.module.css";
 
@@ -353,6 +360,9 @@ const GeneralSettings = () => {
 	const { t } = useTranslation();
 	const [mode, setMode] = useAtom(darkModeAtom);
 	const [language, setLanguage] = useAtom(languageAtom);
+	const [windowCloseBehavior, setWindowCloseBehavior] = useAtom(
+		windowCloseBehaviorAtom,
+	);
 	const supportedLanguages = useAtomValue(availableLanguagesAtom);
 	const [os, setOs] = useState<string | null>(null);
 
@@ -372,6 +382,32 @@ const GeneralSettings = () => {
 			{
 				label: t("page.settings.general.theme.dark", "深色"),
 				value: DarkMode.Dark,
+			},
+		],
+		[t],
+	);
+	const windowCloseBehaviorMenu = useMemo(
+		() => [
+			{
+				label: t(
+					"page.settings.general.windowCloseBehavior.menu.alwaysMinimize",
+					"始终最小化",
+				),
+				value: WINDOW_CLOSE_BEHAVIOR_ALWAYS_MINIMIZE,
+			},
+			{
+				label: t(
+					"page.settings.general.windowCloseBehavior.menu.minimizeWhenPlaying",
+					"播放时最小化",
+				),
+				value: WINDOW_CLOSE_BEHAVIOR_MINIMIZE_WHEN_PLAYING,
+			},
+			{
+				label: t(
+					"page.settings.general.windowCloseBehavior.menu.exit",
+					"直接退出",
+				),
+				value: WINDOW_CLOSE_BEHAVIOR_EXIT,
 			},
 		],
 		[t],
@@ -430,6 +466,34 @@ const GeneralSettings = () => {
 				)}
 				configAtom={enableGaplessPlaybackAtom}
 			/>
+			{os === "windows" && (
+				<SettingEntry
+					label={t(
+						"page.settings.general.windowCloseBehavior.label",
+						"关闭选项",
+					)}
+					description={t(
+						"page.settings.general.windowCloseBehavior.description",
+						"选择关闭时播放器是否最小化到任务栏托盘",
+					)}
+				>
+					<Select.Root
+						value={windowCloseBehavior}
+						onValueChange={(value) =>
+							setWindowCloseBehavior(value as WindowCloseBehaviorMode)
+						}
+					>
+						<Select.Trigger />
+						<Select.Content>
+							{windowCloseBehaviorMenu.map((item) => (
+								<Select.Item key={item.value} value={item.value}>
+									{item.label}
+								</Select.Item>
+							))}
+						</Select.Content>
+					</Select.Root>
+				</SettingEntry>
+			)}
 			{os === "windows" && (
 				<SwitchSettings
 					label={t(

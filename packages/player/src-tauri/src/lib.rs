@@ -27,6 +27,8 @@ mod music_info;
 mod player;
 mod screen_capture;
 mod server;
+#[cfg(target_os = "windows")]
+mod tray_player_watcher;
 mod ttml_db;
 mod utils;
 mod window;
@@ -230,6 +232,8 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 fn handle_window_event(_window: &tauri::Window, _event: &tauri::WindowEvent) {
     #[cfg(target_os = "windows")]
     window::track_main_window_restore_bounds(_window, _event);
+    #[cfg(target_os = "windows")]
+    window::handle_background_tray_player_window_event(_window, _event);
 
     #[cfg(desktop)]
     if let tauri::WindowEvent::Destroyed = _event {
@@ -242,9 +246,16 @@ fn handle_window_event(_window: &tauri::Window, _event: &tauri::WindowEvent) {
     #[cfg(target_os = "windows")]
     if let tauri::WindowEvent::Destroyed = _event
         && _window.label() == "main"
-        && let Some(taskbar_win) = _window.app_handle().get_webview_window("taskbar-lyric")
     {
-        let _ = taskbar_win.destroy();
+        if let Some(taskbar_win) = _window.app_handle().get_webview_window("taskbar-lyric") {
+            let _ = taskbar_win.destroy();
+        }
+        window::destroy_background_tray_player(_window.app_handle());
+        window::try_clear_background_restore_entry(_window.app_handle());
+    } else if let tauri::WindowEvent::Destroyed = _event
+        && _window.label() == "taskbar-lyric"
+    {
+        taskbar_lyric::schedule_destroyed_window_recovery(_window.app_handle().clone());
     }
 }
 
@@ -255,7 +266,7 @@ fn persisted_window_state_flags() -> StateFlags {
 
 #[cfg(desktop)]
 fn should_persist_window_state(label: &str) -> bool {
-    label != "taskbar-lyric"
+    !matches!(label, "taskbar-lyric" | "tray-player")
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -314,6 +325,11 @@ pub fn run() {
     let window_state_builder = window_state_builder.skip_initial_state("main");
     #[cfg(desktop)]
     let builder = builder.plugin(window_state_builder.build());
+
+    #[cfg(target_os = "windows")]
+    let builder = builder.on_menu_event(|app, event| {
+        window::handle_background_tray_menu_event(app, event.id().as_ref());
+    });
 
     let app = builder
         .invoke_handler(tauri::generate_handler![
@@ -416,6 +432,18 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             window::present_main_window,
             #[cfg(target_os = "windows")]
+            window::hide_main_window_to_background,
+            #[cfg(target_os = "windows")]
+            window::show_main_window_from_background,
+            #[cfg(target_os = "windows")]
+            window::update_background_tray_menu,
+            #[cfg(target_os = "windows")]
+            window::background_tray_player_ready,
+            #[cfg(target_os = "windows")]
+            window::background_tray_player_action,
+            #[cfg(target_os = "windows")]
+            window::exit_application,
+            #[cfg(target_os = "windows")]
             taskbar_lyric::mouse_forward::set_click_interception,
             #[cfg(target_os = "windows")]
             taskbar_lyric::mouse_forward::set_forwarding_enabled,
@@ -441,6 +469,7 @@ pub fn run() {
     app.run(|app_handle, event| {
         #[cfg(target_os = "windows")]
         if matches!(event, tauri::RunEvent::Exit) {
+            tray_player_watcher::stop();
             // window-state's plugin callback runs first and writes its cache.
             // Repair the main restore rectangle after that final save.
             window::sanitize_persisted_main_window_state(app_handle);
@@ -468,6 +497,7 @@ mod tests {
     fn window_state_excludes_the_embedded_taskbar_window() {
         assert!(should_persist_window_state("main"));
         assert!(!should_persist_window_state("taskbar-lyric"));
+        assert!(!should_persist_window_state("tray-player"));
         assert!(should_persist_window_state("screenshot"));
         assert!(should_persist_window_state("extension-window"));
     }

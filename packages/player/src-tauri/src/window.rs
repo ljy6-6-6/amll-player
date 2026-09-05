@@ -1,17 +1,26 @@
 #[cfg(target_os = "windows")]
-use serde::Deserialize;
+use crate::tray_player_watcher::{self, ScreenRect};
+#[cfg(target_os = "windows")]
+use serde::{Deserialize, Serialize};
 #[cfg(target_os = "windows")]
 use std::{
     collections::HashMap,
     fs,
     sync::{
-        Mutex,
+        Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
     time::Duration,
 };
-use tauri::{AppHandle, Manager, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+#[cfg(target_os = "windows")]
+use tauri::{
+    Emitter,
+    image::Image,
+    menu::{CheckMenuItem, IconMenuItem, Menu, MenuItem, PredefinedMenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+};
 #[cfg(target_os = "windows")]
 use tauri::{PhysicalPosition, Position, Rect};
 #[cfg(desktop)]
@@ -26,7 +35,9 @@ use windows::Win32::{
         Dwm::{DWMWA_CLOAK, DwmFlush, DwmSetWindowAttribute},
         Gdi::{RDW_INTERNALPAINT, RDW_UPDATENOW, RedrawWindow},
     },
-    UI::WindowsAndMessaging::{SW_SHOWMAXIMIZED, ShowWindow},
+    UI::WindowsAndMessaging::{
+        IsWindowVisible, SW_HIDE, SW_SHOWMAXIMIZED, SW_SHOWNOACTIVATE, ShowWindow,
+    },
 };
 #[cfg(target_os = "windows")]
 use windows::core::BOOL;
@@ -43,6 +54,160 @@ const DEFAULT_RESTORE_LOGICAL_HEIGHT: f64 = 600.0;
 const RESTORE_BOUNDS_SETTLE_DELAY: Duration = Duration::from_millis(80);
 #[cfg(target_os = "windows")]
 const DWM_UNCLOAK_RETRY_DELAYS_MS: [u64; 5] = [0, 1, 2, 4, 8];
+#[cfg(target_os = "windows")]
+const BACKGROUND_TRAY_ID: &str = "amll-player-background-tray";
+#[cfg(target_os = "windows")]
+const BACKGROUND_TRAY_COMMAND_EVENT: &str = "amll-player://background-tray-command";
+#[cfg(target_os = "windows")]
+const BACKGROUND_TRAY_STATE_EVENT: &str = "amll-player://background-tray-state";
+#[cfg(target_os = "windows")]
+const BACKGROUND_TRAY_PLAYER_LABEL: &str = "tray-player";
+#[cfg(target_os = "windows")]
+const BACKGROUND_TRAY_PLAYER_WIDTH: f64 = 380.0;
+#[cfg(target_os = "windows")]
+const BACKGROUND_TRAY_PLAYER_HEIGHT: f64 = 192.0;
+#[cfg(target_os = "windows")]
+const BACKGROUND_TRAY_PLAYER_MARGIN: i32 = 8;
+#[cfg(target_os = "windows")]
+const BACKGROUND_TRAY_INFO_ID: &str = "amll-player-tray-info";
+#[cfg(target_os = "windows")]
+const BACKGROUND_TRAY_PREVIOUS_ID: &str = "amll-player-tray-previous";
+#[cfg(target_os = "windows")]
+const BACKGROUND_TRAY_TOGGLE_PLAYBACK_ID: &str = "amll-player-tray-toggle-playback";
+#[cfg(target_os = "windows")]
+const BACKGROUND_TRAY_NEXT_ID: &str = "amll-player-tray-next";
+#[cfg(target_os = "windows")]
+const BACKGROUND_TRAY_TASKBAR_LYRIC_ID: &str = "amll-player-tray-taskbar-lyric";
+#[cfg(target_os = "windows")]
+const BACKGROUND_TRAY_SHOW_ID: &str = "amll-player-tray-show";
+#[cfg(target_os = "windows")]
+const BACKGROUND_TRAY_EXIT_ID: &str = "amll-player-tray-exit";
+#[cfg(target_os = "windows")]
+static BACKGROUND_RESTORE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+#[cfg(target_os = "windows")]
+static MAIN_WINDOW_HIDDEN_TO_BACKGROUND: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "windows")]
+static BACKGROUND_TRAY_MENU_STATE: OnceLock<Mutex<BackgroundTrayMenuState>> = OnceLock::new();
+#[cfg(target_os = "windows")]
+static BACKGROUND_TRAY_PLAYER_READY: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "windows")]
+static BACKGROUND_TRAY_PLAYER_CREATING: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "windows")]
+static BACKGROUND_TRAY_PLAYER_CREATION_GENERATION: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "windows")]
+static BACKGROUND_TRAY_PLAYER_VISIBILITY_STATE: OnceLock<
+    Mutex<BackgroundTrayPlayerVisibilityState>,
+> = OnceLock::new();
+#[cfg(target_os = "windows")]
+static BACKGROUND_TRAY_PLAYER_RECONCILE_RUNNING: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "windows")]
+static BACKGROUND_TRAY_RECONCILE_RUNNING: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "windows")]
+static BACKGROUND_TRAY_RECONCILE_GENERATION: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "windows")]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BackgroundTrayCover {
+    rgba: Vec<u8>,
+    width: u32,
+    height: u32,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct BackgroundTrayMenuLabels {
+    app_name: String,
+    unknown_song: String,
+    unknown_artist: String,
+    no_lyrics: String,
+    previous: String,
+    play: String,
+    pause: String,
+    next: String,
+    taskbar_lyric: String,
+    show_window: String,
+    exit: String,
+}
+
+#[cfg(target_os = "windows")]
+impl Default for BackgroundTrayMenuLabels {
+    fn default() -> Self {
+        Self {
+            app_name: "AMLL Player".into(),
+            unknown_song: "Unknown track".into(),
+            unknown_artist: "Unknown artist".into(),
+            no_lyrics: "No lyrics".into(),
+            previous: "Previous".into(),
+            play: "Play".into(),
+            pause: "Pause".into(),
+            next: "Next".into(),
+            taskbar_lyric: "Taskbar lyrics".into(),
+            show_window: "Show window".into(),
+            exit: "Exit".into(),
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct BackgroundTrayMenuState {
+    music_name: String,
+    artist: String,
+    lyric: String,
+    playing: bool,
+    can_control: bool,
+    taskbar_lyric_enabled: bool,
+    cover: Option<BackgroundTrayCover>,
+    display_cover: String,
+    labels: BackgroundTrayMenuLabels,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy, Debug, Default)]
+struct BackgroundTrayPlayerVisibilityState {
+    generation: u64,
+    desired_visible: bool,
+    anchor_rect: Option<PhysicalWindowRect>,
+}
+
+#[cfg(target_os = "windows")]
+impl BackgroundTrayPlayerVisibilityState {
+    fn set_visibility(&mut self, desired_visible: bool, anchor_rect: Option<PhysicalWindowRect>) {
+        self.generation = self.generation.wrapping_add(1);
+        if self.generation == 0 {
+            self.generation = 1;
+        }
+        self.desired_visible = desired_visible;
+        if anchor_rect.is_some() {
+            self.anchor_rect = anchor_rect;
+        }
+    }
+
+    fn toggle(&mut self, anchor_rect: PhysicalWindowRect) {
+        let desired_visible = !self.desired_visible;
+        self.set_visibility(desired_visible, desired_visible.then_some(anchor_rect));
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BackgroundTrayAction {
+    Previous,
+    TogglePlayback,
+    Next,
+    ToggleTaskbarLyric,
+    Show,
+    Exit,
+    Hide,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy, Debug, Serialize)]
+struct BackgroundTrayCommandPayload {
+    command: &'static str,
+}
 
 #[cfg(target_os = "windows")]
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
@@ -1009,7 +1174,1119 @@ pub fn present_main_window(app: AppHandle) -> Result<(), String> {
     if result.is_err() {
         presentation.revealed.store(false, Ordering::Release);
     }
+    reconcile_background_restore_entry(&app);
     result
+}
+
+#[cfg(target_os = "windows")]
+fn background_tray_menu_state() -> &'static Mutex<BackgroundTrayMenuState> {
+    BACKGROUND_TRAY_MENU_STATE.get_or_init(|| Mutex::new(BackgroundTrayMenuState::default()))
+}
+
+#[cfg(target_os = "windows")]
+fn current_background_tray_menu_state() -> BackgroundTrayMenuState {
+    background_tray_menu_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
+
+#[cfg(target_os = "windows")]
+fn emit_background_tray_player_state(app: &AppHandle) -> Result<(), String> {
+    if app
+        .get_webview_window(BACKGROUND_TRAY_PLAYER_LABEL)
+        .is_none()
+    {
+        return Ok(());
+    }
+    app.emit_to(
+        BACKGROUND_TRAY_PLAYER_LABEL,
+        BACKGROUND_TRAY_STATE_EVENT,
+        current_background_tray_menu_state(),
+    )
+    .map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn disable_background_tray_native_menu(app: &AppHandle) -> Result<(), String> {
+    let Some(tray) = app.tray_by_id(BACKGROUND_TRAY_ID) else {
+        return Ok(());
+    };
+    tray.with_inner_tray_icon(|inner| {
+        inner.set_show_menu_on_right_click(false);
+    })
+    .map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn background_tray_player_visibility_state() -> &'static Mutex<BackgroundTrayPlayerVisibilityState>
+{
+    BACKGROUND_TRAY_PLAYER_VISIBILITY_STATE
+        .get_or_init(|| Mutex::new(BackgroundTrayPlayerVisibilityState::default()))
+}
+
+#[cfg(target_os = "windows")]
+fn current_background_tray_player_visibility_state() -> BackgroundTrayPlayerVisibilityState {
+    *background_tray_player_visibility_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(target_os = "windows")]
+fn set_background_tray_player_visibility(
+    desired_visible: bool,
+    anchor_rect: Option<PhysicalWindowRect>,
+) {
+    let mut state = background_tray_player_visibility_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    state.set_visibility(desired_visible, anchor_rect);
+}
+
+#[cfg(target_os = "windows")]
+fn toggle_background_tray_player_visibility(
+    anchor_rect: PhysicalWindowRect,
+) -> BackgroundTrayPlayerVisibilityState {
+    let mut state = background_tray_player_visibility_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    state.toggle(anchor_rect);
+    *state
+}
+
+#[cfg(target_os = "windows")]
+fn set_background_tray_player_native_visibility(
+    window: &tauri::WebviewWindow,
+    visible: bool,
+) -> Result<(), String> {
+    let raw_hwnd = window.hwnd().map_err(|error| error.to_string())?;
+    let popup_hwnd = raw_hwnd.0 as isize;
+    let (result_tx, result_rx) = mpsc::sync_channel(1);
+    window
+        .run_on_main_thread(move || {
+            let popup_hwnd = HWND(popup_hwnd as _);
+            unsafe {
+                let _ = ShowWindow(
+                    popup_hwnd,
+                    if visible { SW_SHOWNOACTIVATE } else { SW_HIDE },
+                );
+            }
+            let actual_visible = unsafe { IsWindowVisible(popup_hwnd).as_bool() };
+            let _ = result_tx.send(actual_visible == visible);
+        })
+        .map_err(|error| error.to_string())?;
+    if result_rx
+        .recv_timeout(Duration::from_secs(1))
+        .map_err(|error| format!("Timed out while changing tray-player visibility: {error}"))?
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "The tray-player window did not become {}.",
+            if visible { "visible" } else { "hidden" }
+        ))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn hide_background_tray_player_window(app: &AppHandle) {
+    tray_player_watcher::deactivate();
+    if let Some(window) = app.get_webview_window(BACKGROUND_TRAY_PLAYER_LABEL)
+        && let Err(error) = set_background_tray_player_native_visibility(&window, false)
+    {
+        warn!("Failed to hide the tray player: {error}");
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn hide_background_tray_player(app: &AppHandle) {
+    set_background_tray_player_visibility(false, None);
+    reconcile_background_tray_player_visibility(app);
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn hide_background_tray_player_if_generation(app: &AppHandle, generation: u64) {
+    let should_hide = {
+        let mut state = background_tray_player_visibility_state()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !state.desired_visible || state.generation != generation {
+            false
+        } else {
+            state.set_visibility(false, None);
+            true
+        }
+    };
+    if should_hide {
+        reconcile_background_tray_player_visibility(app);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn tray_player_position(
+    icon_rect: PhysicalWindowRect,
+    popup_width: u32,
+    popup_height: u32,
+    work_area: PhysicalWindowRect,
+    monitor_rect: PhysicalWindowRect,
+    margin: i32,
+) -> PhysicalPosition<i32> {
+    let work_area = RectEdges::from_rect(work_area);
+    let monitor_rect = RectEdges::from_rect(monitor_rect);
+    let icon_rect = RectEdges::from_rect(icon_rect);
+    let icon_center_x = icon_rect.left + (icon_rect.right - icon_rect.left) / 2;
+    let icon_center_y = icon_rect.top + (icon_rect.bottom - icon_rect.top) / 2;
+    let popup_width = i64::from(popup_width);
+    let popup_height = i64::from(popup_height);
+    let margin = i64::from(margin.max(0));
+
+    let distances = [
+        (icon_center_y - monitor_rect.top).abs(),
+        (monitor_rect.bottom - icon_center_y).abs(),
+        (icon_center_x - monitor_rect.left).abs(),
+        (monitor_rect.right - icon_center_x).abs(),
+    ];
+    let nearest_edge = distances
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, distance)| **distance)
+        .map(|(index, _)| index)
+        .unwrap_or(1);
+
+    let (mut x, mut y) = match nearest_edge {
+        // Top taskbar.
+        0 => (icon_center_x - popup_width / 2, icon_rect.bottom + margin),
+        // Bottom taskbar.
+        1 => (
+            icon_center_x - popup_width / 2,
+            icon_rect.top - popup_height - margin,
+        ),
+        // Left taskbar.
+        2 => (icon_rect.right + margin, icon_center_y - popup_height / 2),
+        // Right taskbar.
+        _ => (
+            icon_rect.left - popup_width - margin,
+            icon_center_y - popup_height / 2,
+        ),
+    };
+
+    let max_x = work_area.right - popup_width;
+    let max_y = work_area.bottom - popup_height;
+    x = if max_x >= work_area.left {
+        x.clamp(work_area.left, max_x)
+    } else {
+        work_area.left
+    };
+    y = if max_y >= work_area.top {
+        y.clamp(work_area.top, max_y)
+    } else {
+        work_area.top
+    };
+
+    PhysicalPosition::new(
+        x.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+        y.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn physical_tray_icon_rect(rect: Rect) -> Option<PhysicalWindowRect> {
+    match (rect.position, rect.size) {
+        (Position::Physical(position), Size::Physical(size)) => Some(PhysicalWindowRect {
+            x: position.x,
+            y: position.y,
+            width: size.width,
+            height: size.height,
+        }),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn tray_player_physical_dimension(logical: f64, scale_factor: f64) -> u32 {
+    (logical * scale_factor)
+        .round()
+        .clamp(1.0, f64::from(u32::MAX)) as u32
+}
+
+#[cfg(target_os = "windows")]
+fn position_background_tray_player(
+    app: &AppHandle,
+    icon_rect: PhysicalWindowRect,
+) -> Result<(), String> {
+    let window = app
+        .get_webview_window(BACKGROUND_TRAY_PLAYER_LABEL)
+        .ok_or_else(|| "Tray player window not found.".to_string())?;
+    let icon_center_x = f64::from(icon_rect.x) + f64::from(icon_rect.width) / 2.0;
+    let icon_center_y = f64::from(icon_rect.y) + f64::from(icon_rect.height) / 2.0;
+    let monitor = window
+        .monitor_from_point(icon_center_x, icon_center_y)
+        .map_err(|error| error.to_string())?
+        .or_else(|| window.current_monitor().ok().flatten())
+        .ok_or_else(|| "No monitor is available for the tray player.".to_string())?;
+    let work_area = monitor.work_area();
+    let monitor_position = monitor.position();
+    let monitor_size = monitor.size();
+    let scale_factor = monitor.scale_factor();
+    let popup_width = tray_player_physical_dimension(BACKGROUND_TRAY_PLAYER_WIDTH, scale_factor);
+    let popup_height = tray_player_physical_dimension(BACKGROUND_TRAY_PLAYER_HEIGHT, scale_factor);
+    let margin = (f64::from(BACKGROUND_TRAY_PLAYER_MARGIN) * scale_factor).round() as i32;
+    let position = tray_player_position(
+        icon_rect,
+        popup_width,
+        popup_height,
+        PhysicalWindowRect {
+            x: work_area.position.x,
+            y: work_area.position.y,
+            width: work_area.size.width,
+            height: work_area.size.height,
+        },
+        PhysicalWindowRect {
+            x: monitor_position.x,
+            y: monitor_position.y,
+            width: monitor_size.width,
+            height: monitor_size.height,
+        },
+        margin,
+    );
+    window
+        .set_position(position)
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn background_tray_player_generation_is_current(generation: u64) -> bool {
+    current_background_tray_player_visibility_state().generation == generation
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn background_tray_player_activation_is_current(
+    app: &AppHandle,
+    generation: u64,
+) -> bool {
+    let state = current_background_tray_player_visibility_state();
+    state.desired_visible
+        && state.generation == generation
+        && background_tray_is_required(app)
+        && app
+            .get_webview_window(BACKGROUND_TRAY_PLAYER_LABEL)
+            .is_some()
+}
+
+#[cfg(target_os = "windows")]
+fn harden_background_tray_player_noactivate(
+    window: &tauri::WebviewWindow,
+    popup_hwnd: HWND,
+) -> Result<(), String> {
+    let (result_tx, result_rx) = mpsc::sync_channel(1);
+    let popup_hwnd = popup_hwnd.0 as isize;
+    window
+        .run_on_main_thread(move || {
+            let _ = result_tx.send(tray_player_watcher::harden_webview_noactivate(HWND(
+                popup_hwnd as _,
+            )));
+        })
+        .map_err(|error| error.to_string())?;
+    result_rx
+        .recv_timeout(Duration::from_secs(1))
+        .map_err(|error| format!("Timed out while hardening the tray-player WebView: {error}"))?
+}
+
+#[cfg(target_os = "windows")]
+fn show_background_tray_player_noactivate(
+    app: &AppHandle,
+    window: &tauri::WebviewWindow,
+    popup_hwnd: HWND,
+    generation: u64,
+) -> Result<bool, String> {
+    let app = app.clone();
+    let popup_hwnd = popup_hwnd.0 as isize;
+    let (result_tx, result_rx) = mpsc::sync_channel(1);
+    window
+        .run_on_main_thread(move || {
+            let result = {
+                let state = background_tray_player_visibility_state()
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if !state.desired_visible
+                    || state.generation != generation
+                    || !background_tray_is_required(&app)
+                {
+                    Ok(false)
+                } else {
+                    let popup_hwnd = HWND(popup_hwnd as _);
+                    unsafe {
+                        let _ = ShowWindow(popup_hwnd, SW_SHOWNOACTIVATE);
+                    }
+                    if unsafe { IsWindowVisible(popup_hwnd).as_bool() } {
+                        Ok(true)
+                    } else {
+                        Err("The tray-player window did not become visible.".to_string())
+                    }
+                }
+            };
+            let _ = result_tx.send(result);
+        })
+        .map_err(|error| error.to_string())?;
+    result_rx
+        .recv_timeout(Duration::from_secs(1))
+        .map_err(|error| format!("Timed out while showing the tray player: {error}"))?
+}
+
+#[cfg(target_os = "windows")]
+fn apply_background_tray_player_visibility(
+    app: &AppHandle,
+    state: BackgroundTrayPlayerVisibilityState,
+) -> Result<(), String> {
+    if !background_tray_player_generation_is_current(state.generation) {
+        return Ok(());
+    }
+    if !state.desired_visible || !background_tray_is_required(app) {
+        hide_background_tray_player_window(app);
+        return Ok(());
+    }
+
+    app.get_webview_window(BACKGROUND_TRAY_PLAYER_LABEL)
+        .ok_or_else(|| "Tray player window not found.".to_string())?;
+    emit_background_tray_player_state(app)?;
+    if !background_tray_player_generation_is_current(state.generation) {
+        return Ok(());
+    }
+    let icon_rect = state
+        .anchor_rect
+        .ok_or_else(|| "Tray icon rectangle is unavailable.".to_string())?;
+    position_background_tray_player(app, icon_rect)?;
+    if !background_tray_player_generation_is_current(state.generation) {
+        return Ok(());
+    }
+    if !background_tray_is_required(app) {
+        hide_background_tray_player_window(app);
+        return Ok(());
+    }
+
+    let window = app
+        .get_webview_window(BACKGROUND_TRAY_PLAYER_LABEL)
+        .ok_or_else(|| "Tray player window not found.".to_string())?;
+    let raw_hwnd = window.hwnd().map_err(|error| error.to_string())?;
+    let popup_hwnd = HWND(raw_hwnd.0);
+    if let Err(error) = harden_background_tray_player_noactivate(&window, popup_hwnd) {
+        // Keeping the custom player is the primary behavior. This hardening is
+        // only a best-effort compatibility layer for Explorer's auto-hide UI.
+        warn!("Failed to harden the tray-player WebView against activation: {error}");
+    }
+    if !background_tray_player_generation_is_current(state.generation) {
+        return Ok(());
+    }
+    let tracking_started = tray_player_watcher::activate(
+        app,
+        popup_hwnd,
+        state.generation,
+        ScreenRect::from_xywh(icon_rect.x, icon_rect.y, icon_rect.width, icon_rect.height),
+    )?;
+    if !tracking_started {
+        return Ok(());
+    }
+    if !show_background_tray_player_noactivate(app, &window, popup_hwnd, state.generation)? {
+        tray_player_watcher::deactivate();
+        return Ok(());
+    }
+    if !background_tray_player_activation_is_current(app, state.generation) {
+        tray_player_watcher::deactivate();
+        let _ = set_background_tray_player_native_visibility(&window, false);
+        return Ok(());
+    }
+    if let Err(error) = tray_player_watcher::begin_menu_session(app, state.generation) {
+        // The hidden HMENU is an experimental Explorer compatibility layer.
+        // It must never replace or take down the custom WebView card.
+        warn!("Failed to start the tray HMENU compatibility session: {error}");
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn reconcile_background_tray_player_visibility(app: &AppHandle) {
+    if BACKGROUND_TRAY_PLAYER_RECONCILE_RUNNING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let state = current_background_tray_player_visibility_state();
+            if let Err(error) = apply_background_tray_player_visibility(&app, state) {
+                let mut current = background_tray_player_visibility_state()
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let failed_current_generation = current.generation == state.generation;
+                if failed_current_generation {
+                    current.generation = current.generation.wrapping_add(1);
+                    if current.generation == 0 {
+                        current.generation = 1;
+                    }
+                    current.desired_visible = false;
+                }
+                drop(current);
+                if failed_current_generation {
+                    hide_background_tray_player_window(&app);
+                    if app
+                        .get_webview_window(BACKGROUND_TRAY_PLAYER_LABEL)
+                        .is_none()
+                    {
+                        BACKGROUND_TRAY_PLAYER_READY.store(false, Ordering::Release);
+                        prepare_background_tray_player(&app);
+                    }
+                }
+                warn!("Failed to apply the custom tray-player visibility: {error}");
+            }
+
+            if state.generation != current_background_tray_player_visibility_state().generation {
+                continue;
+            }
+
+            BACKGROUND_TRAY_PLAYER_RECONCILE_RUNNING.store(false, Ordering::SeqCst);
+            if state.generation == current_background_tray_player_visibility_state().generation {
+                break;
+            }
+            if BACKGROUND_TRAY_PLAYER_RECONCILE_RUNNING.swap(true, Ordering::SeqCst) {
+                break;
+            }
+        }
+    });
+}
+
+#[cfg(target_os = "windows")]
+fn background_tray_player_url(app: &AppHandle) -> Result<WebviewUrl, String> {
+    #[cfg(debug_assertions)]
+    {
+        let url = app
+            .config()
+            .build
+            .dev_url
+            .clone()
+            .ok_or_else(|| "Development URL is unavailable.".to_string())?
+            .join("tray-player.html")
+            .map_err(|error| error.to_string())?;
+        Ok(WebviewUrl::External(url))
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = app;
+        Ok(WebviewUrl::App("tray-player.html".into()))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn background_tray_owner_hwnd(app: &AppHandle) -> Result<Option<isize>, String> {
+    let Some(tray) = app.tray_by_id(BACKGROUND_TRAY_ID) else {
+        return Ok(None);
+    };
+    let hwnd = tray
+        .with_inner_tray_icon(|inner| inner.window_handle() as isize)
+        .map_err(|error| error.to_string())?;
+    if hwnd == 0 {
+        return Err("Tray owner window handle is unavailable.".into());
+    }
+    Ok(Some(hwnd))
+}
+
+#[cfg(target_os = "windows")]
+fn prepare_background_tray_player(app: &AppHandle) {
+    if app
+        .get_webview_window(BACKGROUND_TRAY_PLAYER_LABEL)
+        .is_some()
+        || BACKGROUND_TRAY_PLAYER_CREATING.swap(true, Ordering::AcqRel)
+    {
+        return;
+    }
+
+    let owner_hwnd = match background_tray_owner_hwnd(app) {
+        Ok(Some(hwnd)) => hwnd,
+        Ok(None) => {
+            BACKGROUND_TRAY_PLAYER_CREATING.store(false, Ordering::Release);
+            return;
+        }
+        Err(error) => {
+            BACKGROUND_TRAY_PLAYER_CREATING.store(false, Ordering::Release);
+            warn!("Failed to resolve the tray-player owner window: {error}");
+            return;
+        }
+    };
+
+    let generation = BACKGROUND_TRAY_PLAYER_CREATION_GENERATION
+        .fetch_add(1, Ordering::AcqRel)
+        .wrapping_add(1);
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let result = (|| -> Result<(), String> {
+            let url = background_tray_player_url(&app)?;
+            let window = WebviewWindowBuilder::new(&app, BACKGROUND_TRAY_PLAYER_LABEL, url)
+                .title("AMLL Player")
+                .owner_raw(windows_061::Win32::Foundation::HWND(owner_hwnd as _))
+                .inner_size(BACKGROUND_TRAY_PLAYER_WIDTH, BACKGROUND_TRAY_PLAYER_HEIGHT)
+                .decorations(false)
+                .shadow(false)
+                .transparent(true)
+                .always_on_top(true)
+                .skip_taskbar(true)
+                .resizable(false)
+                .maximizable(false)
+                .minimizable(false)
+                .focused(false)
+                .focusable(false)
+                .visible(false)
+                .build()
+                .map_err(|error| error.to_string())?;
+            let is_current = BACKGROUND_TRAY_PLAYER_CREATION_GENERATION.load(Ordering::Acquire)
+                == generation
+                && app.get_webview_window("main").is_some();
+            if !is_current {
+                let _ = window.destroy();
+                return Err("Discarded a stale tray player creation.".to_string());
+            }
+            Ok(())
+        })();
+        BACKGROUND_TRAY_PLAYER_CREATING.store(false, Ordering::Release);
+        if let Err(error) = result {
+            BACKGROUND_TRAY_PLAYER_READY.store(false, Ordering::Release);
+            warn!("Failed to create the custom tray player: {error}");
+        }
+    });
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn handle_background_tray_player_window_event(
+    window: &tauri::Window,
+    event: &tauri::WindowEvent,
+) {
+    if window.label() != BACKGROUND_TRAY_PLAYER_LABEL {
+        return;
+    }
+    match event {
+        tauri::WindowEvent::CloseRequested { api, .. } => {
+            api.prevent_close();
+            hide_background_tray_player(window.app_handle());
+        }
+        tauri::WindowEvent::Destroyed => {
+            tray_player_watcher::deactivate();
+            set_background_tray_player_visibility(false, None);
+            BACKGROUND_TRAY_PLAYER_READY.store(false, Ordering::Release);
+            BACKGROUND_TRAY_PLAYER_CREATING.store(false, Ordering::Release);
+        }
+        _ => {}
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn destroy_background_tray_player(app: &AppHandle) {
+    tray_player_watcher::deactivate();
+    BACKGROUND_TRAY_PLAYER_CREATION_GENERATION.fetch_add(1, Ordering::AcqRel);
+    BACKGROUND_TRAY_PLAYER_READY.store(false, Ordering::Release);
+    BACKGROUND_TRAY_PLAYER_CREATING.store(false, Ordering::Release);
+    if let Some(window) = app.get_webview_window(BACKGROUND_TRAY_PLAYER_LABEL)
+        && let Err(error) = window.destroy()
+    {
+        warn!("Failed to destroy the tray player: {error}");
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn trim_tray_text(value: &str, max_chars: usize, escape_mnemonic: bool) -> String {
+    let normalized = value.replace(['\r', '\n'], " ");
+    let mut text = normalized.chars().take(max_chars).collect::<String>();
+    if normalized.chars().count() > max_chars {
+        text.push('…');
+    }
+    if escape_mnemonic {
+        text.replace('&', "&&")
+    } else {
+        text
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn background_tray_cover_image(state: &BackgroundTrayMenuState) -> Option<Image<'static>> {
+    let cover = state.cover.as_ref()?;
+    if cover.width == 0 || cover.height == 0 || cover.width > 128 || cover.height > 128 {
+        return None;
+    }
+    let expected_len = cover.width.checked_mul(cover.height)?.checked_mul(4)? as usize;
+    if cover.rgba.len() != expected_len {
+        return None;
+    }
+    if !cover.rgba.chunks_exact(4).any(|pixel| pixel[3] != 0) {
+        return None;
+    }
+    Some(Image::new_owned(
+        cover.rgba.clone(),
+        cover.width,
+        cover.height,
+    ))
+}
+
+#[cfg(target_os = "windows")]
+fn background_tray_icon(app: &AppHandle) -> Result<Image<'static>, String> {
+    let icon = app
+        .default_window_icon()
+        .ok_or_else(|| "Application icon is unavailable.".to_string())?;
+    Ok(Image::new_owned(
+        icon.rgba().to_vec(),
+        icon.width(),
+        icon.height(),
+    ))
+}
+
+#[cfg(target_os = "windows")]
+fn background_tray_metadata_text(state: &BackgroundTrayMenuState) -> String {
+    let name = if state.can_control && !state.music_name.trim().is_empty() {
+        state.music_name.trim()
+    } else {
+        state.labels.unknown_song.trim()
+    };
+    let metadata = if state.artist.trim().is_empty() {
+        name.to_string()
+    } else {
+        format!("{} — {}", name, state.artist.trim())
+    };
+    trim_tray_text(&metadata, 80, true)
+}
+
+#[cfg(target_os = "windows")]
+fn build_background_tray_menu(
+    app: &AppHandle,
+    state: &BackgroundTrayMenuState,
+) -> Result<Menu<tauri::Wry>, String> {
+    let metadata = IconMenuItem::with_id(
+        app,
+        BACKGROUND_TRAY_INFO_ID,
+        background_tray_metadata_text(state),
+        false,
+        background_tray_cover_image(state).or_else(|| background_tray_icon(app).ok()),
+        None::<&str>,
+    )
+    .map_err(|error| error.to_string())?;
+    let first_separator = PredefinedMenuItem::separator(app).map_err(|error| error.to_string())?;
+    let previous = MenuItem::with_id(
+        app,
+        BACKGROUND_TRAY_PREVIOUS_ID,
+        format!("⏮ {}", trim_tray_text(&state.labels.previous, 40, true)),
+        state.can_control,
+        None::<&str>,
+    )
+    .map_err(|error| error.to_string())?;
+    let playback_label = if state.playing {
+        &state.labels.pause
+    } else {
+        &state.labels.play
+    };
+    let playback_symbol = if state.playing { "⏸" } else { "▶" };
+    let toggle_playback = MenuItem::with_id(
+        app,
+        BACKGROUND_TRAY_TOGGLE_PLAYBACK_ID,
+        format!(
+            "{playback_symbol} {}",
+            trim_tray_text(playback_label, 40, true)
+        ),
+        state.can_control,
+        None::<&str>,
+    )
+    .map_err(|error| error.to_string())?;
+    let next = MenuItem::with_id(
+        app,
+        BACKGROUND_TRAY_NEXT_ID,
+        format!("⏭ {}", trim_tray_text(&state.labels.next, 40, true)),
+        state.can_control,
+        None::<&str>,
+    )
+    .map_err(|error| error.to_string())?;
+    let second_separator = PredefinedMenuItem::separator(app).map_err(|error| error.to_string())?;
+    let taskbar_lyric = CheckMenuItem::with_id(
+        app,
+        BACKGROUND_TRAY_TASKBAR_LYRIC_ID,
+        trim_tray_text(&state.labels.taskbar_lyric, 40, true),
+        true,
+        state.taskbar_lyric_enabled,
+        None::<&str>,
+    )
+    .map_err(|error| error.to_string())?;
+    let show = MenuItem::with_id(
+        app,
+        BACKGROUND_TRAY_SHOW_ID,
+        trim_tray_text(&state.labels.show_window, 40, true),
+        true,
+        None::<&str>,
+    )
+    .map_err(|error| error.to_string())?;
+    let third_separator = PredefinedMenuItem::separator(app).map_err(|error| error.to_string())?;
+    let exit = MenuItem::with_id(
+        app,
+        BACKGROUND_TRAY_EXIT_ID,
+        trim_tray_text(&state.labels.exit, 40, true),
+        true,
+        None::<&str>,
+    )
+    .map_err(|error| error.to_string())?;
+
+    Menu::with_items(
+        app,
+        &[
+            &metadata,
+            &first_separator,
+            &previous,
+            &toggle_playback,
+            &next,
+            &second_separator,
+            &taskbar_lyric,
+            &show,
+            &third_separator,
+            &exit,
+        ],
+    )
+    .map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn background_tray_tooltip(state: &BackgroundTrayMenuState) -> String {
+    let metadata = if state.can_control {
+        let name = if state.music_name.trim().is_empty() {
+            state.labels.unknown_song.trim()
+        } else {
+            state.music_name.trim()
+        };
+        if state.artist.trim().is_empty() {
+            name.to_string()
+        } else {
+            format!("{} — {}", name, state.artist.trim())
+        }
+    } else {
+        state.labels.app_name.clone()
+    };
+    trim_tray_text(&metadata, 120, false)
+}
+
+#[cfg(target_os = "windows")]
+fn refresh_background_tray(app: &AppHandle) -> Result<(), String> {
+    let Some(tray) = app.tray_by_id(BACKGROUND_TRAY_ID) else {
+        return Ok(());
+    };
+    // Never attach a native menu until automatic right-click display is
+    // definitely disabled. If this fails, the tray remains menu-less and the
+    // custom card stays the only visible right-click surface.
+    disable_background_tray_native_menu(app)?;
+    let state = current_background_tray_menu_state();
+    tray.set_icon(Some(background_tray_icon(app)?))
+        .map_err(|error| error.to_string())?;
+    tray.set_tooltip(Some(background_tray_tooltip(&state)))
+        .map_err(|error| error.to_string())?;
+    tray.set_menu(Some(build_background_tray_menu(app, &state)?))
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn hide_background_tray(app: &AppHandle) {
+    hide_background_tray_player(app);
+    if let Some(tray) = app.tray_by_id(BACKGROUND_TRAY_ID)
+        && let Err(error) = tray.set_visible(false)
+    {
+        warn!("Failed to hide the background tray: {error}");
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn ensure_background_tray(app: &AppHandle) -> Result<(), String> {
+    if let Some(tray) = app.tray_by_id(BACKGROUND_TRAY_ID) {
+        tray.set_visible(true).map_err(|error| error.to_string())?;
+        disable_background_tray_native_menu(app)?;
+        prepare_background_tray_player(app);
+        return Ok(());
+    }
+
+    let state = current_background_tray_menu_state();
+    let icon = background_tray_icon(app)?;
+    TrayIconBuilder::with_id(BACKGROUND_TRAY_ID)
+        .icon(icon)
+        .tooltip(background_tray_tooltip(&state))
+        .show_menu_on_left_click(false)
+        .on_tray_icon_event(|tray, event| match event {
+            TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } => {
+                let app = tray.app_handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = show_main_window_from_background(app).await {
+                        warn!("Failed to restore main window from the tray: {error}");
+                    }
+                });
+            }
+            TrayIconEvent::Click {
+                rect,
+                button: MouseButton::Right,
+                button_state: MouseButtonState::Up,
+                ..
+            } => {
+                let Some(icon_rect) = physical_tray_icon_rect(rect) else {
+                    warn!("Tray icon rectangle did not use physical coordinates.");
+                    return;
+                };
+                let app = tray.app_handle().clone();
+                if BACKGROUND_TRAY_PLAYER_READY.load(Ordering::Acquire) {
+                    let visibility = toggle_background_tray_player_visibility(icon_rect);
+                    if !visibility.desired_visible {
+                        tray_player_watcher::deactivate();
+                    }
+                    reconcile_background_tray_player_visibility(&app);
+                } else {
+                    set_background_tray_player_visibility(true, Some(icon_rect));
+                    prepare_background_tray_player(&app);
+                }
+            }
+            _ => {}
+        })
+        .build(app)
+        .map_err(|error| error.to_string())?;
+    refresh_background_tray(app)?;
+    prepare_background_tray_player(app);
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn background_tray_is_required(app: &AppHandle) -> bool {
+    MAIN_WINDOW_HIDDEN_TO_BACKGROUND.load(Ordering::Acquire)
+        && app.get_webview_window("main").is_some()
+}
+
+#[cfg(target_os = "windows")]
+fn apply_background_tray_requirement(app: &AppHandle, required: bool) {
+    if required {
+        if let Err(error) = ensure_background_tray(app) {
+            warn!("Failed to create the background tray: {error}");
+        }
+    } else {
+        hide_background_tray(app);
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn reconcile_background_restore_entry(app: &AppHandle) {
+    // Restore availability is tracked in process state. Do not query a Tauri
+    // window getter here: during Destroyed, a dispatcher can still be present
+    // after its native window is gone and never answer a synchronous getter.
+    BACKGROUND_TRAY_RECONCILE_GENERATION.fetch_add(1, Ordering::SeqCst);
+    if BACKGROUND_TRAY_RECONCILE_RUNNING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let generation = BACKGROUND_TRAY_RECONCILE_GENERATION.load(Ordering::SeqCst);
+            let required = background_tray_is_required(&app);
+            apply_background_tray_requirement(&app, required);
+
+            if generation != BACKGROUND_TRAY_RECONCILE_GENERATION.load(Ordering::SeqCst) {
+                continue;
+            }
+
+            BACKGROUND_TRAY_RECONCILE_RUNNING.store(false, Ordering::SeqCst);
+            if generation == BACKGROUND_TRAY_RECONCILE_GENERATION.load(Ordering::SeqCst) {
+                break;
+            }
+            if BACKGROUND_TRAY_RECONCILE_RUNNING.swap(true, Ordering::SeqCst) {
+                break;
+            }
+        }
+    });
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn try_clear_background_restore_entry(app: &AppHandle) {
+    MAIN_WINDOW_HIDDEN_TO_BACKGROUND.store(false, Ordering::Release);
+    hide_background_tray_player(app);
+    reconcile_background_restore_entry(app);
+}
+
+#[cfg(target_os = "windows")]
+fn background_tray_action_for_id(id: &str) -> Option<BackgroundTrayAction> {
+    match id {
+        BACKGROUND_TRAY_PREVIOUS_ID => Some(BackgroundTrayAction::Previous),
+        BACKGROUND_TRAY_TOGGLE_PLAYBACK_ID => Some(BackgroundTrayAction::TogglePlayback),
+        BACKGROUND_TRAY_NEXT_ID => Some(BackgroundTrayAction::Next),
+        BACKGROUND_TRAY_TASKBAR_LYRIC_ID => Some(BackgroundTrayAction::ToggleTaskbarLyric),
+        BACKGROUND_TRAY_SHOW_ID => Some(BackgroundTrayAction::Show),
+        BACKGROUND_TRAY_EXIT_ID => Some(BackgroundTrayAction::Exit),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn background_tray_action_for_command(command: &str) -> Option<BackgroundTrayAction> {
+    match command {
+        "previous" => Some(BackgroundTrayAction::Previous),
+        "toggle-playback" => Some(BackgroundTrayAction::TogglePlayback),
+        "next" => Some(BackgroundTrayAction::Next),
+        "toggle-taskbar-lyric" => Some(BackgroundTrayAction::ToggleTaskbarLyric),
+        "show" => Some(BackgroundTrayAction::Show),
+        "exit" => Some(BackgroundTrayAction::Exit),
+        "hide" => Some(BackgroundTrayAction::Hide),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn dispatch_background_tray_action(app: &AppHandle, action: BackgroundTrayAction) {
+    match action {
+        BackgroundTrayAction::Show => {
+            hide_background_tray_player(app);
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = show_main_window_from_background(app).await {
+                    warn!("Failed to restore main window from the tray: {error}");
+                }
+            });
+        }
+        BackgroundTrayAction::Exit => app.exit(0),
+        BackgroundTrayAction::Hide => hide_background_tray_player(app),
+        BackgroundTrayAction::Previous
+        | BackgroundTrayAction::TogglePlayback
+        | BackgroundTrayAction::Next
+        | BackgroundTrayAction::ToggleTaskbarLyric => {
+            let command = match action {
+                BackgroundTrayAction::Previous => "previous",
+                BackgroundTrayAction::TogglePlayback => "toggle-playback",
+                BackgroundTrayAction::Next => "next",
+                BackgroundTrayAction::ToggleTaskbarLyric => "toggle-taskbar-lyric",
+                BackgroundTrayAction::Show
+                | BackgroundTrayAction::Exit
+                | BackgroundTrayAction::Hide => unreachable!(),
+            };
+            if let Err(error) = app.emit_to(
+                "main",
+                BACKGROUND_TRAY_COMMAND_EVENT,
+                BackgroundTrayCommandPayload { command },
+            ) {
+                warn!("Failed to dispatch background tray command {command}: {error}");
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn handle_background_tray_menu_event(app: &AppHandle, id: &str) {
+    let Some(action) = background_tray_action_for_id(id) else {
+        return;
+    };
+    dispatch_background_tray_action(app, action);
+}
+
+#[cfg(target_os = "windows")]
+#[tauri::command]
+pub fn update_background_tray_menu(
+    app: AppHandle,
+    state: BackgroundTrayMenuState,
+) -> Result<(), String> {
+    prepare_background_tray_player(&app);
+    let native_menu_changed = {
+        let mut current = background_tray_menu_state()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let changed = current.music_name != state.music_name
+            || current.artist != state.artist
+            || current.playing != state.playing
+            || current.can_control != state.can_control
+            || current.taskbar_lyric_enabled != state.taskbar_lyric_enabled
+            || current.cover != state.cover
+            || current.labels != state.labels;
+        *current = state;
+        changed
+    };
+    emit_background_tray_player_state(&app)?;
+    if native_menu_changed && !BACKGROUND_TRAY_PLAYER_READY.load(Ordering::Acquire) {
+        refresh_background_tray(&app)?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+#[tauri::command]
+pub fn background_tray_player_ready(app: AppHandle) -> Result<(), String> {
+    if app
+        .get_webview_window(BACKGROUND_TRAY_PLAYER_LABEL)
+        .is_none()
+    {
+        return Err("Tray player window not found.".to_string());
+    }
+    BACKGROUND_TRAY_PLAYER_READY.store(true, Ordering::Release);
+    emit_background_tray_player_state(&app)?;
+    disable_background_tray_native_menu(&app)?;
+    if current_background_tray_player_visibility_state().desired_visible {
+        reconcile_background_tray_player_visibility(&app);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+#[tauri::command]
+pub fn background_tray_player_action(app: AppHandle, action: String) -> Result<(), String> {
+    let action = background_tray_action_for_command(&action)
+        .ok_or_else(|| "Unknown tray player action.".to_string())?;
+    dispatch_background_tray_action(&app, action);
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+#[tauri::command]
+pub fn exit_application(app: AppHandle) {
+    app.exit(0);
+}
+
+#[cfg(target_os = "windows")]
+#[tauri::command]
+pub async fn hide_main_window_to_background(app: AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Main window not found.".to_string())?;
+    {
+        let _restore_guard = BACKGROUND_RESTORE_LOCK.lock().await;
+        if let Err(error) = window.hide() {
+            MAIN_WINDOW_HIDDEN_TO_BACKGROUND.store(false, Ordering::Release);
+            reconcile_background_restore_entry(&app);
+            return Err(error.to_string());
+        }
+        MAIN_WINDOW_HIDDEN_TO_BACKGROUND.store(true, Ordering::Release);
+    }
+
+    // Tray APIs synchronously cross the Windows UI thread. Reconcile them on a
+    // coalesced worker after releasing the window transition lock, so an older
+    // restore cannot hide the tray after a newer close has made it required.
+    hide_background_tray_player(&app);
+    reconcile_background_restore_entry(&app);
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+#[tauri::command]
+pub async fn show_main_window_from_background(app: AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Main window not found.".to_string())?;
+    hide_background_tray_player(&app);
+    let was_minimized = window.is_minimized().map_err(|error| error.to_string())?;
+    {
+        let _restore_guard = BACKGROUND_RESTORE_LOCK.lock().await;
+        if was_minimized {
+            window.unminimize().map_err(|error| error.to_string())?;
+        }
+        window.show().map_err(|error| error.to_string())?;
+        MAIN_WINDOW_HIDDEN_TO_BACKGROUND.store(false, Ordering::Release);
+        if let Err(error) = window.set_focus() {
+            warn!("Failed to focus the restored main window: {error}");
+        }
+    }
+
+    // Coalescing makes the latest hidden/visible state authoritative even when
+    // Explorer completes an older tray operation after this command returns.
+    reconcile_background_restore_entry(&app);
+    Ok(())
 }
 
 #[cfg(all(test, target_os = "windows"))]
@@ -1022,6 +2299,342 @@ mod tests {
         width: 2560,
         height: 1600,
     };
+
+    #[test]
+    fn maps_background_tray_menu_ids_without_using_localized_labels() {
+        assert_eq!(
+            background_tray_action_for_id(BACKGROUND_TRAY_PREVIOUS_ID),
+            Some(BackgroundTrayAction::Previous)
+        );
+        assert_eq!(
+            background_tray_action_for_id(BACKGROUND_TRAY_TOGGLE_PLAYBACK_ID),
+            Some(BackgroundTrayAction::TogglePlayback)
+        );
+        assert_eq!(
+            background_tray_action_for_id(BACKGROUND_TRAY_NEXT_ID),
+            Some(BackgroundTrayAction::Next)
+        );
+        assert_eq!(
+            background_tray_action_for_id(BACKGROUND_TRAY_TASKBAR_LYRIC_ID),
+            Some(BackgroundTrayAction::ToggleTaskbarLyric)
+        );
+        assert_eq!(
+            background_tray_action_for_id(BACKGROUND_TRAY_SHOW_ID),
+            Some(BackgroundTrayAction::Show)
+        );
+        assert_eq!(
+            background_tray_action_for_id(BACKGROUND_TRAY_EXIT_ID),
+            Some(BackgroundTrayAction::Exit)
+        );
+        assert_eq!(background_tray_action_for_id("unknown"), None);
+        assert_eq!(background_tray_action_for_id(BACKGROUND_TRAY_INFO_ID), None);
+    }
+
+    #[test]
+    fn maps_custom_tray_player_actions() {
+        assert_eq!(
+            background_tray_action_for_command("previous"),
+            Some(BackgroundTrayAction::Previous)
+        );
+        assert_eq!(
+            background_tray_action_for_command("toggle-playback"),
+            Some(BackgroundTrayAction::TogglePlayback)
+        );
+        assert_eq!(
+            background_tray_action_for_command("next"),
+            Some(BackgroundTrayAction::Next)
+        );
+        assert_eq!(
+            background_tray_action_for_command("toggle-taskbar-lyric"),
+            Some(BackgroundTrayAction::ToggleTaskbarLyric)
+        );
+        assert_eq!(
+            background_tray_action_for_command("show"),
+            Some(BackgroundTrayAction::Show)
+        );
+        assert_eq!(
+            background_tray_action_for_command("exit"),
+            Some(BackgroundTrayAction::Exit)
+        );
+        assert_eq!(
+            background_tray_action_for_command("hide"),
+            Some(BackgroundTrayAction::Hide)
+        );
+        assert_eq!(background_tray_action_for_command("unknown"), None);
+    }
+
+    #[test]
+    fn tray_player_visibility_mailbox_preserves_rapid_toggle_and_latest_anchor() {
+        let mut state = BackgroundTrayPlayerVisibilityState::default();
+        let first_anchor = PhysicalWindowRect {
+            x: 100,
+            y: 200,
+            width: 24,
+            height: 24,
+        };
+        let second_anchor = PhysicalWindowRect {
+            x: 300,
+            y: 400,
+            width: 32,
+            height: 32,
+        };
+
+        state.toggle(first_anchor);
+        assert!(state.desired_visible);
+        assert_eq!(state.anchor_rect, Some(first_anchor));
+        let first_generation = state.generation;
+
+        state.toggle(second_anchor);
+        assert!(!state.desired_visible);
+        assert_eq!(state.anchor_rect, Some(first_anchor));
+        assert_eq!(state.generation, first_generation.wrapping_add(1));
+
+        state.toggle(second_anchor);
+        assert!(state.desired_visible);
+        assert_eq!(state.anchor_rect, Some(second_anchor));
+
+        state.set_visibility(false, None);
+        assert!(!state.desired_visible);
+        assert_eq!(state.anchor_rect, Some(second_anchor));
+    }
+
+    #[test]
+    fn positions_tray_player_inside_each_monitor_edge() {
+        let monitor_rect = PhysicalWindowRect {
+            x: -1920,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        };
+        let top = tray_player_position(
+            PhysicalWindowRect {
+                x: -1020,
+                y: 0,
+                width: 40,
+                height: 40,
+            },
+            380,
+            192,
+            PhysicalWindowRect {
+                y: 40,
+                height: 1040,
+                ..monitor_rect
+            },
+            monitor_rect,
+            8,
+        );
+        assert_eq!((top.x, top.y), (-1190, 48));
+        let bottom = tray_player_position(
+            PhysicalWindowRect {
+                x: -1020,
+                y: 1040,
+                width: 40,
+                height: 40,
+            },
+            380,
+            192,
+            PhysicalWindowRect {
+                height: 1040,
+                ..monitor_rect
+            },
+            monitor_rect,
+            8,
+        );
+        assert_eq!((bottom.x, bottom.y), (-1190, 840));
+        let left = tray_player_position(
+            PhysicalWindowRect {
+                x: -1920,
+                y: 480,
+                width: 40,
+                height: 40,
+            },
+            380,
+            192,
+            PhysicalWindowRect {
+                x: -1880,
+                width: 1880,
+                ..monitor_rect
+            },
+            monitor_rect,
+            8,
+        );
+        assert_eq!((left.x, left.y), (-1872, 404));
+        let right = tray_player_position(
+            PhysicalWindowRect {
+                x: -40,
+                y: 480,
+                width: 40,
+                height: 40,
+            },
+            380,
+            192,
+            PhysicalWindowRect {
+                width: 1880,
+                ..monitor_rect
+            },
+            monitor_rect,
+            8,
+        );
+        assert_eq!((right.x, right.y), (-428, 404));
+
+        let tiny = tray_player_position(
+            PhysicalWindowRect {
+                x: 50,
+                y: 75,
+                width: 1,
+                height: 1,
+            },
+            380,
+            192,
+            PhysicalWindowRect {
+                x: 0,
+                y: 0,
+                width: 100,
+                height: 80,
+            },
+            PhysicalWindowRect {
+                x: 0,
+                y: 0,
+                width: 100,
+                height: 80,
+            },
+            8,
+        );
+        assert_eq!((tiny.x, tiny.y), (0, 0));
+
+        let negative_tiny = tray_player_position(
+            PhysicalWindowRect {
+                x: -1870,
+                y: -1010,
+                width: 1,
+                height: 1,
+            },
+            380,
+            192,
+            PhysicalWindowRect {
+                x: -1920,
+                y: -1080,
+                width: 100,
+                height: 80,
+            },
+            PhysicalWindowRect {
+                x: -1920,
+                y: -1080,
+                width: 100,
+                height: 80,
+            },
+            8,
+        );
+        assert_eq!((negative_tiny.x, negative_tiny.y), (-1920, -1080));
+
+        let clamped_to_work_area = tray_player_position(
+            PhysicalWindowRect {
+                x: -1920,
+                y: 0,
+                width: 40,
+                height: 40,
+            },
+            380,
+            192,
+            PhysicalWindowRect {
+                x: -1880,
+                y: 40,
+                width: 1880,
+                height: 1040,
+            },
+            monitor_rect,
+            8,
+        );
+        assert_eq!(
+            (clamped_to_work_area.x, clamped_to_work_area.y),
+            (-1880, 48)
+        );
+    }
+
+    #[test]
+    fn extracts_the_physical_tray_icon_rectangle() {
+        let rect = Rect {
+            position: Position::Physical(PhysicalPosition::new(-32, 1040)),
+            size: Size::Physical(PhysicalSize::new(24, 24)),
+        };
+
+        assert_eq!(
+            physical_tray_icon_rect(rect),
+            Some(PhysicalWindowRect {
+                x: -32,
+                y: 1040,
+                width: 24,
+                height: 24,
+            })
+        );
+
+        assert!(
+            physical_tray_icon_rect(Rect {
+                position: Position::Logical(tauri::LogicalPosition::new(-32.0, 1040.0)),
+                size: Size::Physical(PhysicalSize::new(24, 24)),
+            })
+            .is_none()
+        );
+        assert!(
+            physical_tray_icon_rect(Rect {
+                position: Position::Physical(PhysicalPosition::new(-32, 1040)),
+                size: Size::Logical(tauri::LogicalSize::new(24.0, 24.0)),
+            })
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn scales_tray_player_dimensions_for_the_target_monitor() {
+        assert_eq!(
+            tray_player_physical_dimension(BACKGROUND_TRAY_PLAYER_WIDTH, 1.0),
+            380
+        );
+        assert_eq!(
+            tray_player_physical_dimension(BACKGROUND_TRAY_PLAYER_WIDTH, 1.5),
+            570
+        );
+        assert_eq!(
+            tray_player_physical_dimension(BACKGROUND_TRAY_PLAYER_HEIGHT, 2.0),
+            384
+        );
+    }
+
+    #[test]
+    fn validates_background_tray_cover_payload_before_native_menu_use() {
+        let mut state = BackgroundTrayMenuState {
+            cover: Some(BackgroundTrayCover {
+                rgba: vec![10, 20, 30, 255],
+                width: 1,
+                height: 1,
+            }),
+            ..BackgroundTrayMenuState::default()
+        };
+        let image = background_tray_cover_image(&state).expect("valid cover");
+        assert_eq!(image.width(), 1);
+        assert_eq!(image.height(), 1);
+
+        state.cover = Some(BackgroundTrayCover {
+            rgba: vec![10, 20, 30, 255],
+            width: 0,
+            height: 1,
+        });
+        assert!(background_tray_cover_image(&state).is_none());
+
+        state.cover = Some(BackgroundTrayCover {
+            rgba: vec![10, 20, 30],
+            width: 1,
+            height: 1,
+        });
+        assert!(background_tray_cover_image(&state).is_none());
+
+        state.cover = Some(BackgroundTrayCover {
+            rgba: vec![10, 20, 30, 0],
+            width: 1,
+            height: 1,
+        });
+        assert!(background_tray_cover_image(&state).is_none());
+    }
 
     #[test]
     fn hidden_restore_excludes_visibility_and_maximization() {

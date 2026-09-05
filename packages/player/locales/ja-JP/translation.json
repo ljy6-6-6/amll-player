@@ -23,6 +23,12 @@
 			"toggleLyrics": "歌詞を表示",
 			"windowAlwaysOnTop": "窗口置顶"
 		},
+		"tray": {
+			"exit": "終了",
+			"pause": "一時停止",
+			"showWindow": "ウィンドウを表示",
+			"taskbarLyric": "タスクバー歌詞"
+		},
 		"loadAudioError": "播放后端加载音频失败\n{error}",
 		"migrationDialog": {
 			"completedDesc": "{count} 件のデータをインポートしました。",
@@ -292,6 +298,15 @@
 				"windowAlwaysOnTop": {
 					"description": "将应用窗口设置为始终置顶",
 					"label": "启用窗口置顶"
+				},
+				"windowCloseBehavior": {
+					"description": "閉じるときにプレーヤーをタスクトレイへ最小化するか選択します。",
+					"label": "閉じるときの動作",
+					"menu": {
+						"alwaysMinimize": "常にタスクトレイへ最小化",
+						"exit": "すぐに終了",
+						"minimizeWhenPlaying": "再生中は最小化"
+					}
 				}
 			},
 			"lyricAppearance": {

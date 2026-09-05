@@ -588,6 +588,10 @@ export class PlayQueueManager {
 		return this.playSongAt(this.currentIndex, !this.desiredPlaying);
 	}
 
+	isPlaybackRequested(): boolean {
+		return !this.disposed && this.desiredPlaying;
+	}
+
 	togglePlayback(): void {
 		this.setPlaybackState(!this.desiredPlaying);
 	}

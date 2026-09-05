@@ -23,6 +23,12 @@
 			"toggleLyrics": "Hiển thị lời bài hát",
 			"windowAlwaysOnTop": "窗口置顶"
 		},
+		"tray": {
+			"exit": "Thoát",
+			"pause": "Tạm dừng",
+			"showWindow": "Hiện cửa sổ",
+			"taskbarLyric": "Lời bài hát trên thanh tác vụ"
+		},
 		"loadAudioError": "Lỗi tải âm thanh từ tệp {error}",
 		"migrationDialog": {
 			"completedDesc": "Đã nhập thành công {count} mục.",
@@ -292,6 +298,15 @@
 				"windowAlwaysOnTop": {
 					"description": "将应用窗口设置为始终置顶",
 					"label": "启用窗口置顶"
+				},
+				"windowCloseBehavior": {
+					"description": "Chọn xem trình phát có thu nhỏ vào khay hệ thống khi đóng hay không.",
+					"label": "Hành vi khi đóng",
+					"menu": {
+						"alwaysMinimize": "Luôn thu nhỏ vào khay hệ thống",
+						"exit": "Thoát ngay",
+						"minimizeWhenPlaying": "Thu nhỏ khi đang phát"
+					}
 				}
 			},
 			"lyricAppearance": {

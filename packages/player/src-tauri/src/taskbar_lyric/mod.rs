@@ -240,6 +240,17 @@ impl TaskbarLyricVisibility {
         self.state.lock().unwrap().generation
     }
 
+    fn current_window_identity(&self) -> Option<(u64, usize)> {
+        let state = self.state.lock().unwrap();
+        state
+            .window_hwnd
+            .map(|window_hwnd| (state.generation, window_hwnd))
+    }
+
+    fn is_shown(&self) -> bool {
+        self.state.lock().unwrap().shown
+    }
+
     fn is_current(&self, generation: u64) -> bool {
         self.current_generation() == generation
     }
@@ -611,8 +622,9 @@ fn schedule_webview_hwnd_lookup(
                             warn!("多次重试后仍未能初始化任务栏歌词 WebView 鼠标转发");
                             schedule_taskbar_generation_cleanup(&app, generation);
                             if let Some(window) = window {
-                                let _ = window.hide();
-                                let _ = window.destroy();
+                                destroy_taskbar_window(&app, &window);
+                            } else {
+                                crate::window::reconcile_background_restore_entry(&app);
                             }
                         }
                     }
@@ -650,7 +662,9 @@ fn show_taskbar_lyric_if_ready(app: &tauri::AppHandle, generation: u64, should_s
     }
 
     if window.show().is_ok() {
-        state.visibility.mark_show_succeeded(generation);
+        if state.visibility.mark_show_succeeded(generation) {
+            crate::window::reconcile_background_restore_entry(app);
+        }
     } else {
         handle_taskbar_show_failure(app, generation, Some(&window));
     }
@@ -695,6 +709,7 @@ fn invalidate_taskbar_generation(app: &tauri::AppHandle, generation: u64) -> boo
     }
 
     schedule_taskbar_generation_cleanup(app, generation);
+    crate::window::reconcile_background_restore_entry(app);
     true
 }
 
@@ -717,8 +732,16 @@ fn invalidate_and_destroy_taskbar_window(
     if !invalidate_taskbar_generation(app, generation) {
         return;
     }
+    destroy_taskbar_window(app, window);
+}
+
+fn destroy_taskbar_window(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
     let _ = window.hide();
-    let _ = window.destroy();
+    if let Err(error) = window.destroy() {
+        warn!("销毁任务栏歌词窗口失败：{error}");
+        // No Destroyed event will arrive to schedule the normal recovery.
+        crate::window::reconcile_background_restore_entry(app);
+    }
 }
 
 fn schedule_taskbar_layout_watchdog(app: tauri::AppHandle, generation: u64) {
@@ -888,11 +911,61 @@ pub fn close_taskbar_lyric(app: tauri::AppHandle) {
         {
             state.take_resources_for_generation(generation);
             if let Some(window) = window {
-                let _ = window.hide();
-                let _ = window.destroy();
+                destroy_taskbar_window(&app, &window);
+            } else {
+                crate::window::reconcile_background_restore_entry(&app);
             }
         }
     }
+}
+
+pub(crate) fn schedule_destroyed_window_recovery(app: tauri::AppHandle) {
+    let recovery_target = app
+        .try_state::<TaskbarLyricState>()
+        .and_then(|state| state.visibility.current_window_identity());
+
+    tauri::async_runtime::spawn(async move {
+        // WindowEvent::Destroyed runs on Tao's event loop. Defer all state
+        // cleanup and window queries so that callback can return immediately.
+        tokio::task::yield_now().await;
+
+        let mut should_reopen = false;
+        if let (Some(state), Some((generation, destroyed_hwnd))) =
+            (app.try_state::<TaskbarLyricState>(), recovery_target)
+        {
+            if state.visibility.window_matches(generation, destroyed_hwnd)
+                && state
+                    .visibility
+                    .invalidate_if_current_with(generation, mouse_forward::stop_mouse_hook)
+                    .is_some()
+            {
+                state.take_resources_for_generation(generation);
+                should_reopen = app.get_webview_window("main").is_some();
+            }
+        }
+
+        let mut window_removed = false;
+        for _ in 0..50 {
+            if app.get_webview_window("taskbar-lyric").is_none() {
+                window_removed = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        crate::window::reconcile_background_restore_entry(&app);
+        if should_reopen && window_removed {
+            open_taskbar_lyric(app);
+        } else if should_reopen {
+            warn!("任务栏歌词窗口销毁后仍未从窗口管理器移除，保留托盘恢复入口");
+        }
+    });
+}
+
+pub(crate) fn taskbar_lyric_restore_available(app: &tauri::AppHandle) -> bool {
+    app.try_state::<TaskbarLyricState>()
+        .is_some_and(|state| state.visibility.is_shown())
+        && app.get_webview_window("taskbar-lyric").is_some()
 }
 
 #[tauri::command]
@@ -1113,14 +1186,14 @@ pub fn open_taskbar_lyric(app: tauri::AppHandle) {
                 .try_state::<TaskbarLyricState>()
                 .is_some_and(|state| state.visibility.is_current(generation));
             if !is_current {
-                let _ = win.destroy();
+                destroy_taskbar_window(&app_clone, &win);
                 return;
             }
 
             if let Ok(hwnd) = win.hwnd() {
                 let hwnd_ptr = hwnd.0 as usize;
                 if !state.visibility.bind_window(generation, hwnd_ptr) {
-                    let _ = win.destroy();
+                    destroy_taskbar_window(&app_clone, &win);
                     return;
                 }
 
@@ -1192,7 +1265,7 @@ pub fn open_taskbar_lyric(app: tauri::AppHandle) {
                     };
                     let install_result = state.install_watchers(generation, watchers);
                     if install_result.is_err() {
-                        let _ = win.destroy();
+                        destroy_taskbar_window(&app_clone, &win);
                         return;
                     }
                     schedule_webview_hwnd_lookup(app_clone.clone(), generation, hwnd_ptr, false);
