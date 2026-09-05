@@ -10,8 +10,7 @@
 	);
 	min-height: 0;
 	overflow: hidden;
-	background-color: var(--black-a9);
-	backdrop-filter: blur(1em);
+	background-color: transparent;
 	color: var(--gray-12);
 }
 
@@ -197,7 +196,7 @@
 
 .playlistSongItem.current {
 	border-left-color: var(--accent-9);
-	background-color: var(--accent-a3);
+	background-color: var(--accent-4);
 }
 
 .queueViewport.suppressHover

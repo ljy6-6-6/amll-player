@@ -55,6 +55,13 @@ test("随机、循环、歌词和队列按钮使用克制的独立反馈", () =>
 });
 
 test("全屏队列按钮接入现有播放队列并显示在全屏层内", () => {
+	const dismissLayerRule =
+		wrapperStyle.match(
+			/\.fullscreenPlaylistDismissLayer\s*\{[\s\S]*?\}/,
+		)?.[0] ?? "";
+	const panelRule =
+		wrapperStyle.match(/\.fullscreenPlaylistPanel\s*\{[\s\S]*?\}/)?.[0] ?? "";
+
 	assert.match(wrapper, /FULLSCREEN_PLAYLIST_TOGGLE_SELECTOR/);
 	assert.match(wrapper, /setPlaylistOpened\(\(opened\) => !opened\)/);
 	assert.match(wrapper, /<NowPlaylistCard/);
@@ -67,9 +74,32 @@ test("全屏队列按钮接入现有播放队列并显示在全屏层内", () =>
 	assert.match(wrapperStyle, /--amll-fullscreen-playlist-bottom/);
 	assert.match(wrapperStyle, /--amll-fullscreen-playlist-max-height/);
 	assert.match(wrapperStyle, /data-amll-playlist-opened="true"/);
+	assert.match(dismissLayerRule, /background:\s*rgb\(0 0 0 \/ 0\.16\)/);
+	assert.doesNotMatch(dismissLayerRule, /backdrop-filter/);
+	assert.match(panelRule, /isolation:\s*isolate/);
+	assert.match(panelRule, /background-color:\s*transparent/);
+	assert.doesNotMatch(panelRule, /backdrop-filter/);
+	assert.match(wrapper, /fullscreenPlaylistSnapshotSupported/);
+	assert.match(wrapper, /fullscreenPlaylistSurfaceReady/);
+	assert.match(wrapper, /fullscreenPlaylistPanelSnapshot/);
+	assert.match(wrapper, /fullscreenPlaylistPanelLive/);
+	assert.match(
+		wrapperStyle,
+		/\.fullscreenPlaylistPanelSnapshot\s*\{[\s\S]*background-color:\s*var\(--gray-2\)/,
+	);
+	assert.match(
+		wrapperStyle,
+		/\.fullscreenPlaylistPanelLive\s*\{[\s\S]*backdrop-filter:\s*blur\(18px\)/,
+	);
+	assert.match(wrapper, /<PlaylistSnapshotBackdrop/);
+	assert.match(wrapper, /variant="fullscreen"/);
+	assert.match(
+		wrapperStyle,
+		/\.cursorHiddenOverlay\s*\{[\s\S]*pointer-events:\s*none/,
+	);
 	assert.match(
 		nowPlayingBar,
-		/playlistOpened && !isLyricPageOpened/,
+		/playlistOpened\s*&&\s*!isLyricPageOpened/,
 		"全屏打开时不应在底栏后方重复渲染队列",
 	);
 	assert.match(nowPlayingBar, /!playlistOpened \|\| isLyricPageOpened/);

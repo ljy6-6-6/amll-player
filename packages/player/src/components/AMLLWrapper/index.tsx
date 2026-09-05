@@ -4,6 +4,7 @@ import {
 	PrebuiltLyricPlayer,
 } from "@applemusic-like-lyrics/react-full";
 import { ContextMenu } from "@radix-ui/themes";
+import { platform } from "@tauri-apps/plugin-os";
 import classnames from "classnames";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
@@ -22,6 +23,10 @@ import { AMLLContextMenuContent } from "../AMLLContextMenu/index.tsx";
 import { AudioQualityDialog } from "../AudioQualityDialog/index.tsx";
 import { BottomLyricInfo } from "../BottomLyricInfo";
 import { NowPlaylistCard } from "../NowPlaylistCard/index.tsx";
+import {
+	PlaylistSnapshotBackdrop,
+	usePlaylistBackdropSnapshot,
+} from "../PlaylistSnapshotBackdrop/index.tsx";
 import { RecordPanel } from "../RecordPanel/index.tsx";
 import { SongVideoBackground } from "../SongVideoBackground/index.tsx";
 import { shouldPreservePointerFocusMode } from "./focus-modality.ts";
@@ -119,6 +124,17 @@ export const AMLLWrapper: FC = () => {
 	const fullscreenPlaylistPanelRef = useRef<HTMLDivElement>(null);
 	const fullscreenPlaylistToggleRef = useRef<HTMLButtonElement>(null);
 	const previousLyricPageOpenedRef = useRef(isLyricPageOpened);
+	const fullscreenPlaylistActive = isLyricPageOpened && playlistOpened;
+	const fullscreenPlaylistSnapshotSupported = platform() === "windows";
+	const fullscreenPlaylistBackdrop = usePlaylistBackdropSnapshot(
+		fullscreenPlaylistActive && fullscreenPlaylistSnapshotSupported,
+	);
+	const fullscreenPlaylistSurfaceReady =
+		fullscreenPlaylistActive &&
+		(!fullscreenPlaylistSnapshotSupported ||
+			fullscreenPlaylistBackdrop.isReady);
+	const useCapturedFullscreenPlaylistSurface =
+		fullscreenPlaylistBackdrop.source !== null;
 
 	const findVisibleFullscreenPlaylistToggle = () => {
 		const remembered = fullscreenPlaylistToggleRef.current;
@@ -245,7 +261,7 @@ export const AMLLWrapper: FC = () => {
 			observer.disconnect();
 			window.removeEventListener("resize", schedulePlacement);
 		};
-	}, [isLyricPageOpened, playlistOpened]);
+	}, [fullscreenPlaylistBackdrop.isReady, isLyricPageOpened, playlistOpened]);
 
 	useLayoutEffect(() => {
 		if (previousLyricPageOpenedRef.current && !isLyricPageOpened) {
@@ -337,10 +353,11 @@ export const AMLLWrapper: FC = () => {
 								backgroundSlot={<SongVideoBackground />}
 							/>
 						</div>
-						{isLyricPageOpened && playlistOpened && (
+						{fullscreenPlaylistSurfaceReady && (
 							<>
 								<button
 									className={styles.fullscreenPlaylistDismissLayer}
+									data-amll-playlist-dismiss-layer=""
 									type="button"
 									tabIndex={-1}
 									aria-label={t("playbar.playlist.close", "关闭当前播放列表")}
@@ -351,10 +368,22 @@ export const AMLLWrapper: FC = () => {
 								/>
 								<div
 									ref={fullscreenPlaylistPanelRef}
-									className={styles.fullscreenPlaylistPanel}
+									className={classnames(
+										styles.fullscreenPlaylistPanel,
+										useCapturedFullscreenPlaylistSurface
+											? styles.fullscreenPlaylistPanelSnapshot
+											: styles.fullscreenPlaylistPanelLive,
+									)}
 									data-amll-playlist-panel=""
 									onPointerDown={(event) => event.stopPropagation()}
 								>
+									{useCapturedFullscreenPlaylistSurface &&
+										fullscreenPlaylistBackdrop.source && (
+											<PlaylistSnapshotBackdrop
+												source={fullscreenPlaylistBackdrop.source}
+												variant="fullscreen"
+											/>
+										)}
 									<NowPlaylistCard
 										id="fullscreen-now-playlist-card"
 										className={styles.fullscreenPlaylistCard}

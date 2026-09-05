@@ -20,6 +20,7 @@ import {
 	TrackPreviousIcon,
 } from "@radix-ui/react-icons";
 import { Flex, IconButton } from "@radix-ui/themes";
+import { platform } from "@tauri-apps/plugin-os";
 import classNames from "classnames";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
@@ -30,13 +31,20 @@ import {
 	useRef,
 	useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import IconForward from "../../assets/icon_forward.svg?react";
 import IconRewind from "../../assets/icon_rewind.svg?react";
 import {
+	hasBackgroundAtom,
 	hideNowPlayingBarAtom,
 	playlistCardOpenedAtom,
 } from "../../states/appAtoms.ts";
+import {
+	homeBackgroundConfigAtom,
+	homeBackgroundLoadedAtom,
+} from "../../states/homeBackgroundAtoms.ts";
+import { isCustomHomeBackground } from "../../utils/home-background-state.ts";
 import { AnimatedPlayPauseIcon } from "../AnimatedPlayPauseIcon/index.tsx";
 import {
 	captureFullscreenCoverTransition,
@@ -44,6 +52,10 @@ import {
 	type FullscreenCoverTransitionSnapshot,
 } from "../FullscreenCoverTransition/index.tsx";
 import { NowPlaylistCard } from "../NowPlaylistCard/index.tsx";
+import {
+	PlaylistSnapshotBackdrop,
+	usePlaylistBackdropSnapshot,
+} from "../PlaylistSnapshotBackdrop/index.tsx";
 import styles from "./index.module.css";
 
 const VIEWPORT_RESIZE_SETTLE_DELAY = 120;
@@ -58,10 +70,15 @@ export const NowPlayingBar: FC = () => {
 	const musicCover = useAtomValue(musicCoverAtom);
 	const musicCoverIsVideo = useAtomValue(musicCoverIsVideoAtom);
 	const musicId = useAtomValue(musicIdAtom);
+	const hasBackground = useAtomValue(hasBackgroundAtom);
+	const homeBackgroundConfig = useAtomValue(homeBackgroundConfigAtom);
+	const homeBackgroundLoaded = useAtomValue(homeBackgroundLoadedAtom);
 	const [playlistOpened, setPlaylistOpened] = useAtom(playlistCardOpenedAtom);
 	const setLyricPageOpened = useSetAtom(isLyricPageOpenedAtom);
 	const [coverTransition, setCoverTransition] =
 		useState<FullscreenCoverTransitionSnapshot | null>(null);
+	const [playlistPortalTarget, setPlaylistPortalTarget] =
+		useState<HTMLElement | null>(null);
 	const previousLyricPageOpenedRef = useRef(isLyricPageOpened);
 	const coverTransitionBusyRef = useRef(false);
 
@@ -74,6 +91,31 @@ export const NowPlayingBar: FC = () => {
 	const playlistPanelRef = useRef<HTMLDivElement>(null);
 	const playlistDismissLayerRef = useRef<HTMLButtonElement>(null);
 	const playlistToggleButtonRef = useRef<HTMLButtonElement>(null);
+	const normalPlaylistActive =
+		playlistOpened && !isLyricPageOpened && playlistPortalTarget !== null;
+	const playlistSnapshotSupported = platform() === "windows";
+	const useNativeHomeMaterial =
+		homeBackgroundLoaded &&
+		playlistSnapshotSupported &&
+		!hasBackground &&
+		!isCustomHomeBackground(homeBackgroundConfig);
+	const usePlaylistSnapshot =
+		normalPlaylistActive &&
+		homeBackgroundLoaded &&
+		playlistSnapshotSupported &&
+		!useNativeHomeMaterial;
+	const playlistBackdrop = usePlaylistBackdropSnapshot(
+		usePlaylistSnapshot,
+		`${homeBackgroundConfig.mode}:${homeBackgroundConfig.assetId ?? ""}:${homeBackgroundConfig.updatedAt}`,
+	);
+	const playlistSurfaceReady =
+		normalPlaylistActive &&
+		homeBackgroundLoaded &&
+		(useNativeHomeMaterial ||
+			!playlistSnapshotSupported ||
+			playlistBackdrop.isReady);
+	const useCapturedPlaylistSurface =
+		!useNativeHomeMaterial && playlistBackdrop.source !== null;
 	const finishCoverTransition = useCallback(() => {
 		coverTransitionBusyRef.current = false;
 		setCoverTransition(null);
@@ -125,6 +167,9 @@ export const NowPlayingBar: FC = () => {
 	useLayoutEffect(() => {
 		const playbarEl = playbarRef.current;
 		if (!playbarEl) return;
+		setPlaylistPortalTarget(
+			playbarEl.closest<HTMLElement>("[data-amll-player-overlay-root]"),
+		);
 		const playbarBoundary = playbarEl.closest<HTMLElement>(
 			"[data-amll-playbar-boundary]",
 		);
@@ -268,42 +313,60 @@ export const NowPlayingBar: FC = () => {
 		 	left="0"
 		 	right="0"
 			> */}
-			{playlistOpened && !isLyricPageOpened && (
-				<>
-					<button
-						ref={playlistDismissLayerRef}
-						className={styles.playlistDismissLayer}
-						type="button"
-						tabIndex={-1}
-						aria-label={t("playbar.playlist.close", "关闭当前播放列表")}
-						onPointerDown={(event) => event.preventDefault()}
-						onClick={(event) => {
-							event.preventDefault();
-							event.stopPropagation();
-							setPlaylistOpened(false);
-							playlistToggleButtonRef.current?.focus();
-						}}
-					/>
-					<Flex
-						className={styles.playlistPanel}
-						direction="row-reverse"
-						mx="3"
-						position="absolute"
-						right="0"
-						bottom="calc(var(--amll-player-playbar-bottom) + var(--space-3))"
-						ref={playlistPanelRef}
-					>
-						<NowPlaylistCard
-							id="now-playlist-card"
-							className={classNames(styles.playlistCard)}
-							onRequestClose={() => {
+			{playlistSurfaceReady &&
+				playlistPortalTarget &&
+				createPortal(
+					<>
+						<button
+							ref={playlistDismissLayerRef}
+							className={styles.playlistDismissLayer}
+							data-amll-playlist-dismiss-layer=""
+							type="button"
+							tabIndex={-1}
+							aria-label={t("playbar.playlist.close", "关闭当前播放列表")}
+							onPointerDown={(event) => event.preventDefault()}
+							onClick={(event) => {
+								event.preventDefault();
+								event.stopPropagation();
 								setPlaylistOpened(false);
 								playlistToggleButtonRef.current?.focus();
 							}}
 						/>
-					</Flex>
-				</>
-			)}
+						<Flex
+							className={classNames(
+								styles.playlistPanel,
+								useNativeHomeMaterial
+									? styles.playlistPanelNative
+									: useCapturedPlaylistSurface
+										? styles.playlistPanelSnapshot
+										: styles.playlistPanelLive,
+							)}
+							direction="row-reverse"
+							mx="3"
+							position="fixed"
+							right="0"
+							bottom="calc(var(--amll-player-playbar-bottom) + var(--space-3))"
+							ref={playlistPanelRef}
+							data-amll-playlist-panel=""
+						>
+							{useCapturedPlaylistSurface && playlistBackdrop.source && (
+								<PlaylistSnapshotBackdrop
+									source={playlistBackdrop.source}
+									variant="compact"
+								/>
+							)}
+							<NowPlaylistCard
+								id="now-playlist-card"
+								className={classNames(styles.playlistCard)}
+								onRequestClose={() => {
+									setPlaylistOpened(false);
+									playlistToggleButtonRef.current?.focus();
+								}}
+							/>
+						</Flex>
+					</>,
+					playlistPortalTarget,
+				)}
 			<Flex
 				className={classNames(
 					styles.playBar,

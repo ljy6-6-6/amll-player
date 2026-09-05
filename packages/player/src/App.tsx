@@ -92,6 +92,7 @@ function App() {
 						onDismiss={migration.dismiss}
 					/>
 					<Box
+						data-amll-player-overlay-root=""
 						className={classNames(
 							styles.body,
 							isLyricPageOpened && styles.amllOpened,

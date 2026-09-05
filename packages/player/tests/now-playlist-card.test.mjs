@@ -12,6 +12,7 @@ import {
 const readProjectFile = (path) =>
 	readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf8");
 
+const app = readProjectFile("../src/App.tsx");
 const queueCard = readProjectFile(
 	"../src/components/NowPlaylistCard/index.tsx",
 );
@@ -20,6 +21,15 @@ const queueCardStyle = readProjectFile(
 );
 const nowPlayingBar = readProjectFile(
 	"../src/components/NowPlayingBar/index.tsx",
+);
+const nowPlayingBarStyle = readProjectFile(
+	"../src/components/NowPlayingBar/index.module.css",
+);
+const playlistSnapshotBackdrop = readProjectFile(
+	"../src/components/PlaylistSnapshotBackdrop/index.tsx",
+);
+const playlistSnapshotBackdropStyle = readProjectFile(
+	"../src/components/PlaylistSnapshotBackdrop/index.module.css",
 );
 const appContainerStyle = readProjectFile(
 	"../src/components/AppContainer/index.module.css",
@@ -70,6 +80,98 @@ test("队列行单击即可播放且当前歌曲有明确状态", () => {
 	assert.match(queueCard, /playbar\.playlist\.current/);
 	assert.match(queueCardStyle, /\.playlistSongItem\.current\s*\{/);
 	assert.match(queueCardStyle, /border-left-color:\s*var\(--accent-9\)/);
+});
+
+test("队列弹层按首页背景来源选择原生材质或打开前快照", () => {
+	const rootRule = queueCardStyle.match(/\.root\s*\{[\s\S]*?\}/)?.[0] ?? "";
+	const panelRule =
+		nowPlayingBarStyle.match(/\.playlistPanel\s*\{[\s\S]*?\}/)?.[0] ?? "";
+	const nativePanelRule =
+		nowPlayingBarStyle.match(/\.playlistPanelNative\s*\{[\s\S]*?\}/)?.[0] ?? "";
+	const snapshotPanelRule =
+		nowPlayingBarStyle.match(/\.playlistPanelSnapshot\s*\{[\s\S]*?\}/)?.[0] ??
+		"";
+	const livePanelRule =
+		nowPlayingBarStyle.match(/\.playlistPanelLive\s*\{[\s\S]*?\}/)?.[0] ?? "";
+	const currentRule =
+		queueCardStyle.match(/\.playlistSongItem\.current\s*\{[\s\S]*?\}/)?.[0] ??
+		"";
+
+	assert.match(rootRule, /background-color:\s*transparent/);
+	assert.doesNotMatch(rootRule, /backdrop-filter/);
+	assert.match(panelRule, /isolation:\s*isolate/);
+	assert.match(panelRule, /background-color:\s*transparent/);
+	assert.doesNotMatch(panelRule, /backdrop-filter/);
+	assert.match(snapshotPanelRule, /background-color:\s*var\(--gray-2\)/);
+	assert.match(
+		nativePanelRule,
+		/background-color:\s*color-mix\(in srgb, var\(--gray-2\) 58%, transparent\)/,
+	);
+	assert.doesNotMatch(nativePanelRule, /backdrop-filter/);
+	assert.match(livePanelRule, /background-color:\s*color-mix/);
+	assert.match(livePanelRule, /backdrop-filter:\s*blur\(14px\)/);
+	assert.match(
+		playlistSnapshotBackdrop,
+		/invoke<string>\("take_screenshot",\s*\{[\s\S]*resizeWindow:\s*false[\s\S]*recoverSize:\s*false/,
+	);
+	assert.match(playlistSnapshotBackdrop, /waitForUnobscuredFrame\(\)/);
+	assert.match(playlistSnapshotBackdrop, /waitForTransientPlayerMotion\(\)/);
+	assert.match(playlistSnapshotBackdrop, /beginCaptureGuard\(\)/);
+	assert.match(
+		playlistSnapshotBackdrop,
+		/withTimeout\([\s\S]*SNAPSHOT_CAPTURE_TIMEOUT_MS/,
+	);
+	assert.match(
+		playlistSnapshotBackdrop,
+		/placementObserver\.observe\(document\.body,[\s\S]*attributeFilter:\s*\["style"\]/,
+	);
+	assert.match(
+		playlistSnapshotBackdropStyle,
+		/html\[data-amll-playlist-capturing\][\s\S]*data-amll-playlist-panel/,
+	);
+	assert.match(
+		playlistSnapshotBackdrop,
+		/await withTimeout\(decodeSnapshot\(source\), SNAPSHOT_CAPTURE_TIMEOUT_MS\)/,
+	);
+	assert.match(
+		playlistSnapshotBackdropStyle,
+		/filter:\s*blur\(var\(--playlist-snapshot-blur\)\)[\s\S]*brightness\(var\(--playlist-snapshot-brightness\)\)/,
+	);
+	assert.match(
+		playlistSnapshotBackdropStyle,
+		/\.root\[data-variant="compact"\][\s\S]*--playlist-snapshot-blur:\s*clamp\(10px,\s*1\.6vh,\s*16px\)[\s\S]*--playlist-snapshot-brightness:\s*0\.74[\s\S]*--playlist-snapshot-saturation:\s*1\.22[\s\S]*--playlist-snapshot-scale:\s*1\.06[\s\S]*--playlist-snapshot-tint:\s*30%/,
+	);
+	assert.match(
+		playlistSnapshotBackdropStyle,
+		/--playlist-snapshot-blur:\s*26px[\s\S]*--playlist-snapshot-brightness:\s*0\.72[\s\S]*--playlist-snapshot-saturation:\s*1\.15[\s\S]*--playlist-snapshot-tint:\s*46%[\s\S]*saturate\(var\(--playlist-snapshot-saturation\)\)/,
+	);
+	assert.match(currentRule, /background-color:\s*var\(--accent-4\)/);
+	assert.doesNotMatch(currentRule, /--accent-a3/);
+});
+
+test("普通队列挂载到播放栏合成边界之外并保留主题上下文", () => {
+	assert.match(app, /data-amll-player-overlay-root=""/);
+	assert.match(nowPlayingBar, /createPortal/);
+	assert.match(
+		nowPlayingBar,
+		/closest<HTMLElement>\("\[data-amll-player-overlay-root\]"\)/,
+	);
+	assert.match(nowPlayingBar, /position="fixed"/);
+	assert.match(nowPlayingBar, /homeBackgroundLoadedAtom/);
+	assert.match(nowPlayingBar, /hasBackgroundAtom/);
+	assert.match(nowPlayingBar, /isCustomHomeBackground/);
+	assert.match(nowPlayingBar, /playlistSnapshotSupported/);
+	assert.match(nowPlayingBar, /usePlaylistSnapshot/);
+	assert.match(
+		nowPlayingBar,
+		/useNativeHomeMaterial \|\|[\s\S]*!playlistSnapshotSupported \|\|[\s\S]*playlistBackdrop\.isReady/,
+	);
+	assert.match(nowPlayingBar, /homeBackgroundConfig\.updatedAt/);
+	assert.match(nowPlayingBar, /styles\.playlistPanelNative/);
+	assert.match(nowPlayingBar, /styles\.playlistPanelSnapshot/);
+	assert.match(nowPlayingBar, /styles\.playlistPanelLive/);
+	assert.match(nowPlayingBar, /<PlaylistSnapshotBackdrop/);
+	assert.match(appContainerStyle, /\.playbar\s*\{[\s\S]*?isolation:\s*isolate/);
 });
 
 test("队列弹层只保留逐项移除并通过整行拖动调整顺序", () => {
