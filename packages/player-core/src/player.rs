@@ -773,6 +773,7 @@ impl AudioPlayer {
         emitter: &AudioPlayerEventEmitter,
     ) {
         let intent_changed = self.transport_intent_playing != should_play;
+        let stream_was_running = self.stream_is_running;
         self.transport_intent_playing = should_play;
         self.cpal_state
             .publish_transport_target(if should_play { 1.0 } else { 0.0 });
@@ -792,14 +793,17 @@ impl AudioPlayer {
             let _ = self.is_playing_tx.send(false);
         }
 
-        if !intent_changed {
+        let stream_started = !stream_was_running && self.stream_is_running;
+        if !intent_changed && !stream_started {
             return;
         }
 
-        self.media_manager.update_play_state(should_play);
+        let is_actually_playing =
+            should_play && self.stream_is_running && self.current_stream.is_some();
+        self.media_manager.update_play_state(is_actually_playing);
         let _ = emitter
             .emit(AudioThreadEvent::PlayStatus {
-                is_playing: should_play,
+                is_playing: is_actually_playing,
             })
             .await;
     }
@@ -919,6 +923,14 @@ impl AudioPlayer {
             .track_finished
             .store(false, Ordering::Release);
         let _ = self.is_playing_tx.send(false);
+        self.media_manager.update_play_state(false);
+        if let Err(error) = self
+            .emitter()
+            .emit(AudioThreadEvent::PlayStatus { is_playing: false })
+            .await
+        {
+            warn!("发送播放停止状态失败：{error:?}");
+        }
 
         if let Err(error) = self
             .emitter()
@@ -932,6 +944,65 @@ impl AudioPlayer {
             .await
         {
             warn!("发送 TrackEnded 事件失败：{error:?}");
+        }
+    }
+
+    async fn fail_playback_start(
+        &mut self,
+        emitter: &AudioPlayerEventEmitter,
+        error: &anyhow::Error,
+        should_publish_stopped: bool,
+    ) {
+        warn!("启动音频播放失败：{error:#}");
+        let playback_id = self.current_playback_id.clone();
+        self.stream_generation = self.stream_generation.wrapping_add(1);
+        let gapless_generation = self
+            .gapless_prepare_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
+        if let Some(command_tx) = self.gapless_command_tx.take() {
+            let _ = command_tx.send(GaplessCommand::Clear {
+                generation: gapless_generation,
+            });
+        }
+        if let Some(token) = self.current_song_token.take() {
+            token.cancel();
+        }
+
+        self.current_stream = None;
+        self.current_decoder_handle = None;
+        self.stream_is_running = false;
+        self.transport_intent_playing = false;
+        self.cpal_state.replace_stream_lifecycle(0.0, 0.0);
+        self.cpal_state
+            .track_finished
+            .store(false, Ordering::Release);
+        {
+            let mut state = self.playback_state.write();
+            state.base_time_sec = 0.0;
+            state.samples_counter = None;
+        }
+        self.current_song = None;
+        self.current_playback_id.clear();
+        let _ = self.is_playing_tx.send(false);
+        self.media_manager.update_play_state(false);
+
+        if should_publish_stopped {
+            if let Err(status_error) = emitter
+                .emit(AudioThreadEvent::PlayStatus { is_playing: false })
+                .await
+            {
+                warn!("发送加载失败后的播放停止状态失败：{status_error:?}");
+            }
+        }
+        if let Err(event_error) = emitter
+            .emit(AudioThreadEvent::LoadError {
+                playback_id,
+                error: format!("{error:#}"),
+            })
+            .await
+        {
+            warn!("发送音频加载失败事件失败：{event_error:?}");
         }
     }
 
@@ -1099,7 +1170,11 @@ impl AudioPlayer {
                         .store(false, Ordering::Release);
                     self.current_song = Some(song.clone());
                     self.current_playback_id = playback_id.clone().unwrap_or_default();
-                    self.start_playing_song(true, *start_paused).await?;
+                    if let Err(error) = self.start_playing_song(true, *start_paused).await {
+                        let should_publish_stopped = self.transport_intent_playing;
+                        self.fail_playback_start(&emitter, &error, should_publish_stopped)
+                            .await;
+                    }
                 }
                 AudioThreadMessage::SetGaplessNext { next } => {
                     self.set_gapless_next(next.clone());
@@ -1779,6 +1854,44 @@ impl AudioPlayerHandle {
 mod tests {
     use super::*;
     use bs1770::{gated_mean, reduce_stereo, ChannelLoudnessMeter};
+
+    #[test]
+    fn load_error_serializes_the_failed_playback_identity() {
+        let value = serde_json::to_value(AudioThreadEvent::LoadError {
+            playback_id: "failed-playback".to_string(),
+            error: "decode failed".to_string(),
+        })
+        .expect("load error should serialize");
+
+        assert_eq!(value["type"], "loadError");
+        assert_eq!(value["data"]["playbackId"], "failed-playback");
+        assert_eq!(value["data"]["error"], "decode failed");
+    }
+
+    #[tokio::test]
+    async fn missing_local_song_source_returns_contextual_error() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock should be after the Unix epoch")
+            .as_nanos();
+        let missing_path = std::env::temp_dir().join(format!(
+            "amll-player-missing-source-{}-{unique}.flac",
+            std::process::id()
+        ));
+        assert!(!missing_path.exists());
+
+        let song = SongData {
+            file_path: missing_path.to_string_lossy().into_owned(),
+            song_id: None,
+        };
+        let error = match AudioPlayer::open_song_source(&song).await {
+            Ok(_) => panic!("a missing local source must fail to open"),
+            Err(error) => error,
+        };
+        let message = format!("{error:#}");
+        assert!(message.contains("打开"));
+        assert!(message.contains(&song.file_path));
+    }
 
     #[test]
     fn stale_gapless_replace_cannot_restore_a_cleared_candidate() {

@@ -998,6 +998,11 @@ export const LocalMusicContext: FC = () => {
 				}
 
 				case "loadError": {
+					if (
+						!queueManager.handlePlaybackLoadFailure(evtData.data.playbackId)
+					) {
+						break;
+					}
 					toast.error(
 						t("amll.loadAudioError", "播放后端加载音频失败\n{error}", {
 							error: evtData.data.error,

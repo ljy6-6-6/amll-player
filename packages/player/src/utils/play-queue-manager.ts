@@ -134,6 +134,7 @@ export class PlayQueueManager {
 	private shuffleActive = false;
 	private playlistId: number | null = null;
 	private currentPlaybackId: string | null = null;
+	private expectedPlaybackId: string | null = null;
 	private playRequestGeneration = 0;
 	private playRequestPending = false;
 	private desiredPlaying: boolean;
@@ -188,6 +189,7 @@ export class PlayQueueManager {
 			this.queueRevision++;
 			this.playRequestGeneration++;
 			this.playRequestPending = false;
+			this.expectedPlaybackId = null;
 			this.gaplessRequestGeneration++;
 			this.preparedGaplessCandidate = null;
 			this.gaplessBackendActive = false;
@@ -499,6 +501,7 @@ export class PlayQueueManager {
 		this.invalidateGaplessCandidate();
 		const requestGeneration = ++this.playRequestGeneration;
 		const playbackId = crypto.randomUUID();
+		this.expectedPlaybackId = playbackId;
 		const song = this.playList[index];
 		this.desiredPlaying = !startPaused;
 		this.currentPlaybackEnded = false;
@@ -635,6 +638,7 @@ export class PlayQueueManager {
 		this.desiredPlaying = false;
 		this.currentPlaybackEnded = this.currentIndex >= 0;
 		this.currentPlaybackId = null;
+		this.expectedPlaybackId = null;
 		this.playRequestGeneration++;
 		this.playRequestPending = false;
 		this.invalidateGaplessCandidate();
@@ -646,6 +650,19 @@ export class PlayQueueManager {
 				error,
 			);
 		});
+	}
+
+	handlePlaybackLoadFailure(playbackId: string): boolean {
+		if (this.disposed || !playbackId || playbackId !== this.expectedPlaybackId)
+			return false;
+		this.desiredPlaying = false;
+		this.currentPlaybackEnded = this.currentIndex >= 0;
+		this.currentPlaybackId = null;
+		this.expectedPlaybackId = null;
+		this.playRequestGeneration++;
+		this.playRequestPending = false;
+		this.invalidateGaplessCandidate();
+		return true;
 	}
 
 	/** 在 playList 中查找 songId 的索引 */
@@ -660,6 +677,7 @@ export class PlayQueueManager {
 		this.desiredPlaying = false;
 		this.currentPlaybackEnded = false;
 		this.currentPlaybackId = null;
+		this.expectedPlaybackId = null;
 		this.originalList = [];
 		this.playList = [];
 		this.currentIndex = -1;
@@ -869,6 +887,7 @@ export class PlayQueueManager {
 			this.gaplessBackendActive = false;
 			this.currentIndex = prepared.index;
 			this.currentPlaybackId = prepared.playbackId;
+			this.expectedPlaybackId = prepared.playbackId;
 			this.currentPlaybackEnded = false;
 			this.store.set(musicPlayingPositionAtom, 0);
 			this.syncToAtoms();

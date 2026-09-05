@@ -160,7 +160,10 @@ pub enum AudioThreadEvent {
     #[serde(rename_all = "camelCase")]
     PlayStatus { is_playing: bool },
     #[serde(rename_all = "camelCase")]
-    LoadError { error: String },
+    LoadError {
+        playback_id: String,
+        error: String,
+    },
     #[serde(rename_all = "camelCase")]
     PlayError { error: String },
     #[serde(rename_all = "camelCase")]

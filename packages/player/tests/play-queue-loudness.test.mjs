@@ -1129,6 +1129,89 @@ test("停止后到达的无缝边界不会复活下一首", {
 	assert.equal(manager.getCurrentSong()?.id, "a");
 });
 
+test("加载失败后再次播放会重新创建音频流而不是发送 resume", {
+	concurrency: false,
+}, async (context) => {
+	const calls = [];
+	mockIPC((command, payload) => {
+		calls.push({ command, payload });
+		if (command === "local_player_send_msg") return undefined;
+		throw new Error(`Unexpected IPC command: ${command}`);
+	});
+
+	const manager = new PlayQueueManager(
+		createStore({ gaplessEnabled: false, loudnessEnabled: false }),
+	);
+	context.after(async () => {
+		manager.dispose();
+		await drainAsyncWork();
+		clearMocks();
+	});
+
+	manager.setQueue([makeSong("broken")]);
+	await waitFor(
+		() => getPlayMessages(calls).length === 1,
+		"初次播放请求没有发出",
+	);
+	const failedPlaybackId = getPlayMessages(calls)[0].playbackId;
+
+	assert.equal(manager.handlePlaybackLoadFailure(failedPlaybackId), true);
+	manager.setPlaybackState(true);
+
+	await waitFor(
+		() => getPlayMessages(calls).length === 2,
+		"加载失败后没有重新创建音频流",
+	);
+	assert.equal(getAudioMessages(calls, "resumeAudio").length, 0);
+	assert.equal(getAudioMessages(calls, "stopAudio").length, 0);
+	assert.equal(getPlayMessages(calls).at(-1)?.song.songId, "broken");
+});
+
+test("新播放请求等待派发时会忽略上一首迟到的加载失败", {
+	concurrency: false,
+}, async (context) => {
+	const firstDispatch = deferred();
+	const calls = [];
+	let playDispatchCount = 0;
+	mockIPC((command, payload) => {
+		calls.push({ command, payload });
+		if (command !== "local_player_send_msg") {
+			throw new Error(`Unexpected IPC command: ${command}`);
+		}
+		if (payload.msg.data.type === "playAudio" && playDispatchCount++ === 0) {
+			return firstDispatch.promise;
+		}
+		return undefined;
+	});
+
+	const manager = new PlayQueueManager(
+		createStore({ gaplessEnabled: false, loudnessEnabled: false }),
+	);
+	context.after(async () => {
+		firstDispatch.resolve();
+		manager.dispose();
+		await drainAsyncWork();
+		clearMocks();
+	});
+
+	manager.setQueue([makeSong("a"), makeSong("b")]);
+	await waitFor(
+		() => getPlayMessages(calls).length === 1,
+		"第一首播放请求没有进入派发队列",
+	);
+	const firstPlaybackId = getPlayMessages(calls)[0].playbackId;
+
+	manager.playAt(1);
+	assert.equal(manager.handlePlaybackLoadFailure(firstPlaybackId), false);
+
+	firstDispatch.resolve();
+	await waitFor(
+		() => getPlayMessages(calls).length === 2,
+		"迟到的旧加载失败错误取消了新播放请求",
+	);
+	assert.equal(getPlayMessages(calls)[1].song.songId, "b");
+});
+
 test("队列管理器销毁后忽略迟到的无缝边界", {
 	concurrency: false,
 }, async (context) => {
