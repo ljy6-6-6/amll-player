@@ -157,7 +157,14 @@
 			"installUpdate": "Cập nhật và cài đặt",
 			"newVersion": " Có bản cập nhật khả dụng từ {currentVersion} lên {nextVersion}",
 			"subtitle": "Về",
-			"updating": "Đang cập nhật, khi hoàn tất sẽ tự động khởi động lại, vui lòng chờ..."
+			"updating": "Đang cập nhật, khi hoàn tất sẽ tự động khởi động lại, vui lòng chờ...",
+			"softwareUpdate": "Cập nhật phần mềm",
+			"checkingUpdate": "Đang kiểm tra cập nhật…",
+			"updateAvailable": "Đã có phiên bản mới để tải xuống.",
+			"noUpdateInfo": "Các bản cập nhật khả dụng sẽ xuất hiện ở đây.",
+			"availableBadge": "Có bản cập nhật",
+			"releaseNotes": "Ghi chú phát hành",
+			"updateFailed": "Cập nhật thất bại. Vui lòng thử lại: {message}"
 		},
 		"amll-dev": {
 			"title": "Trang phát triển Apple Music Like Lyrics",

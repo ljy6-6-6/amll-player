@@ -157,7 +157,14 @@
 			"installUpdate": "Install this update",
 			"newVersion": "Available update from {currentVersion} to {nextVersion}",
 			"subtitle": "About",
-			"updating": "Player will restart after update, hold on a second...."
+			"updating": "Player will restart after update, hold on a second....",
+			"softwareUpdate": "Software update",
+			"checkingUpdate": "Checking for updates…",
+			"updateAvailable": "A new version is ready to download.",
+			"noUpdateInfo": "Available updates will appear here.",
+			"availableBadge": "Update available",
+			"releaseNotes": "Release notes",
+			"updateFailed": "Update failed. Please try again: {message}"
 		},
 		"amll-dev": {
 			"title": "Apple Music Like Lyrics Developer Page",

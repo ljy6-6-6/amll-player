@@ -1,4 +1,3 @@
-import { branch, commit } from "virtual:git-metadata-plugin";
 import {
 	MeshGradientRenderer,
 	PixiRenderer,
@@ -39,7 +38,6 @@ import {
 	Card,
 	Flex,
 	Select,
-	Separator,
 	Slider,
 	type SliderProps,
 	Switch,
@@ -48,23 +46,19 @@ import {
 	TextField,
 	type TextProps,
 } from "@radix-ui/themes";
-import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { platform } from "@tauri-apps/plugin-os";
-import { atom, useAtom, useAtomValue, type WritableAtom } from "jotai";
-import { loadable } from "jotai/utils";
+import { useAtom, useAtomValue, type WritableAtom } from "jotai";
 import React, {
 	type FC,
 	type PropsWithChildren,
 	type ReactNode,
-	Suspense,
 	useEffect,
 	useLayoutEffect,
 	useMemo,
 	useState,
 } from "react";
 import { Trans, useTranslation } from "react-i18next";
-import { toast } from "react-toastify";
 import { router } from "../../router.tsx";
 import {
 	advanceLyricDynamicLyricTimeAtom,
@@ -87,7 +81,6 @@ import {
 	taskbarLyricModeSettingAtom,
 	taskbarLyricThemeSettingAtom,
 	taskbarLyricWordProgressAtom,
-	updateInfoAtom,
 	windowCloseBehaviorAtom,
 } from "../../states/appAtoms.ts";
 import { restartApp } from "../../utils/player.ts";
@@ -97,6 +90,7 @@ import {
 	WINDOW_CLOSE_BEHAVIOR_MINIMIZE_WHEN_PLAYING,
 	type WindowCloseBehaviorMode,
 } from "../../utils/window-lifecycle.ts";
+import { AboutSettings } from "./about.tsx";
 import { HomeBackgroundSettings } from "./home-background.tsx";
 import styles from "./index.module.css";
 
@@ -286,8 +280,6 @@ const LyricFontSetting: FC = () => {
 		</Card>
 	);
 };
-
-const appVersionAtom = loadable(atom(() => getVersion()));
 
 function SliderSettings<T extends number | number[]>({
 	label,
@@ -1400,123 +1392,6 @@ const TaskbarLyricSettings = () => {
 					{t("page.settings.taskbarLyric.openDevtools", "打开 DevTools")}
 				</Button>
 			)}
-		</>
-	);
-};
-
-const AboutSettings = () => {
-	const { t } = useTranslation();
-	const updateInfo = useAtomValue(updateInfoAtom);
-	const appVersion = useAtomValue(appVersionAtom);
-	const [updating, setUpdating] = useState(false);
-
-	return (
-		<>
-			<SubTitle>
-				<Trans i18nKey="page.about.subtitle">关于</Trans>
-			</SubTitle>
-			<Text as="div">Apple Music-like Lyrics Player</Text>
-			<Text as="div" style={{ opacity: "0.5" }}>
-				{" "}
-				{appVersion.state === "hasData" ? `${appVersion.data} - ` : ""}{" "}
-				{commit.substring(0, 7)} - {branch}{" "}
-			</Text>
-			<Text as="div">
-				<Trans i18nKey="page.about.credits">
-					由 SteveXMH 及其所有 Github 协作者共同开发
-				</Trans>
-			</Text>
-			<Suspense>
-				{updateInfo && (
-					<>
-						<Separator size="4" my="3" />
-						<div id="updater">
-							{t(
-								"page.about.newVersion",
-								"有可用更新从 {currentVersion} 升级至 {nextVersion}",
-								{
-									currentVersion: updateInfo.currentVersion,
-									nextVersion: updateInfo.version,
-								},
-							)}
-						</div>
-						<div
-							style={{
-								margin: "1em 0",
-								whiteSpace: "pre-wrap",
-							}}
-						>
-							{updateInfo.body}
-						</div>
-						<Button
-							disabled={updating}
-							loading={updating}
-							onClick={() => {
-								setUpdating(true);
-								const toastId = toast.loading(
-									t(
-										"page.about.updating",
-										"正在更新，完成后将会自动重启，请稍后……",
-									),
-								);
-								let contentLength: number | undefined;
-								let receivedLength = 0;
-								function getProgressSizeText() {
-									const rec = `${(receivedLength / 1024 / 1024).toFixed(2)} MiB`;
-									if (contentLength === undefined) {
-										return `(${rec})`;
-									}
-									const total = `${(contentLength / 1024 / 1024).toFixed(
-										2,
-									)} MiB`;
-									return `(${rec} / ${total}) (${(
-										(receivedLength / contentLength) * 100
-									).toFixed(1)}%)`;
-								}
-								const getDownloadMessage = (progressText: string) =>
-									t("page.about.downloading", "正在下载更新…… {progressText}", {
-										progressText,
-									});
-								updateInfo.downloadAndInstall((evt) => {
-									switch (evt.event) {
-										case "Started": {
-											contentLength = evt.data.contentLength;
-											toast.update(toastId, {
-												render: getDownloadMessage(getProgressSizeText()),
-											});
-											break;
-										}
-										case "Progress": {
-											receivedLength += evt.data.chunkLength;
-											toast.update(toastId, {
-												render: getDownloadMessage(getProgressSizeText()),
-												progress:
-													contentLength === undefined
-														? null
-														: receivedLength / contentLength,
-											});
-											break;
-										}
-										case "Finished":
-											toast.update(toastId, {
-												render: t(
-													"page.about.installing",
-													"正在安装更新，将会自动重启，请稍后……",
-												),
-												progress: null,
-											});
-											setTimeout(restartApp, 1000);
-											break;
-									}
-								});
-							}}
-						>
-							<Trans i18nKey="page.about.installUpdate">更新并安装</Trans>
-						</Button>
-						<Box mb="3" />
-					</>
-				)}
-			</Suspense>
 		</>
 	);
 };

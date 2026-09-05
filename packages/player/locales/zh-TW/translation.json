@@ -157,7 +157,14 @@
 			"installUpdate": "更新并安裝",
 			"newVersion": "有可用更新从 {currentVersion} 升級至 {nextVersion}",
 			"subtitle": "關於",
-			"updating": "正在更新，完成后將會自動重啟，請稍後……"
+			"updating": "正在更新，完成后將會自動重啟，請稍後……",
+			"softwareUpdate": "軟體更新",
+			"checkingUpdate": "正在檢查更新……",
+			"updateAvailable": "發現新版本，更新後即可體驗。",
+			"noUpdateInfo": "有可用更新時會顯示在這裡。",
+			"availableBadge": "可用更新",
+			"releaseNotes": "更新說明",
+			"updateFailed": "更新失敗，請重試：{message}"
 		},
 		"amll-dev": {
 			"title": "Apple Music Like Lyrics 開發者頁面",
