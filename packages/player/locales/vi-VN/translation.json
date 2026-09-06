@@ -508,7 +508,11 @@
 					"description": "Có thể xem thông tin chiếm dụng bộ nhớ (chỉ dành cho các hệ thống Chromium) và các thông tin khác, ảnh hưởng đến hiệu suất khá nhỏ.",
 					"label": "Hiển thị thông tin thống kê hiệu suất"
 				},
-				"subtitle": "Các tùy chọn khác"
+				"subtitle": "Các tùy chọn khác",
+				"enableExperimentalFeatures": {
+					"label": "Bật tính năng thử nghiệm",
+					"description": "Hiển thị loại nền trong cài đặt Chung và bảng Nền trong trình chỉnh sửa bài hát. Tắt tùy chọn này sẽ vô hiệu hóa nền tùy chỉnh nhưng vẫn giữ cài đặt để bật lại sau."
+				}
 			},
 			"smtc": {
 				"enableMediaControls": {

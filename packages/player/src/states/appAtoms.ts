@@ -141,6 +141,13 @@ export const showStatJSFrameAtom = atomWithStorage(
 	false,
 );
 
+export const enableExperimentalFeaturesAtom = atomWithStorage(
+	"amll-player.enableExperimentalFeatures",
+	false,
+	undefined,
+	{ getOnInit: true },
+);
+
 export interface MusicTimelineJump {
 	sequence: number;
 	positionMs: number;

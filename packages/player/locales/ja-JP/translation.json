@@ -508,7 +508,11 @@
 					"description": "可以看到帧率、帧时间、内存占用（仅 Chromuim 系）等信息，对性能影响较小。",
 					"label": "显示性能统计信息"
 				},
-				"subtitle": "杂项"
+				"subtitle": "杂项",
+				"enableExperimentalFeatures": {
+					"label": "実験的な機能を有効にする",
+					"description": "一般設定の背景タイプと曲編集の背景パネルを表示します。オフにするとカスタム背景は無効になり、設定は次回の有効化まで保持されます。"
+				}
 			},
 			"smtc": {
 				"enableMediaControls": {

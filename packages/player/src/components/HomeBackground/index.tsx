@@ -3,6 +3,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { useAtomValue, useStore } from "jotai";
 import { type FC, useEffect, useMemo, useRef, useState } from "react";
 import {
+	effectiveHomeBackgroundConfigAtom,
 	homeBackgroundConfigAtom,
 	homeBackgroundLoadedAtom,
 } from "../../states/homeBackgroundAtoms.ts";
@@ -55,7 +56,7 @@ function usePrefersReducedMotion(): boolean {
 }
 
 export const HomeBackground: FC = () => {
-	const config = useAtomValue(homeBackgroundConfigAtom);
+	const config = useAtomValue(effectiveHomeBackgroundConfigAtom);
 	const store = useStore();
 	const lyricPageOpened = useAtomValue(isLyricPageOpenedAtom);
 	const pageVisible = usePageVisible();

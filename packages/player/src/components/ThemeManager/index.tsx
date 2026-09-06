@@ -6,13 +6,13 @@ import {
 	DarkMode,
 	darkModeAtom,
 } from "../../states/appAtoms";
-import { homeBackgroundConfigAtom } from "../../states/homeBackgroundAtoms.ts";
+import { effectiveHomeBackgroundConfigAtom } from "../../states/homeBackgroundAtoms.ts";
 import { isCustomHomeBackground } from "../../utils/home-background-state.ts";
 
 export const ThemeManager: FC = () => {
 	const setAutoDarkMode = useSetAtom(autoDarkModeAtom);
 	const darkMode = useAtomValue(darkModeAtom);
-	const homeBackgroundConfig = useAtomValue(homeBackgroundConfigAtom);
+	const homeBackgroundConfig = useAtomValue(effectiveHomeBackgroundConfigAtom);
 	const forceDarkWindowTheme = isCustomHomeBackground(homeBackgroundConfig);
 
 	useEffect(() => {

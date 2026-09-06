@@ -16,7 +16,10 @@ import {
 	useRef,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { playlistCardOpenedAtom } from "../../states/appAtoms.ts";
+import {
+	enableExperimentalFeaturesAtom,
+	playlistCardOpenedAtom,
+} from "../../states/appAtoms.ts";
 import { useCursorAutoHide } from "../../utils/useCursorAutoHide.ts";
 import { useTitlebarAutoHide } from "../../utils/useTitlebarAutoHide.ts";
 import { AMLLContextMenuContent } from "../AMLLContextMenu/index.tsx";
@@ -116,6 +119,9 @@ const animateFullscreenControl = (button: HTMLButtonElement) => {
 
 export const AMLLWrapper: FC = () => {
 	const { t } = useTranslation();
+	const enableExperimentalFeatures = useAtomValue(
+		enableExperimentalFeaturesAtom,
+	);
 	const isLyricPageOpened = useAtomValue(isLyricPageOpenedAtom);
 	const onPlayOrResume = useAtomValue(onPlayOrResumeAtom).onEmit;
 	const [playlistOpened, setPlaylistOpened] = useAtom(playlistCardOpenedAtom);
@@ -128,6 +134,7 @@ export const AMLLWrapper: FC = () => {
 	const fullscreenPlaylistSnapshotSupported = platform() === "windows";
 	const fullscreenPlaylistBackdrop = usePlaylistBackdropSnapshot(
 		fullscreenPlaylistActive && fullscreenPlaylistSnapshotSupported,
+		enableExperimentalFeatures,
 	);
 	const fullscreenPlaylistSurfaceReady =
 		fullscreenPlaylistActive &&

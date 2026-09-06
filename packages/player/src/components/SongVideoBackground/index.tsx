@@ -28,6 +28,7 @@ import {
 	useState,
 } from "react";
 import {
+	enableExperimentalFeaturesAtom,
 	lyricBackgroundAnimationIntensityAtom,
 	musicTimelineJumpAtom,
 } from "../../states/appAtoms.ts";
@@ -140,6 +141,9 @@ function resolveFileSource(filePath: string | null): string | null {
 
 export const SongVideoBackground: FC = () => {
 	const store = useStore();
+	const enableExperimentalFeatures = useAtomValue(
+		enableExperimentalFeaturesAtom,
+	);
 	const musicId = useAtomValue(musicIdAtom);
 	const musicCover = useAtomValue(musicCoverAtom);
 	const musicCoverIsVideo = useAtomValue(musicCoverIsVideoAtom);
@@ -205,23 +209,25 @@ export const SongVideoBackground: FC = () => {
 
 	const { data: queriedBackground } = useDbQuery<QueriedSongBackground>(
 		async () => {
-			if (!musicId) return { override: null, video: null };
+			if (!enableExperimentalFeatures || !musicId) {
+				return { override: null, video: null };
+			}
 			const [backgroundOverride, video] = await Promise.all([
 				db.songBackgroundOverrides.get(musicId),
 				db.videoBackgrounds.get(musicId),
 			]);
 			return { override: backgroundOverride, video };
 		},
-		[musicId],
+		[enableExperimentalFeatures, musicId],
 		{ override: null, video: null },
 		["song_background_overrides", "song_video_backgrounds"],
 	);
 	const backgroundOverride =
-		queriedBackground.override?.songId === musicId
+		enableExperimentalFeatures && queriedBackground.override?.songId === musicId
 			? queriedBackground.override
 			: null;
 	const background =
-		queriedBackground.video?.songId === musicId
+		enableExperimentalFeatures && queriedBackground.video?.songId === musicId
 			? queriedBackground.video
 			: null;
 	const videoEnabled =

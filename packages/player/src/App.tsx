@@ -21,7 +21,7 @@ import { WindowCloseBehavior } from "./components/WindowCloseBehavior/index.tsx"
 import { WSProtocolMusicContext } from "./components/WSProtocolMusicContext/index.tsx";
 import { useMigration } from "./hooks/useMigration.ts";
 import { enableTaskbarLyricAtom } from "./states/appAtoms.ts";
-import { homeBackgroundConfigAtom } from "./states/homeBackgroundAtoms.ts";
+import { effectiveHomeBackgroundConfigAtom } from "./states/homeBackgroundAtoms.ts";
 import { isCustomHomeBackground } from "./utils/home-background-state.ts";
 import "./i18n";
 import { isLyricPageOpenedAtom } from "@applemusic-like-lyrics/react-full";
@@ -46,7 +46,7 @@ function App() {
 	const musicContextMode = useAtomValue(musicContextModeAtom);
 	const isDarkTheme = useAtomValue(isDarkThemeAtom);
 	const hasBackground = useAtomValue(hasBackgroundAtom);
-	const homeBackgroundConfig = useAtomValue(homeBackgroundConfigAtom);
+	const homeBackgroundConfig = useAtomValue(effectiveHomeBackgroundConfigAtom);
 	const hasCustomHomeBackground = isCustomHomeBackground(homeBackgroundConfig);
 	const useDarkAppearance = isDarkTheme || hasCustomHomeBackground;
 

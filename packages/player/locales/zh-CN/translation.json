@@ -508,7 +508,11 @@
 					"description": "可以看到帧率、帧时间、内存占用（仅 Chromuim 系）等信息，对性能影响较小。",
 					"label": "显示性能统计信息"
 				},
-				"subtitle": "杂项"
+				"subtitle": "杂项",
+				"enableExperimentalFeatures": {
+					"label": "启用实验性功能",
+					"description": "显示常规设置中的背景类型和歌曲编辑中的背景面板。关闭后停用自定义背景，保留配置以便再次启用。"
+				}
 			},
 			"smtc": {
 				"enableMediaControls": {

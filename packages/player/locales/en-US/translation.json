@@ -508,7 +508,11 @@
 					"description": "Show fps, frame time, memory [Chromium only]. Less impact of performance.",
 					"label": "Show performance statics"
 				},
-				"subtitle": "Others"
+				"subtitle": "Others",
+				"enableExperimentalFeatures": {
+					"label": "Enable experimental features",
+					"description": "Show background type in General settings and the Background panel in the song editor. Turning this off disables custom backgrounds and keeps their settings for later."
+				}
 			},
 			"smtc": {
 				"enableMediaControls": {

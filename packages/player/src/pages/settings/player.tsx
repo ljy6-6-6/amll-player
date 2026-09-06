@@ -68,6 +68,7 @@ import {
 	DarkMode,
 	darkModeAtom,
 	enableAlwaysOnTopAtom,
+	enableExperimentalFeaturesAtom,
 	enableGaplessPlaybackAtom,
 	enableLoudnessNormalizationAtom,
 	enableMediaControlsAtom,
@@ -140,7 +141,7 @@ const SwitchSettings: FC<
 	const [value, setValue] = useAtom(configAtom);
 	return (
 		<SettingEntry label={label} description={description}>
-			<Switch checked={value} onCheckedChange={setValue} />
+			<Switch aria-label={label} checked={value} onCheckedChange={setValue} />
 		</SettingEntry>
 	);
 };
@@ -350,6 +351,9 @@ function SliderSettings<T extends number | number[]>({
 
 const GeneralSettings = () => {
 	const { t } = useTranslation();
+	const enableExperimentalFeatures = useAtomValue(
+		enableExperimentalFeaturesAtom,
+	);
 	const [mode, setMode] = useAtom(darkModeAtom);
 	const [language, setLanguage] = useAtom(languageAtom);
 	const [windowCloseBehavior, setWindowCloseBehavior] = useAtom(
@@ -499,7 +503,7 @@ const GeneralSettings = () => {
 					configAtom={enableAlwaysOnTopAtom}
 				/>
 			)}
-			<HomeBackgroundSettings />
+			{enableExperimentalFeatures && <HomeBackgroundSettings />}
 		</>
 	);
 };
@@ -1233,6 +1237,17 @@ const OthersSettings = () => {
 			<SubTitle>
 				<Trans i18nKey="page.settings.others.subtitle">杂项</Trans>
 			</SubTitle>
+			<SwitchSettings
+				label={t(
+					"page.settings.others.enableExperimentalFeatures.label",
+					"启用实验性功能",
+				)}
+				description={t(
+					"page.settings.others.enableExperimentalFeatures.description",
+					"显示常规设置中的背景类型和歌曲编辑中的背景面板。关闭后停用自定义背景，保留配置以便再次启用。",
+				)}
+				configAtom={enableExperimentalFeaturesAtom}
+			/>
 			<SwitchSettings
 				label={t(
 					"page.settings.others.showStatJSFrame.label",

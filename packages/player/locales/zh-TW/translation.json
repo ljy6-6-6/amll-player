@@ -508,7 +508,11 @@
 					"description": "可以看到幀率、幀生成時間、內存佔用（僅Chromium系）等訊息，對效能影響較小。",
 					"label": "顯示效能統計訊息"
 				},
-				"subtitle": "雜項"
+				"subtitle": "雜項",
+				"enableExperimentalFeatures": {
+					"label": "啟用實驗性功能",
+					"description": "顯示一般設定中的背景類型及歌曲編輯中的背景面板。關閉後停用自訂背景，保留設定以便再次啟用。"
+				}
 			},
 			"smtc": {
 				"enableMediaControls": {

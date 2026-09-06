@@ -41,7 +41,7 @@ import {
 	playlistCardOpenedAtom,
 } from "../../states/appAtoms.ts";
 import {
-	homeBackgroundConfigAtom,
+	effectiveHomeBackgroundConfigAtom,
 	homeBackgroundLoadedAtom,
 } from "../../states/homeBackgroundAtoms.ts";
 import { isCustomHomeBackground } from "../../utils/home-background-state.ts";
@@ -71,7 +71,7 @@ export const NowPlayingBar: FC = () => {
 	const musicCoverIsVideo = useAtomValue(musicCoverIsVideoAtom);
 	const musicId = useAtomValue(musicIdAtom);
 	const hasBackground = useAtomValue(hasBackgroundAtom);
-	const homeBackgroundConfig = useAtomValue(homeBackgroundConfigAtom);
+	const homeBackgroundConfig = useAtomValue(effectiveHomeBackgroundConfigAtom);
 	const homeBackgroundLoaded = useAtomValue(homeBackgroundLoadedAtom);
 	const [playlistOpened, setPlaylistOpened] = useAtom(playlistCardOpenedAtom);
 	const setLyricPageOpened = useSetAtom(isLyricPageOpenedAtom);
