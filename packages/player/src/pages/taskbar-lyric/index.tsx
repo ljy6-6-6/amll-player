@@ -66,14 +66,13 @@ import {
 	TASKBAR_LINE_HEIGHT_EM,
 } from "./line-layout.ts";
 import {
-	findCurrentLyricIndex,
+	findDisplayedLyricIndex,
 	findMetadataLyricIndex,
 	reconcileMetadataTimeline,
 	taskbarContentGroupKey,
 } from "./lyric-timeline.ts";
 import { normalizeTaskbarWordFadeWidth } from "./word-progress.ts";
 
-const LYRIC_OFFSET = 300;
 const HOVER_LAYOUT_TRANSITION = {
 	type: "tween" as const,
 	duration: 0.24,
@@ -292,6 +291,16 @@ const initialState: AppState = {
 export const TaskbarLyricApp = () => {
 	const [state, dispatch] = useReducer(reducer, initialState);
 	const [isVisible, setIsVisible] = useState(true);
+	const [listenersReady, setListenersReady] = useState(false);
+	const [initialLayoutReceived, setInitialLayoutReceived] = useState(false);
+	const [initialAlignmentReceived, setInitialAlignmentReceived] =
+		useState(false);
+	const startupReady =
+		listenersReady && initialLayoutReceived && initialAlignmentReceived;
+	const startupReadyRef = useRef(false);
+	useLayoutEffect(() => {
+		startupReadyRef.current = startupReady;
+	}, [startupReady]);
 	const [orientation, setOrientation] = useState<"horizontal" | "vertical">(
 		"horizontal",
 	);
@@ -370,10 +379,7 @@ export const TaskbarLyricApp = () => {
 			positionRef.current = pos;
 			publishPosition(pos);
 
-			const nextIndex = findCurrentLyricIndex(
-				lyricLinesRef.current,
-				pos + LYRIC_OFFSET,
-			);
+			const nextIndex = findDisplayedLyricIndex(lyricLinesRef.current, pos);
 			dispatch({ type: "UPDATE_INDEX", payload: nextIndex });
 		},
 		[publishPosition],
@@ -443,7 +449,7 @@ export const TaskbarLyricApp = () => {
 						previousMusicId,
 						evt.payload.musicId,
 						evt.payload.lyricLines,
-						positionRef.current + LYRIC_OFFSET,
+						positionRef.current,
 					),
 					trackChanged,
 				});
@@ -479,8 +485,10 @@ export const TaskbarLyricApp = () => {
 
 		const unlistenAlign = listen<TaskbarLyricAlignmentPayload>(
 			ALIGN_EVENT,
-			(evt) =>
-				dispatch({ type: "UPDATE_ALIGN_SETTING", payload: evt.payload.align }),
+			(evt) => {
+				dispatch({ type: "UPDATE_ALIGN_SETTING", payload: evt.payload.align });
+				setInitialAlignmentReceived(true);
+			},
 		);
 
 		const unlistenLayoutExtra = listen<TaskbarLayoutExtraPayload>(
@@ -494,6 +502,7 @@ export const TaskbarLyricApp = () => {
 					x: evt.payload.contentOffsetX,
 					y: evt.payload.contentOffsetY,
 				});
+				setInitialLayoutReceived(true);
 			},
 		);
 
@@ -540,6 +549,42 @@ export const TaskbarLyricApp = () => {
 			unlistenFadeIn,
 		];
 		let cancelled = false;
+		let startupRetryTimer = 0;
+		const requestStartupState = () => {
+			if (cancelled || startupReadyRef.current) return;
+			emit(REQUEST_UPDATE_EVENT).catch((err) => {
+				console.error("请求任务栏歌词数据更新失败:", err);
+			});
+			invoke(CMD_REFRESH_TASKBAR_LAYOUT).catch((err) => {
+				console.error("刷新任务栏歌词布局失败:", err);
+			});
+			startupRetryTimer = window.setTimeout(requestStartupState, 250);
+		};
+
+		Promise.all(listeners)
+			.then(() => {
+				if (cancelled) return;
+				setListenersReady(true);
+				requestStartupState();
+			})
+			.catch((err) => {
+				console.error("注册任务栏歌词事件监听失败:", err);
+			});
+
+		return () => {
+			cancelled = true;
+			window.clearTimeout(startupRetryTimer);
+			listeners.forEach((listener) => {
+				listener.then((fn) => fn());
+			});
+		};
+	}, [updateAnchor]);
+
+	useEffect(() => {
+		// The native window must only show a frame whose final alignment and
+		// taskbar offsets have already been committed to the DOM.
+		if (!startupReady) return;
+		let cancelled = false;
 		let pageReadyFrame = 0;
 		let pageReadyTimer = 0;
 		let pageReadyRetryTimer = 0;
@@ -583,33 +628,16 @@ export const TaskbarLyricApp = () => {
 				});
 		};
 
-		Promise.all(listeners)
-			.then(() => {
-				if (cancelled) return;
-
-				emit(REQUEST_UPDATE_EVENT).catch((err) => {
-					console.error("请求任务栏歌词数据更新失败:", err);
-				});
-				invoke(CMD_REFRESH_TASKBAR_LAYOUT).catch((err) => {
-					console.error("刷新任务栏歌词布局失败:", err);
-				});
-				pageReadyFrame = window.requestAnimationFrame(notifyPageReady);
-				pageReadyTimer = window.setTimeout(notifyPageReady, 250);
-			})
-			.catch((err) => {
-				console.error("注册任务栏歌词事件监听失败:", err);
-			});
+		pageReadyFrame = window.requestAnimationFrame(notifyPageReady);
+		pageReadyTimer = window.setTimeout(notifyPageReady, 250);
 
 		return () => {
 			cancelled = true;
 			window.cancelAnimationFrame(pageReadyFrame);
 			window.clearTimeout(pageReadyTimer);
 			window.clearTimeout(pageReadyRetryTimer);
-			listeners.forEach((listener) => {
-				listener.then((fn) => fn());
-			});
 		};
-	}, [updateAnchor]);
+	}, [startupReady]);
 
 	useEffect(() => {
 		if (!state.musicPlaying) return;
@@ -621,10 +649,11 @@ export const TaskbarLyricApp = () => {
 			positionRef.current = currentPos;
 			publishPosition(currentPos);
 
-			const effectivePosition = currentPos + LYRIC_OFFSET;
-			const nextIndex = findCurrentLyricIndex(
+			// Use silent gaps to prepare the next line, keeping word highlighting
+			// on the unchanged playback clock published above.
+			const nextIndex = findDisplayedLyricIndex(
 				lyricLinesRef.current,
-				effectivePosition,
+				currentPos,
 			);
 
 			dispatch({ type: "UPDATE_INDEX", payload: nextIndex });
@@ -1247,6 +1276,8 @@ export const TaskbarLyricApp = () => {
 	return (
 		<div
 			className={styles.wrapper}
+			data-ready={startupReady}
+			inert={startupReady ? undefined : true}
 			data-align={align}
 			data-hovered={isHovered}
 			data-orientation={orientation}

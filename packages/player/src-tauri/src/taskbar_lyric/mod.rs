@@ -1071,16 +1071,6 @@ pub fn open_taskbar_lyric(app: tauri::AppHandle) {
             let (content_offset_x, content_offset_y) =
                 auto_hide_content_offset(auto_hide_edge, win.scale_factor().unwrap_or(1.0));
 
-            let _ = app_clone.emit(
-                "taskbar-layout-extra",
-                TaskbarLayoutExtraPayload {
-                    is_centered: layout.extra.is_centered,
-                    system_type: format!("{:?}", layout.extra.system_type),
-                    content_offset_x,
-                    content_offset_y,
-                },
-            );
-
             if let Ok(hwnd) = win.hwnd() {
                 let top_hwnd = HWND(hwnd.0);
                 if !state.visibility.window_matches(generation, hwnd.0 as usize) {
@@ -1107,6 +1097,18 @@ pub fn open_taskbar_lyric(app: tauri::AppHandle) {
                     schedule_taskbar_layout_watchdog(app_clone.clone(), generation);
                     return;
                 }
+
+                // The page waits for this layout before acknowledging its first
+                // frame, so only publish coordinates that were applied successfully.
+                let _ = app_clone.emit(
+                    "taskbar-layout-extra",
+                    TaskbarLayoutExtraPayload {
+                        is_centered: layout.extra.is_centered,
+                        system_type: format!("{:?}", layout.extra.system_type),
+                        content_offset_x,
+                        content_offset_y,
+                    },
+                );
 
                 let bounds_app = app_clone.clone();
                 tauri::async_runtime::spawn(async move {
