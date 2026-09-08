@@ -9,6 +9,7 @@ import { AppContainer } from "./components/AppContainer/index.tsx";
 import { ExtensionInjectPoint } from "./components/ExtensionInjectPoint/index.tsx";
 import { HomeBackground } from "./components/HomeBackground/index.tsx";
 import { LocalMusicContext } from "./components/LocalMusicContext/index.tsx";
+import { MainWindowActivity } from "./components/MainWindowActivity/index.tsx";
 import { MigrationDialog } from "./components/MigrationDialog/index.tsx";
 import { MusicDropContext } from "./components/MusicDropContext/index.tsx";
 import { NowPlayingBar } from "./components/NowPlayingBar/index.tsx";
@@ -58,6 +59,7 @@ function App() {
 		<>
 			{/* 上下文组件均不建议被 StrictMode 包含，以免重复加载扩展程序发生问题  */}
 			<WindowCloseBehavior />
+			<MainWindowActivity />
 			{showStatJSFrame && <StatsComponent />}
 			{musicContextMode === MusicContextMode.Local && (
 				<LocalMusicContext key={MusicContextMode.Local} />

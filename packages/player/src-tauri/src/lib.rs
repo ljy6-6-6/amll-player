@@ -32,6 +32,8 @@ mod tray_player_watcher;
 mod ttml_db;
 mod utils;
 mod window;
+#[cfg(target_os = "windows")]
+mod window_activity;
 
 #[cfg(desktop)]
 mod extension_window;
@@ -105,6 +107,8 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     {
         #[cfg(target_os = "windows")]
         app.manage(window::MainWindowPresentationState::default());
+        #[cfg(target_os = "windows")]
+        app.manage(window_activity::MainWindowActivityState::default());
         tauri::async_runtime::block_on(window::recreate_window(app.handle(), "main", None));
     }
 
@@ -230,6 +234,8 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn handle_window_event(_window: &tauri::Window, _event: &tauri::WindowEvent) {
+    #[cfg(target_os = "windows")]
+    window_activity::handle_main_window_event(_window, _event);
     #[cfg(target_os = "windows")]
     window::track_main_window_restore_bounds(_window, _event);
     #[cfg(target_os = "windows")]

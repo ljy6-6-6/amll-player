@@ -44,6 +44,7 @@ import {
 	effectiveHomeBackgroundConfigAtom,
 	homeBackgroundLoadedAtom,
 } from "../../states/homeBackgroundAtoms.ts";
+import { mainWindowActiveAtom } from "../../states/windowAtoms.ts";
 import { isCustomHomeBackground } from "../../utils/home-background-state.ts";
 import { AnimatedPlayPauseIcon } from "../AnimatedPlayPauseIcon/index.tsx";
 import {
@@ -64,6 +65,7 @@ export const NowPlayingBar: FC = () => {
 	const { t } = useTranslation();
 	const hideNowPlayingBar = useAtomValue(hideNowPlayingBarAtom);
 	const isLyricPageOpened = useAtomValue(isLyricPageOpenedAtom);
+	const mainWindowActive = useAtomValue(mainWindowActiveAtom);
 	const musicName = useAtomValue(musicNameAtom);
 	const musicArtists = useAtomValue(musicArtistsAtom);
 	const musicPlaying = useAtomValue(musicPlayingAtom);
@@ -92,7 +94,10 @@ export const NowPlayingBar: FC = () => {
 	const playlistDismissLayerRef = useRef<HTMLButtonElement>(null);
 	const playlistToggleButtonRef = useRef<HTMLButtonElement>(null);
 	const normalPlaylistActive =
-		playlistOpened && !isLyricPageOpened && playlistPortalTarget !== null;
+		mainWindowActive &&
+		playlistOpened &&
+		!isLyricPageOpened &&
+		playlistPortalTarget !== null;
 	const playlistSnapshotSupported = platform() === "windows";
 	const useNativeHomeMaterial =
 		homeBackgroundLoaded &&

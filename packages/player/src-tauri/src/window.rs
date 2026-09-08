@@ -1174,6 +1174,7 @@ pub fn present_main_window(app: AppHandle) -> Result<(), String> {
     if result.is_err() {
         presentation.revealed.store(false, Ordering::Release);
     }
+    crate::window_activity::refresh_main_window_activity(&app);
     reconcile_background_restore_entry(&app);
     result
 }
@@ -2253,6 +2254,7 @@ pub async fn hide_main_window_to_background(app: AppHandle) -> Result<(), String
             return Err(error.to_string());
         }
         MAIN_WINDOW_HIDDEN_TO_BACKGROUND.store(true, Ordering::Release);
+        crate::window_activity::refresh_main_window_activity(&app);
     }
 
     // Tray APIs synchronously cross the Windows UI thread. Reconcile them on a
@@ -2278,6 +2280,7 @@ pub async fn show_main_window_from_background(app: AppHandle) -> Result<(), Stri
         }
         window.show().map_err(|error| error.to_string())?;
         MAIN_WINDOW_HIDDEN_TO_BACKGROUND.store(false, Ordering::Release);
+        crate::window_activity::refresh_main_window_activity(&app);
         if let Err(error) = window.set_focus() {
             warn!("Failed to focus the restored main window: {error}");
         }

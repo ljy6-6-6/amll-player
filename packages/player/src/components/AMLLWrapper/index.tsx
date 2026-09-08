@@ -19,8 +19,11 @@ import { useTranslation } from "react-i18next";
 import {
 	enableExperimentalFeaturesAtom,
 	playlistCardOpenedAtom,
+	recordPanelOpenedAtom,
 } from "../../states/appAtoms.ts";
+import { mainWindowActiveAtom } from "../../states/windowAtoms.ts";
 import { useCursorAutoHide } from "../../utils/useCursorAutoHide.ts";
+import { useRetainedVisuals } from "../../utils/useRetainedVisuals.ts";
 import { useTitlebarAutoHide } from "../../utils/useTitlebarAutoHide.ts";
 import { AMLLContextMenuContent } from "../AMLLContextMenu/index.tsx";
 import { AudioQualityDialog } from "../AudioQualityDialog/index.tsx";
@@ -123,6 +126,11 @@ export const AMLLWrapper: FC = () => {
 		enableExperimentalFeaturesAtom,
 	);
 	const isLyricPageOpened = useAtomValue(isLyricPageOpenedAtom);
+	const mainWindowActive = useAtomValue(mainWindowActiveAtom);
+	const recordPanelOpened = useAtomValue(recordPanelOpenedAtom);
+	const retainLyricVisuals = useRetainedVisuals(
+		mainWindowActive || (isLyricPageOpened && recordPanelOpened),
+	);
 	const onPlayOrResume = useAtomValue(onPlayOrResumeAtom).onEmit;
 	const [playlistOpened, setPlaylistOpened] = useAtom(playlistCardOpenedAtom);
 	const setLyricPageOpened = useSetAtom(isLyricPageOpenedAtom);
@@ -130,7 +138,8 @@ export const AMLLWrapper: FC = () => {
 	const fullscreenPlaylistPanelRef = useRef<HTMLDivElement>(null);
 	const fullscreenPlaylistToggleRef = useRef<HTMLButtonElement>(null);
 	const previousLyricPageOpenedRef = useRef(isLyricPageOpened);
-	const fullscreenPlaylistActive = isLyricPageOpened && playlistOpened;
+	const fullscreenPlaylistActive =
+		mainWindowActive && isLyricPageOpened && playlistOpened;
 	const fullscreenPlaylistSnapshotSupported = platform() === "windows";
 	const fullscreenPlaylistBackdrop = usePlaylistBackdropSnapshot(
 		fullscreenPlaylistActive && fullscreenPlaylistSnapshotSupported,
@@ -203,7 +212,7 @@ export const AMLLWrapper: FC = () => {
 				button.removeAttribute("aria-haspopup");
 			}
 		};
-	}, [isLyricPageOpened, playlistOpened, t]);
+	}, [isLyricPageOpened, playlistOpened, retainLyricVisuals, t]);
 
 	useLayoutEffect(() => {
 		if (!isLyricPageOpened || !playlistOpened) return;
@@ -268,7 +277,12 @@ export const AMLLWrapper: FC = () => {
 			observer.disconnect();
 			window.removeEventListener("resize", schedulePlacement);
 		};
-	}, [fullscreenPlaylistBackdrop.isReady, isLyricPageOpened, playlistOpened]);
+	}, [
+		fullscreenPlaylistBackdrop.isReady,
+		isLyricPageOpened,
+		playlistOpened,
+		retainLyricVisuals,
+	]);
 
 	useLayoutEffect(() => {
 		if (previousLyricPageOpenedRef.current && !isLyricPageOpened) {
@@ -353,12 +367,14 @@ export const AMLLWrapper: FC = () => {
 							className={styles.lyricContent}
 							data-amll-fullscreen-content=""
 						>
-							<PrebuiltLyricPlayerWithBackground
-								id="amll-lyric-player"
-								style={{ width: "100%", height: "100%" }}
-								bottomLineSlot={<BottomLyricInfo />}
-								backgroundSlot={<SongVideoBackground />}
-							/>
+							{retainLyricVisuals && (
+								<PrebuiltLyricPlayerWithBackground
+									id="amll-lyric-player"
+									style={{ width: "100%", height: "100%" }}
+									bottomLineSlot={<BottomLyricInfo />}
+									backgroundSlot={<SongVideoBackground />}
+								/>
+							)}
 						</div>
 						{fullscreenPlaylistSurfaceReady && (
 							<>

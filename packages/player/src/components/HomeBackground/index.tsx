@@ -7,7 +7,9 @@ import {
 	homeBackgroundConfigAtom,
 	homeBackgroundLoadedAtom,
 } from "../../states/homeBackgroundAtoms.ts";
+import { mainWindowActiveAtom } from "../../states/windowAtoms.ts";
 import { getHomeBackgroundConfig } from "../../utils/home-background-client.ts";
+import { useRetainedVisuals } from "../../utils/useRetainedVisuals.ts";
 import styles from "./index.module.css";
 
 function resolveFileSource(filePath: string | null): string | null {
@@ -59,6 +61,8 @@ export const HomeBackground: FC = () => {
 	const config = useAtomValue(effectiveHomeBackgroundConfigAtom);
 	const store = useStore();
 	const lyricPageOpened = useAtomValue(isLyricPageOpenedAtom);
+	const mainWindowActive = useAtomValue(mainWindowActiveAtom);
+	const retainMedia = useRetainedVisuals(mainWindowActive);
 	const pageVisible = usePageVisible();
 	const prefersReducedMotion = usePrefersReducedMotion();
 	const videoRef = useRef<HTMLVideoElement>(null);
@@ -87,8 +91,8 @@ export const HomeBackground: FC = () => {
 	}, [store]);
 
 	const source = useMemo(
-		() => resolveFileSource(config.filePath),
-		[config.filePath],
+		() => resolveFileSource(retainMedia ? config.filePath : null),
+		[config.filePath, retainMedia],
 	);
 
 	useEffect(() => {
@@ -98,7 +102,12 @@ export const HomeBackground: FC = () => {
 	useEffect(() => {
 		const video = videoRef.current;
 		if (!video || config.mode !== "video") return;
-		if (!pageVisible || lyricPageOpened || prefersReducedMotion) {
+		if (
+			!mainWindowActive ||
+			!pageVisible ||
+			lyricPageOpened ||
+			prefersReducedMotion
+		) {
 			video.pause();
 			return;
 		}
@@ -112,6 +121,7 @@ export const HomeBackground: FC = () => {
 		config.mode,
 		config.updatedAt,
 		lyricPageOpened,
+		mainWindowActive,
 		pageVisible,
 		prefersReducedMotion,
 		source,
