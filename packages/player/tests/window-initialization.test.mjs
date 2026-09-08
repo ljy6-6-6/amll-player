@@ -28,8 +28,10 @@ test("隐藏阶段恢复窗口时明确排除最大化和可见状态", () => {
 	assert.match(nativeEntry, /skip_initial_state\("main"\)/);
 	assert.match(
 		nativeWindow,
-		/StateFlags::SIZE\s*\|\s*StateFlags::POSITION\s*\|\s*StateFlags::DECORATIONS/,
+		/main_window_restore_flags\(\)[\s\S]*StateFlags::DECORATIONS/,
 	);
+	assert.match(nativeWindow, /!flags\.contains\(StateFlags::SIZE\)/);
+	assert.match(nativeWindow, /!flags\.contains\(StateFlags::POSITION\)/);
 	assert.match(nativeWindow, /!flags\.contains\(StateFlags::MAXIMIZED\)/);
 	assert.match(nativeWindow, /!flags\.contains\(StateFlags::VISIBLE\)/);
 	assert.match(nativeWindow, /!flags\.contains\(StateFlags::FULLSCREEN\)/);
@@ -58,6 +60,15 @@ test("最终呈现按最大化意图原子显示并校准 WebView 客户区", ()
 		nativeWindow,
 		/presentation\.presenting\.store\(false, Ordering::Release\);[\s\S]*reconcile_background_restore_entry\(&app\);[\s\S]*result/,
 	);
+});
+
+test("启动位置读取磁盘快照并在显示前修正越界，不使用初始事件覆盖的几何缓存", () => {
+	assert.match(
+		nativeWindow,
+		/let persisted_presentation = load_persisted_window_presentation\(app, label\);[\s\S]*let win = win\.build\(\)/,
+	);
+	assert.match(nativeWindow, /persisted_restore_bounds\(persisted_presentation\)/);
+	assert.match(nativeWindow, /constrain_main_window_restore_bounds\(&state_window\)/);
 });
 
 test("工作线程等待 WebView 尺寸落地后重建透明窗口表面", () => {

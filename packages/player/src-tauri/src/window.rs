@@ -332,7 +332,175 @@ impl RectEdges {
 
 #[cfg(target_os = "windows")]
 fn main_window_restore_flags() -> StateFlags {
-    StateFlags::SIZE | StateFlags::POSITION | StateFlags::DECORATIONS
+    // Initial Moved/Resized events can replace the plugin's geometry cache even
+    // when skip_initial_state is enabled. Restore geometry from disk instead.
+    StateFlags::DECORATIONS
+}
+
+#[cfg(target_os = "windows")]
+fn persisted_restore_bounds(persisted: PersistedWindowPresentation) -> Option<PhysicalWindowRect> {
+    if persisted.width == 0 || persisted.height == 0 {
+        return None;
+    }
+    Some(PhysicalWindowRect {
+        x: if persisted.maximized {
+            persisted.prev_x
+        } else {
+            persisted.x
+        },
+        y: if persisted.maximized {
+            persisted.prev_y
+        } else {
+            persisted.y
+        },
+        width: persisted.width,
+        height: persisted.height,
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn fits_available_work_areas(
+    bounds: PhysicalWindowRect,
+    work_areas: &[PhysicalWindowRect],
+) -> bool {
+    let mut uncovered = vec![RectEdges::from_rect(bounds)];
+    for work_area in work_areas.iter().copied().map(RectEdges::from_rect) {
+        let mut next = Vec::new();
+        for rect in uncovered {
+            let left = rect.left.max(work_area.left);
+            let top = rect.top.max(work_area.top);
+            let right = rect.right.min(work_area.right);
+            let bottom = rect.bottom.min(work_area.bottom);
+            if left >= right || top >= bottom {
+                next.push(rect);
+                continue;
+            }
+            // Subtract this monitor's work area. This also preserves windows
+            // spanning adjacent monitors without accepting gaps between them.
+            for part in [
+                RectEdges {
+                    bottom: top,
+                    ..rect
+                },
+                RectEdges {
+                    top: bottom,
+                    ..rect
+                },
+                RectEdges {
+                    top,
+                    bottom,
+                    right: left,
+                    ..rect
+                },
+                RectEdges {
+                    top,
+                    bottom,
+                    left: right,
+                    ..rect
+                },
+            ] {
+                if part.left < part.right && part.top < part.bottom {
+                    next.push(part);
+                }
+            }
+        }
+        uncovered = next;
+        if uncovered.is_empty() {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(target_os = "windows")]
+fn visible_restore_bounds(
+    bounds: PhysicalWindowRect,
+    work_areas: &[PhysicalWindowRect],
+) -> PhysicalWindowRect {
+    let work_areas: Vec<_> = work_areas
+        .iter()
+        .copied()
+        .filter(|area| area.width > 0 && area.height > 0)
+        .collect();
+    if work_areas.is_empty() || fits_available_work_areas(bounds, &work_areas) {
+        return bounds;
+    }
+    let rect = RectEdges::from_rect(bounds);
+    let target = work_areas
+        .into_iter()
+        .max_by_key(|area| {
+            let area = RectEdges::from_rect(*area);
+            let overlap =
+                i128::from((rect.right.min(area.right) - rect.left.max(area.left)).max(0))
+                    * i128::from((rect.bottom.min(area.bottom) - rect.top.max(area.top)).max(0));
+            let dx = i128::from(rect.left + rect.right - area.left - area.right);
+            let dy = i128::from(rect.top + rect.bottom - area.top - area.bottom);
+            (overlap, -(dx * dx + dy * dy))
+        })
+        .expect("nonempty work areas");
+    let width = bounds.width.min(target.width);
+    let height = bounds.height.min(target.height);
+    PhysicalWindowRect {
+        x: bounds.x.clamp(
+            target.x,
+            target
+                .x
+                .saturating_add(i32::try_from(target.width - width).unwrap_or(i32::MAX)),
+        ),
+        y: bounds.y.clamp(
+            target.y,
+            target
+                .y
+                .saturating_add(i32::try_from(target.height - height).unwrap_or(i32::MAX)),
+        ),
+        width,
+        height,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn constrain_main_window_restore_bounds(window: &tauri::WebviewWindow) -> Result<(), String> {
+    let position = window.outer_position().map_err(|err| err.to_string())?;
+    let size = window.outer_size().map_err(|err| err.to_string())?;
+    let client_size = window.inner_size().map_err(|err| err.to_string())?;
+    let bounds = PhysicalWindowRect {
+        x: position.x,
+        y: position.y,
+        width: size.width,
+        height: size.height,
+    };
+    let work_areas: Vec<_> = window
+        .available_monitors()
+        .map_err(|err| err.to_string())?
+        .iter()
+        .map(|monitor| {
+            let area = monitor.work_area();
+            PhysicalWindowRect {
+                x: area.position.x,
+                y: area.position.y,
+                width: area.size.width,
+                height: area.size.height,
+            }
+        })
+        .collect();
+    let visible = visible_restore_bounds(bounds, &work_areas);
+    if visible != bounds {
+        info!(
+            "Moving out-of-bounds main window into the available work area: {bounds:?} -> {visible:?}"
+        );
+        let frame_width = size.width.saturating_sub(client_size.width);
+        let frame_height = size.height.saturating_sub(client_size.height);
+        window
+            .set_size(PhysicalSize::new(
+                visible.width.saturating_sub(frame_width).max(1),
+                visible.height.saturating_sub(frame_height).max(1),
+            ))
+            .map_err(|err| err.to_string())?;
+        window
+            .set_position(PhysicalPosition::new(visible.x, visible.y))
+            .map_err(|err| err.to_string())?;
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -972,6 +1140,9 @@ pub async fn recreate_window(app: &AppHandle, label: &str, path: Option<&str>) {
     };
     #[cfg(not(debug_assertions))]
     let url = tauri::WebviewUrl::App(path.unwrap_or("index.html").into());
+    // Capture before build/on_window_ready can receive bootstrap geometry events.
+    #[cfg(target_os = "windows")]
+    let persisted_presentation = load_persisted_window_presentation(app, label);
     let win = create_common_win(app, url, label).await;
 
     let win = win.build().expect("can't show original window");
@@ -980,27 +1151,48 @@ pub async fn recreate_window(app: &AppHandle, label: &str, path: Option<&str>) {
     {
         #[cfg(target_os = "windows")]
         if label == "main" {
-            let persisted_presentation = load_persisted_window_presentation(app, label);
-            if let Err(err) = win.restore_state(main_window_restore_flags()) {
-                warn!("Failed to restore hidden main window bounds: {err}");
-            }
-            repair_collapsed_maximized_restore_bounds(&win, label, persisted_presentation);
-            let recovered_legacy_maximized_state = recover_legacy_maximized_state(&win, label);
-            let presentation = app.state::<MainWindowPresentationState>();
-            presentation.prepare(
-                persisted_presentation.maximized || recovered_legacy_maximized_state,
-                persisted_presentation.fullscreen,
-            );
-            if let (Ok(position), Ok(size)) = (win.outer_position(), win.inner_size())
-                && size.width > 0
-                && size.height > 0
-            {
-                presentation.set_restore_bounds(PhysicalWindowRect {
-                    x: position.x,
-                    y: position.y,
-                    width: size.width,
-                    height: size.height,
-                });
+            let state_app = app.clone();
+            let state_window = win.clone();
+            if let Err(err) = run_window_state_task_on_main_thread(app, move || {
+                state_window
+                    .restore_state(main_window_restore_flags())
+                    .map_err(|err| err.to_string())?;
+                if let Some(bounds) = persisted_restore_bounds(persisted_presentation) {
+                    state_window
+                        .set_size(PhysicalSize::new(bounds.width, bounds.height))
+                        .map_err(|err| err.to_string())?;
+                    state_window
+                        .set_position(PhysicalPosition::new(bounds.x, bounds.y))
+                        .map_err(|err| err.to_string())?;
+                }
+                repair_collapsed_maximized_restore_bounds(
+                    &state_window,
+                    "main",
+                    persisted_presentation,
+                );
+                let recovered_legacy_maximized_state =
+                    recover_legacy_maximized_state(&state_window, "main");
+                constrain_main_window_restore_bounds(&state_window)?;
+                let presentation = state_app.state::<MainWindowPresentationState>();
+                presentation.prepare(
+                    persisted_presentation.maximized || recovered_legacy_maximized_state,
+                    persisted_presentation.fullscreen,
+                );
+                let position = state_window
+                    .outer_position()
+                    .map_err(|err| err.to_string())?;
+                let size = state_window.inner_size().map_err(|err| err.to_string())?;
+                if size.width > 0 && size.height > 0 {
+                    presentation.set_restore_bounds(PhysicalWindowRect {
+                        x: position.x,
+                        y: position.y,
+                        width: size.width,
+                        height: size.height,
+                    });
+                }
+                Ok(())
+            }) {
+                warn!("Failed to restore hidden main window bounds from disk: {err}");
             }
         }
 
@@ -2643,12 +2835,135 @@ mod tests {
     fn hidden_restore_excludes_visibility_and_maximization() {
         let flags = main_window_restore_flags();
 
-        assert!(flags.contains(StateFlags::SIZE));
-        assert!(flags.contains(StateFlags::POSITION));
+        assert!(!flags.contains(StateFlags::SIZE));
+        assert!(!flags.contains(StateFlags::POSITION));
         assert!(flags.contains(StateFlags::DECORATIONS));
         assert!(!flags.contains(StateFlags::FULLSCREEN));
         assert!(!flags.contains(StateFlags::MAXIMIZED));
         assert!(!flags.contains(StateFlags::VISIBLE));
+    }
+
+    #[test]
+    fn normal_restore_uses_saved_geometry_instead_of_previous_or_bootstrap_position() {
+        let persisted = PersistedWindowPresentation {
+            x: 360,
+            y: 180,
+            width: 1630,
+            height: 1195,
+            prev_x: 658,
+            prev_y: 801,
+            ..PersistedWindowPresentation::default()
+        };
+        assert_eq!(
+            persisted_restore_bounds(persisted),
+            Some(PhysicalWindowRect {
+                x: 360,
+                y: 180,
+                width: 1630,
+                height: 1195,
+            })
+        );
+        assert_eq!(
+            persisted_restore_bounds(PersistedWindowPresentation {
+                maximized: true,
+                ..persisted
+            }),
+            Some(PhysicalWindowRect {
+                x: 658,
+                y: 801,
+                width: 1630,
+                height: 1195,
+            })
+        );
+        assert!(persisted_restore_bounds(PersistedWindowPresentation::default()).is_none());
+    }
+
+    #[test]
+    fn repairs_reported_bottom_overflow_without_resetting_size_or_horizontal_position() {
+        let bounds = PhysicalWindowRect {
+            x: 658,
+            y: 801,
+            width: 1630,
+            height: 1195,
+        };
+        let work_area = PhysicalWindowRect {
+            height: 1530,
+            ..PRIMARY_MONITOR
+        };
+        assert_eq!(
+            visible_restore_bounds(bounds, &[work_area]),
+            PhysicalWindowRect { y: 335, ..bounds }
+        );
+    }
+
+    #[test]
+    fn preserves_valid_saved_positions_and_negative_monitor_coordinates() {
+        let bounds = PhysicalWindowRect {
+            x: 360,
+            y: 180,
+            width: 1630,
+            height: 1195,
+        };
+        assert_eq!(visible_restore_bounds(bounds, &[PRIMARY_MONITOR]), bounds);
+        let left_monitor = PhysicalWindowRect {
+            x: -1920,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        };
+        let left_bounds = PhysicalWindowRect {
+            x: -1800,
+            y: 100,
+            width: 1200,
+            height: 800,
+        };
+        assert_eq!(
+            visible_restore_bounds(left_bounds, &[left_monitor, PRIMARY_MONITOR]),
+            left_bounds
+        );
+    }
+
+    #[test]
+    fn preserves_windows_spanning_adjacent_work_areas_but_not_monitor_gaps() {
+        let left_monitor = PhysicalWindowRect {
+            x: -1920,
+            y: 0,
+            width: 1920,
+            height: 1600,
+        };
+        let spanning = PhysicalWindowRect {
+            x: -500,
+            y: 100,
+            width: 1500,
+            height: 900,
+        };
+        assert_eq!(
+            visible_restore_bounds(spanning, &[left_monitor, PRIMARY_MONITOR]),
+            spanning
+        );
+        let separated = PhysicalWindowRect {
+            x: -2100,
+            ..left_monitor
+        };
+        assert_ne!(
+            visible_restore_bounds(spanning, &[separated, PRIMARY_MONITOR]),
+            spanning
+        );
+    }
+
+    #[test]
+    fn fits_removed_monitor_or_oversized_saved_window_into_available_work_area() {
+        let oversized = PhysicalWindowRect {
+            x: 3000,
+            y: 2000,
+            width: 3000,
+            height: 1800,
+        };
+        assert_eq!(
+            visible_restore_bounds(oversized, &[PRIMARY_MONITOR]),
+            PRIMARY_MONITOR
+        );
+        assert_eq!(visible_restore_bounds(oversized, &[]), oversized);
     }
 
     #[test]
