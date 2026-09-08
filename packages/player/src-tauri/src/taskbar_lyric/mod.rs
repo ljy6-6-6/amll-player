@@ -33,6 +33,8 @@ pub struct TaskbarLyricWatchers {
 pub struct TaskbarLyricState {
     service: Mutex<Option<GenerationResource<taskbar_lyric::TaskbarService>>>,
     watchers: Mutex<Option<GenerationResource<TaskbarLyricWatchers>>>,
+    service_retirements: Mutex<Vec<tauri::async_runtime::JoinHandle<()>>>,
+    service_shutdown: tokio::sync::Mutex<()>,
     creation: tokio::sync::Mutex<()>,
     visibility: TaskbarLyricVisibility,
 }
@@ -82,7 +84,9 @@ impl TaskbarLyricState {
             value: service,
         });
         drop(visibility);
-        drop(previous);
+        if let Some(previous) = previous {
+            self.retire_service(previous.value);
+        }
         Ok(())
     }
 
@@ -108,7 +112,30 @@ impl TaskbarLyricState {
 
     fn take_resources_for_generation(&self, generation: u64) {
         let _ = take_generation_resource(&self.watchers, generation);
-        let _ = take_generation_resource(&self.service, generation);
+        if let Some(service) = take_generation_resource(&self.service, generation) {
+            self.retire_service(service);
+        }
+    }
+
+    fn retire_service(&self, mut service: TaskbarService) {
+        service.stop();
+        let retirement = tauri::async_runtime::spawn_blocking(move || service.stop_and_join());
+        self.service_retirements.lock().unwrap().push(retirement);
+    }
+
+    async fn wait_for_retired_services(&self) {
+        // Concurrent destroy requests must not overtake the task joining the
+        // old worker. Its queued HWND commands must finish before HWND reuse.
+        let _shutdown_guard = self.service_shutdown.lock().await;
+        loop {
+            let retirements = std::mem::take(&mut *self.service_retirements.lock().unwrap());
+            if retirements.is_empty() {
+                break;
+            }
+            for retirement in retirements {
+                let _ = retirement.await;
+            }
+        }
     }
 
     fn update_service_for_generation(&self, generation: u64) -> bool {
@@ -188,11 +215,45 @@ impl TaskbarLyricVisibility {
     where
         F: FnOnce(),
     {
+        self.advance_if_current_with_previous_action(None, on_begin)
+            .unwrap()
+    }
+
+    fn begin_open_if_current_with_previous_action<F>(
+        &self,
+        generation: u64,
+        on_begin: F,
+    ) -> Option<(u64, u64)>
+    where
+        F: FnOnce(),
+    {
+        self.advance_if_current_with_previous_action(Some(generation), on_begin)
+    }
+
+    fn invalidate_with_previous_action<F>(&self, on_invalidate: F) -> (u64, u64)
+    where
+        F: FnOnce(),
+    {
+        self.advance_if_current_with_previous_action(None, on_invalidate)
+            .unwrap()
+    }
+
+    fn advance_if_current_with_previous_action<F>(
+        &self,
+        expected_generation: Option<u64>,
+        action: F,
+    ) -> Option<(u64, u64)>
+    where
+        F: FnOnce(),
+    {
         let mut state = self.state.lock().unwrap();
+        if expected_generation.is_some_and(|generation| state.generation != generation) {
+            return None;
+        }
         let previous_generation = state.generation;
         Self::advance_generation(&mut state);
-        on_begin();
-        (previous_generation, state.generation)
+        action();
+        Some((previous_generation, state.generation))
     }
 
     fn invalidate(&self) {
@@ -622,7 +683,7 @@ fn schedule_webview_hwnd_lookup(
                             warn!("多次重试后仍未能初始化任务栏歌词 WebView 鼠标转发");
                             schedule_taskbar_generation_cleanup(&app, generation);
                             if let Some(window) = window {
-                                destroy_taskbar_window(&app, &window);
+                                destroy_taskbar_window(&app, generation, &window);
                             } else {
                                 crate::window::reconcile_background_restore_entry(&app);
                             }
@@ -714,14 +775,9 @@ fn invalidate_taskbar_generation(app: &tauri::AppHandle, generation: u64) -> boo
 }
 
 fn schedule_taskbar_generation_cleanup(app: &tauri::AppHandle, generation: u64) {
-    let cleanup_app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        tokio::task::yield_now().await;
-        let Some(state) = cleanup_app.try_state::<TaskbarLyricState>() else {
-            return;
-        };
+    if let Some(state) = app.try_state::<TaskbarLyricState>() {
         state.take_resources_for_generation(generation);
-    });
+    }
 }
 
 fn invalidate_and_destroy_taskbar_window(
@@ -732,16 +788,26 @@ fn invalidate_and_destroy_taskbar_window(
     if !invalidate_taskbar_generation(app, generation) {
         return;
     }
-    destroy_taskbar_window(app, window);
+    destroy_taskbar_window(app, generation, window);
 }
 
-fn destroy_taskbar_window(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
-    let _ = window.hide();
-    if let Err(error) = window.destroy() {
-        warn!("销毁任务栏歌词窗口失败：{error}");
-        // No Destroyed event will arrive to schedule the normal recovery.
-        crate::window::reconcile_background_restore_entry(app);
+fn destroy_taskbar_window(app: &tauri::AppHandle, generation: u64, window: &tauri::WebviewWindow) {
+    if let Some(state) = app.try_state::<TaskbarLyricState>() {
+        state.take_resources_for_generation(generation);
     }
+    let _ = window.hide();
+    let app = app.clone();
+    let window = window.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Some(state) = app.try_state::<TaskbarLyricState>() {
+            state.wait_for_retired_services().await;
+        }
+        if let Err(error) = window.destroy() {
+            warn!("销毁任务栏歌词窗口失败：{error}");
+            // No Destroyed event will arrive to schedule the normal recovery.
+            crate::window::reconcile_background_restore_entry(&app);
+        }
+    });
 }
 
 fn schedule_taskbar_layout_watchdog(app: tauri::AppHandle, generation: u64) {
@@ -902,21 +968,47 @@ fn auto_hide_content_offset(edge: Option<TaskbarEdge>, scale_factor: f64) -> (f6
 #[tauri::command]
 pub fn close_taskbar_lyric(app: tauri::AppHandle) {
     if let Some(state) = app.try_state::<TaskbarLyricState>() {
-        let generation = state.visibility.current_generation();
-        let window = app.get_webview_window("taskbar-lyric");
-        if state
+        // Invalidate atomically even if a deferred reopen just advanced the
+        // generation. A newer close must always cancel pending creation/recovery.
+        let (generation, closed_generation) = state
             .visibility
-            .invalidate_if_current_with(generation, mouse_forward::stop_mouse_hook)
-            .is_some()
-        {
-            state.take_resources_for_generation(generation);
-            if let Some(window) = window {
-                destroy_taskbar_window(&app, &window);
-            } else {
-                crate::window::reconcile_background_restore_entry(&app);
+            .invalidate_with_previous_action(mouse_forward::stop_mouse_hook);
+        state.take_resources_for_generation(generation);
+
+        tauri::async_runtime::spawn(async move {
+            let Some(state) = app.try_state::<TaskbarLyricState>() else {
+                return;
+            };
+            // A build already in flight may produce its window after close was
+            // requested. Wait for it before looking up the window to destroy.
+            let _creation_guard = state.creation.lock().await;
+            if !state.visibility.is_current(closed_generation) {
+                return;
             }
-        }
+            if let Some(window) = app.get_webview_window("taskbar-lyric") {
+                destroy_taskbar_window(&app, generation, &window);
+                wait_for_taskbar_window_removal(&app, closed_generation).await;
+            }
+            crate::window::reconcile_background_restore_entry(&app);
+        });
     }
+}
+
+async fn wait_for_taskbar_window_removal(app: &tauri::AppHandle, generation: u64) -> bool {
+    for _ in 0..200 {
+        if !app
+            .try_state::<TaskbarLyricState>()
+            .is_some_and(|state| state.visibility.is_current(generation))
+        {
+            return false;
+        }
+        if app.get_webview_window("taskbar-lyric").is_none() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    warn!("任务栏歌词旧窗口尚未销毁，取消本次重建并保留托盘恢复入口");
+    false
 }
 
 pub(crate) fn schedule_destroyed_window_recovery(app: tauri::AppHandle) {
@@ -929,35 +1021,27 @@ pub(crate) fn schedule_destroyed_window_recovery(app: tauri::AppHandle) {
         // cleanup and window queries so that callback can return immediately.
         tokio::task::yield_now().await;
 
-        let mut should_reopen = false;
+        let mut recovery_generation = None;
         if let (Some(state), Some((generation, destroyed_hwnd))) =
             (app.try_state::<TaskbarLyricState>(), recovery_target)
         {
             if state.visibility.window_matches(generation, destroyed_hwnd)
-                && state
+                && let Some(next_generation) = state
                     .visibility
                     .invalidate_if_current_with(generation, mouse_forward::stop_mouse_hook)
-                    .is_some()
             {
                 state.take_resources_for_generation(generation);
-                should_reopen = app.get_webview_window("main").is_some();
+                if app.get_webview_window("main").is_some() {
+                    recovery_generation = Some(next_generation);
+                }
             }
-        }
-
-        let mut window_removed = false;
-        for _ in 0..50 {
-            if app.get_webview_window("taskbar-lyric").is_none() {
-                window_removed = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
         crate::window::reconcile_background_restore_entry(&app);
-        if should_reopen && window_removed {
-            open_taskbar_lyric(app);
-        } else if should_reopen {
-            warn!("任务栏歌词窗口销毁后仍未从窗口管理器移除，保留托盘恢复入口");
+        if let Some(generation) = recovery_generation
+            && wait_for_taskbar_window_removal(&app, generation).await
+        {
+            open_taskbar_lyric_for_generation(app, generation, 0);
         }
     });
 }
@@ -1037,17 +1121,36 @@ pub fn taskbar_lyric_page_ready(
 
 #[tauri::command]
 pub fn open_taskbar_lyric(app: tauri::AppHandle) {
-    if app.get_webview_window("taskbar-lyric").is_some() {
-        return;
-    }
-
     let Some(state) = app.try_state::<TaskbarLyricState>() else {
         warn!("任务栏歌词状态尚未初始化");
         return;
     };
-    let (previous_generation, generation) = state
-        .visibility
-        .begin_open_with_previous_action(mouse_forward::stop_mouse_hook);
+    let generation = state.visibility.current_generation();
+    open_taskbar_lyric_for_generation(app, generation, 0);
+}
+
+fn open_taskbar_lyric_for_generation(app: tauri::AppHandle, expected_generation: u64, attempt: u8) {
+    let Some(state) = app.try_state::<TaskbarLyricState>() else {
+        return;
+    };
+    // A label can remain registered after destroy() until Tao processes the
+    // event. Only an active, bound window satisfies an open request.
+    if app.get_webview_window("taskbar-lyric").is_some()
+        && state
+            .visibility
+            .current_window_identity()
+            .is_some_and(|(generation, _)| generation == expected_generation)
+    {
+        return;
+    }
+    let Some((previous_generation, generation)) =
+        state.visibility.begin_open_if_current_with_previous_action(
+            expected_generation,
+            mouse_forward::stop_mouse_hook,
+        )
+    else {
+        return;
+    };
     state.take_resources_for_generation(previous_generation);
 
     let app_clone = app.clone();
@@ -1129,17 +1232,31 @@ pub fn open_taskbar_lyric(app: tauri::AppHandle) {
         }
     });
 
-    if state.install_service(generation, service).is_err() {
+    if let Err(service) = state.install_service(generation, service) {
+        state.retire_service(service);
         return;
     }
 
     let app_clone = app.clone();
     tauri::async_runtime::spawn(async move {
+        // Coalesce rapid on/off gestures before creating another WebView.
+        tokio::time::sleep(Duration::from_millis(120)).await;
         let Some(state) = app_clone.try_state::<TaskbarLyricState>() else {
             return;
         };
         let _creation_guard = state.creation.lock().await;
+        state.wait_for_retired_services().await;
         if !state.visibility.is_current(generation) {
+            return;
+        }
+
+        // Reopening after close (or after cancelling an in-flight build) must
+        // release the old WebView before reusing its label for a fresh page.
+        if let Some(previous_window) = app_clone.get_webview_window("taskbar-lyric") {
+            destroy_taskbar_window(&app_clone, previous_generation, &previous_window);
+        }
+        if !wait_for_taskbar_window_removal(&app_clone, generation).await {
+            invalidate_taskbar_generation(&app_clone, generation);
             return;
         }
 
@@ -1183,19 +1300,20 @@ pub fn open_taskbar_lyric(app: tauri::AppHandle) {
             .minimizable(false)
             .visible(false);
 
-        if let Ok(win) = win_builder.build() {
+        let result = win_builder.build();
+        if let Ok(win) = result {
             let is_current = app_clone
                 .try_state::<TaskbarLyricState>()
                 .is_some_and(|state| state.visibility.is_current(generation));
             if !is_current {
-                destroy_taskbar_window(&app_clone, &win);
+                destroy_taskbar_window(&app_clone, generation, &win);
                 return;
             }
 
             if let Ok(hwnd) = win.hwnd() {
                 let hwnd_ptr = hwnd.0 as usize;
                 if !state.visibility.bind_window(generation, hwnd_ptr) {
-                    destroy_taskbar_window(&app_clone, &win);
+                    destroy_taskbar_window(&app_clone, generation, &win);
                     return;
                 }
 
@@ -1267,7 +1385,7 @@ pub fn open_taskbar_lyric(app: tauri::AppHandle) {
                     };
                     let install_result = state.install_watchers(generation, watchers);
                     if install_result.is_err() {
-                        destroy_taskbar_window(&app_clone, &win);
+                        destroy_taskbar_window(&app_clone, generation, &win);
                         return;
                     }
                     schedule_webview_hwnd_lookup(app_clone.clone(), generation, hwnd_ptr, false);
@@ -1276,9 +1394,22 @@ pub fn open_taskbar_lyric(app: tauri::AppHandle) {
                 tracing::warn!("Failed to get hwnd for taskbar-lyric window");
                 invalidate_and_destroy_taskbar_window(&app_clone, generation, &win);
             }
-        } else {
-            tracing::warn!("Failed to build taskbar-lyric window");
-            invalidate_taskbar_generation(&app_clone, generation);
+        } else if let Err(error) = result {
+            warn!("任务栏歌词窗口创建失败（第 {} 次）：{error}", attempt + 1);
+            if let Some(retry_generation) = state
+                .visibility
+                .invalidate_if_current_with(generation, mouse_forward::stop_mouse_hook)
+            {
+                state.take_resources_for_generation(generation);
+                crate::window::reconcile_background_restore_entry(&app_clone);
+                if attempt < 2 {
+                    let retry_app = app_clone.clone();
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                        open_taskbar_lyric_for_generation(retry_app, retry_generation, attempt + 1);
+                    });
+                }
+            }
         }
     });
 }
@@ -1358,6 +1489,77 @@ mod tests {
 
         assert!(!visibility.mark_layout_ready(generation));
         assert!(!visibility.is_current(generation));
+    }
+
+    #[test]
+    fn reopen_after_close_reserves_a_fresh_page_generation() {
+        let visibility = TaskbarLyricVisibility::default();
+        let original = visibility.begin_open();
+        assert!(visibility.bind_window(original, 100));
+
+        let (closed, pending_reopen) = visibility.invalidate_with_previous_action(|| {});
+        assert_eq!(closed, original);
+        // Tao may still own the old window, but it cannot satisfy the new open.
+        assert_eq!(visibility.current_window_identity(), None);
+        let (previous, reopened) = visibility
+            .begin_open_if_current_with_previous_action(pending_reopen, || {})
+            .unwrap();
+        assert_eq!(previous, pending_reopen);
+        assert!(visibility.bind_window(reopened, 200));
+        assert!(!visibility.mark_page_ready(original));
+        assert!(!visibility.mark_page_ready(reopened));
+        assert!(visibility.mark_layout_ready(reopened));
+    }
+
+    #[test]
+    fn a_later_close_cancels_deferred_reopen_without_running_its_cleanup() {
+        let visibility = TaskbarLyricVisibility::default();
+        let original = visibility.begin_open();
+        let recovery = visibility.invalidate_if_current(original).unwrap();
+        let (_, closed) = visibility.invalidate_with_previous_action(|| {});
+        let mut cleanup_ran = false;
+
+        assert_eq!(
+            visibility.begin_open_if_current_with_previous_action(recovery, || cleanup_ran = true),
+            None
+        );
+        assert!(!cleanup_ran);
+        assert!(visibility.is_current(closed));
+        assert_eq!(visibility.current_window_identity(), None);
+    }
+
+    #[test]
+    fn close_invalidates_a_reopen_that_won_the_race_first() {
+        let visibility = TaskbarLyricVisibility::default();
+        let original = visibility.begin_open();
+        let (_, recovery) = visibility.invalidate_with_previous_action(|| {});
+        let (_, reopened) = visibility
+            .begin_open_if_current_with_previous_action(recovery, || {})
+            .unwrap();
+        assert!(visibility.bind_window(reopened, 200));
+
+        let (cancelled, closed) = visibility.invalidate_with_previous_action(|| {});
+        assert_eq!(cancelled, reopened);
+        assert!(!visibility.is_current(original));
+        assert!(!visibility.is_current(reopened));
+        assert!(visibility.is_current(closed));
+        assert!(!visibility.bind_window(reopened, 200));
+        assert_eq!(visibility.current_window_identity(), None);
+    }
+
+    #[test]
+    fn only_one_deferred_recovery_can_claim_a_generation() {
+        let visibility = TaskbarLyricVisibility::default();
+        let (_, recovery) = visibility.invalidate_with_previous_action(|| {});
+        let (_, reopened) = visibility
+            .begin_open_if_current_with_previous_action(recovery, || {})
+            .unwrap();
+
+        assert_eq!(
+            visibility.begin_open_if_current_with_previous_action(recovery, || {}),
+            None
+        );
+        assert!(visibility.is_current(reopened));
     }
 
     #[test]
